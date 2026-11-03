@@ -39,6 +39,17 @@ enum E2E {
     }
 
     /// 16 px squares in four greys/blues plus a diagonal gradient: textured, so blur/pixelate visibly change it.
+    /// True when the C region of a display frame is a single colour.
+    static func uniform(_ img: CGImage) -> Bool {
+        guard let crop = img.cropping(to: CGRect(x: 120, y: 120, width: 360, height: 260)),
+              let ctx = CGContext(data: nil, width: crop.width, height: crop.height, bitsPerComponent: 8, bytesPerRow: crop.width * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+        ctx.draw(crop, in: CGRect(x: 0, y: 0, width: crop.width, height: crop.height))
+        let p = ctx.data!.assumingMemoryBound(to: UInt32.self), n = crop.width * crop.height
+        for i in stride(from: 0, to: n, by: 7) where p[i] != p[0] { return false }
+        return true
+    }
+
     static func checker(_ w: Int, _ h: Int) -> CGImage? {
         guard w > 0, h > 0, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
               space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
@@ -240,6 +251,7 @@ enum E2E {
     static var baseline: Bitmap?
 
     /// Region capture through the real overlay: select C, run `edit`, then Return (or a custom finish).
+    static var copyWasKey = false, copyHandled = true
     static func regionCapture(_ name: String, w: Int? = nil, h: Int? = nil, finish: () -> Void = { ret() },
                               edit: () async -> Void) async -> Clip? {
         let m = markClipboard()
@@ -260,7 +272,16 @@ enum E2E {
             ScreenCapture.e2eFixture = { checker($0, $1) }
         } else {
             // Granted in TCC.db but SCK may still refuse: probe once.
-            do { _ = try await ScreenCapture.freeze([screen], showCursor: false) }
+            do {
+                let f = try await ScreenCapture.freeze([screen], showCursor: false)
+                // The hosted runner's display frame shows only a black desktop (other apps' windows are not
+                // composited into it), so blur/pixelate/highlighter/spotlight would have nothing to change.
+                // Fall back to a synthetic display frame then; window captures stay real.
+                if let img = f.first?.image, uniform(img) {
+                    source = "sck-window+fixture-display"; ScreenCapture.e2eDisplayFixture = { checker($0, $1) }
+                    NSLog("E2E display frame is uniform; using display fixture. pattern=\(String(describing: patternWindow()?.frame))")
+                }
+            }
             catch { source = "fixture"; ScreenCapture.e2eFixture = { checker($0, $1) }; NSLog("E2E SCK refused: \(error)") }
         }
         setOpts { s in s = AppSettings(); s.saveToFile = true; s.saveFolder = saved.path; s.playSound = false
@@ -378,8 +399,15 @@ enum E2E {
     /// Copy from the editor by ⌘C key and by the Edit-menu copy: action, and repeated copies replace.
     static func copyPaths() async {
         if let c = await regionCapture("copy-cmdC", finish: { key(8, "c", flags: .command) }, edit: {}) { record("copy-cmdC", c.ok, c.info) }
-        if let c = await regionCapture("copy-menu-action", finish: { NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil) }, edit: {}) {
-            record("copy-menu-action", c.ok, c.info) }
+        if let c = await regionCapture("copy-menu-action", finish: {
+            // Edit > Copy goes through the key window's responder chain; on the runner ShareX may not be the
+            // active app, so make the overlay key first (as a click on it would) and report whether it was.
+            copyWasKey = surface()?.window.isKeyWindow ?? false
+            surface()?.window.makeKey()
+            if !NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil) { copyHandled = false }
+        }, edit: {}) {
+            record("copy-menu-action", c.ok, c.info.merging(["overlayWasKey": copyWasKey, "handled": copyHandled]) { $1 }) }
+        else { key(53, "\u{1b}"); _ = await until({ !coord.busy }) }
         if let c = await regionCapture("copy-double-click", finish: {
             if let s = surface() { mouse(.leftMouseDown, CGPoint(x: 480, y: 380), in: s, clicks: 2); mouse(.leftMouseUp, CGPoint(x: 480, y: 380), in: s, clicks: 2) }
         }, edit: { key(0, "r") }) { record("copy-double-click", c.ok, c.info) }
@@ -467,7 +495,8 @@ enum E2E {
             _ = await until({ !coord.busy })
             let (w, h) = style == .lastRegion ? (cw, ch) : (fw, fh)   // freehand above remembered C
             if let c = checkClipboard(name, since: m, w: w, h: h) {
-                let red = isRed(c.png.at(px(20) + 1, px(30)))
+                // Tool style persisted from the combined scenario may be blue/8, so accept the red default or blue.
+                let p = c.png.at(px(20) + 1, px(30)); let red = isRed(p) || (p.b > 0.7 && p.r < 0.4 && p.g < 0.6)
                 record(name, c.ok && opened && red, c.info.merging(["editorOpened": opened, "rectDrawn": red]) { $1 })
             }
         }

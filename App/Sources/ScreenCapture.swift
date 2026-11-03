@@ -43,6 +43,8 @@ enum CaptureError: LocalizedError {
 enum ScreenCapture {
     /// E2E seam, set only by `--e2e` when Screen Recording cannot be granted: a synthetic frame of the given pixel size.
     static var e2eFixture: ((Int, Int) -> CGImage?)?
+    /// E2E seam: synthetic display frames only (window captures stay real ScreenCaptureKit).
+    static var e2eDisplayFixture: ((Int, Int) -> CGImage?)?
 
     static func displayID(of screen: NSScreen) -> CGDirectDisplayID {
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
@@ -70,7 +72,7 @@ enum ScreenCapture {
 
     /// Freezes the given screens. Our own windows are excluded from the frame.
     static func freeze(_ screens: [NSScreen], showCursor: Bool) async throws -> [FrozenScreen] {
-        if let fx = e2eFixture {
+        if let fx = e2eFixture ?? e2eDisplayFixture {
             return screens.compactMap { s in
                 let sc = s.backingScaleFactor
                 return fx(Int(s.frame.width * sc), Int(s.frame.height * sc)).map { FrozenScreen(screen: s, displayID: displayID(of: s), image: $0) }
