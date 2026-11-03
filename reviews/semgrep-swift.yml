@@ -1,0 +1,43 @@
+rules:
+- id: swift-force-try
+  languages: [swift]
+  severity: ERROR
+  message: try! traps on error
+  pattern-regex: 'try!'
+- id: swift-fatal-error
+  languages: [swift]
+  severity: WARNING
+  message: fatalError / preconditionFailure in shipping code
+  pattern-either:
+    - pattern: fatalError(...)
+    - pattern: preconditionFailure(...)
+- id: swift-force-cast
+  languages: [swift]
+  severity: ERROR
+  message: as! traps on mismatch
+  pattern-regex: '\bas!'
+- id: swift-index-zero
+  languages: [swift]
+  severity: WARNING
+  message: "[0] on a possibly empty collection"
+  pattern: $X[0]
+- id: swift-escaping-self-without-weak
+  languages: [swift]
+  severity: WARNING
+  message: escaping closure captures self strongly
+  pattern-either:
+    - pattern: "DispatchQueue.main.asyncAfter(deadline: $D) { ... self ... }"
+    - pattern: "Timer.scheduledTimer(withTimeInterval: $T, repeats: $R) { ... self ... }"
+    - pattern: "NotificationCenter.default.addObserver(forName: $N, object: $O, queue: $Q) { ... self ... }"
+- id: swift-ui-off-main
+  languages: [swift]
+  severity: ERROR
+  message: background queue in AppKit code; UI work must be on main
+  pattern-either:
+    - pattern: DispatchQueue.global(...)
+    - pattern: Thread.detachNewThread(...)
+- id: swift-force-unwrap-call
+  languages: [swift]
+  severity: WARNING
+  message: postfix ! force unwrap
+  pattern-regex: '[\w\)\]]!(\.|\s|\)|,|$)'

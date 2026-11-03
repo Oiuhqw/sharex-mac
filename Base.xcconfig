@@ -1,0 +1,6 @@
+// Committed. Pulls in the developer's git-ignored Local.xcconfig, which sets DEVELOPMENT_TEAM and
+// SHAREX_LOCAL_CONFIG = present. Without it, a signed build stops at the "Require Local.xcconfig"
+// pre-build step with a clear error instead of an opaque "requires a development team" failure.
+// Unsigned builds (CODE_SIGNING_ALLOWED=NO, as in CI) skip that check.
+SHAREX_LOCAL_CONFIG = missing
+#include? "Local.xcconfig"

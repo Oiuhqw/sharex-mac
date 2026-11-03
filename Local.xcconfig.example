@@ -1,0 +1,5 @@
+// Copy to Local.xcconfig (git-ignored) and set your Apple team ID (Xcode > Settings > Accounts, or developer.apple.com > Membership).
+// A real team makes the signature stable across rebuilds, so macOS keeps the Screen Recording grant.
+// Without a stable signature, macOS forgets the grant on every rebuild.
+DEVELOPMENT_TEAM = ABCDE12345
+SHAREX_LOCAL_CONFIG = present

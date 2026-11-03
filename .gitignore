@@ -1,0 +1,8 @@
+*.xcodeproj/
+.build/
+DerivedData/
+.swiftpm/
+Local.xcconfig
+build/
+xcodebuild.log
+smoke.log
