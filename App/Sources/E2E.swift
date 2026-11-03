@@ -299,6 +299,7 @@ enum E2E {
                   s.options.showMagnifier = false }
 
         if args.contains("--perf") { await E2EPerf.run(); return }
+        await E2EExport.run()
         await menuAndSettings()
 
         // Baseline region, no marks: crop size and Retina scale.

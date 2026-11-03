@@ -12,6 +12,10 @@ enum Log {
 /// Flattens frame + annotations into the final image, decorates it, and writes the outputs.
 @MainActor
 enum Export {
+    #if SHAREX_E2E
+    static var e2eRejectClipboard = false
+    static var e2eRejectFile = false
+    #endif
     /// Renders the crop area at full frame resolution. `lasso` (frame points) makes outside pixels transparent.
     static func flatten(renderer: Renderer, doc: EditorDocument, crop: CGRect, lasso: [CGPoint]?) -> CGImage? {
         let s = renderer.scale
@@ -79,11 +83,13 @@ enum Export {
     /// Clears the pasteboard and writes one item carrying PNG and TIFF. Returns false if nothing was written.
     @discardableResult
     static func write(_ e: Encoded) -> Bool {
+        #if SHAREX_E2E
+        if e2eRejectClipboard { return false }
+        #endif
+        let item = NSPasteboardItem()
+        guard item.setData(e.png, forType: .png), item.setData(e.tiff, forType: .tiff) else { return false }
         let pb = NSPasteboard.general
         pb.clearContents()
-        let item = NSPasteboardItem()
-        item.setData(e.png, forType: .png)
-        item.setData(e.tiff, forType: .tiff)
         return pb.writeObjects([item])
     }
 
@@ -95,7 +101,18 @@ enum Export {
 
     /// Saves already-encoded PNG bytes (the same bytes as the clipboard) off the main thread.
     static func savePNGData(_ png: Data, folder: String) async -> URL? {
-        await Task.detached(priority: .utility) { writePNG(png, folder: folder) }.value
+        #if SHAREX_E2E
+        if e2eRejectFile { return nil }
+        #endif
+        return await Task.detached(priority: .utility) { writePNG(png, folder: folder) }.value
+    }
+
+    /// Only used after NSSavePanel has confirmed the destination (including any replacement).
+    static func savePNGData(_ png: Data, to url: URL) async -> Bool {
+        await Task.detached(priority: .utility) {
+            do { try png.write(to: url, options: .atomic); return true }
+            catch { Log.export.error("PNG save failed: \(error.localizedDescription, privacy: .public)"); return false }
+        }.value
     }
 
     /// Writes the PNG with its real DPI (72 × scale) so a Retina capture opens at on-screen size.
@@ -108,11 +125,13 @@ enum Export {
     nonisolated static func resolveFolder(_ folder: String, create: Bool = true) -> URL? {
         let fm = FileManager.default
         let raw = folder.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expanded = (raw as NSString).expandingTildeInPath
+        // URL(fileURLWithPath:) makes relative paths absolute; validate the input before constructing it.
+        guard raw.isEmpty || expanded.hasPrefix("/") else { return nil }
         let base = raw.isEmpty
             ? (fm.urls(for: .picturesDirectory, in: .userDomainMask).first
                ?? fm.homeDirectoryForCurrentUser.appendingPathComponent("Pictures")).appendingPathComponent("ShareX")
-            : URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
-        guard base.path.hasPrefix("/") else { return nil }
+            : URL(fileURLWithPath: expanded)
         var isDir: ObjCBool = false
         if !fm.fileExists(atPath: base.path) {
             if !create { return base }   // Settings preview: it will be created on first save

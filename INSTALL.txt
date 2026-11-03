@@ -1,0 +1,24 @@
+ShareX for macOS 0.1.1 (build 2)
+macOS 14 or later. Universal: Apple Silicon and Intel.
+
+Drag ShareX.app to Applications, then open it. ShareX lives in the menu bar.
+Allow Screen Recording in System Settings > Privacy & Security, then quit and reopen ShareX.
+
+This build is ad-hoc signed with Hardened Runtime. It is NOT Apple-notarized.
+The project has no Developer ID certificate. A downloaded copy may require
+System Settings > Privacy & Security > Open Anyway after the first launch attempt.
+Check ShareX.dmg.sha256 from the same build before installing.
+
+When updating an earlier ad-hoc build, remove the old ShareX entry from Screen
+Recording permissions, add the updated /Applications/ShareX.app, and reopen it.
+
+Changes in 0.1.1:
+- Clipboard and PNG file export succeed or fail independently.
+- Failed outputs show Retry and Save As; the screenshot remains available while recovering.
+- Successful outputs are preserved when retrying, without duplicate files.
+- The success sound plays only when every requested output succeeds.
+- App icon added, and invalid relative save-folder paths rejected.
+
+Native automated tests cover capture/editor/export flows and injected export failures.
+Hosted CI cannot fully verify physical hotkeys, real multi-monitor/Retina hardware,
+or the interactive permission prompts on your Mac.

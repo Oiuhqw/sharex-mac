@@ -22,7 +22,7 @@ Unsigned builds (`CODE_SIGNING_ALLOWED=NO`, as in CI) skip the Local.xcconfig ch
   - Crop `C`
 - **Editor controls:** colour, width, opacity, strength and fill. Delete removes the selected mark, arrow keys nudge it (⇧ moves 10 pt), ⌘Z undoes and ⇧⌘Z redoes. Shift-drag constrains a shape.
 - **Finish:** Enter (or ⌘C, or Done) copies PNG + TIFF to the clipboard. Esc cancels. A right-click deletes the mark under the cursor; with no marks it resets the selection (or cancels a fixed-area capture). Blur and pixelate are burned into the pixels.
-- **Optional:** also save the PNG to `~/Pictures/ShareX`.
+- **Optional:** also save the PNG to `~/Pictures/ShareX`. Clipboard and file writes are independent. If an output fails, Retry attempts only the failed destination and Save As lets you keep the PNG elsewhere. The success sound plays only after every requested output succeeds.
 - **Default hotkeys** (rebindable in Settings › Hotkeys): ⌃⇧1 region, ⌃⇧2 window, ⌃⇧3 fullscreen, ⌃⇧4 active monitor, ⌃⇧5 freehand.
 
 ## Layout
@@ -44,9 +44,11 @@ swift test --package-path Packages/ShareXCore   # core logic tests (also run on 
 ```
 Keep the signing team and bundle ID (`com.sharexmac.ShareX`) stable. Screen Recording permission is tied to the signature. To retest the permission flow, run `tccutil reset ScreenCapture com.sharexmac.ShareX`.
 
-## Status
-- ShareXCore builds, and all of its tests pass on Linux (Swift 6.0.3).
-- **The AppKit/ScreenCaptureKit layer has not been compiled yet.** It was written on Linux without the macOS SDK. Expect some first-build fixes: Swift 6 concurrency diagnostics and small API-signature mismatches.
+## Build and verification
+- The macOS workflow compiles the app, runs the core tests, launches the native E2E driver and records a Release performance run. Its artifacts contain the actual results and logs.
+- After those checks pass, the same workflow builds a universal Release DMG, verifies its icon and signature, checks that test code is absent, and runs launch/install smoke checks.
+- Version 0.1.1 adds independent output recovery, failure-injection regression cases, an app icon, and absolute save-folder validation.
+- Hosted runners use fixture display frames when their desktop is blank; real window captures still use ScreenCaptureKit when permission is available. Physical hotkeys, real multi-display/Retina hardware and interactive permission prompts still need a Mac check. A green CI run does not certify those scenarios.
 
 ## Known limitations
 - Window picker and active window capture the window live with ScreenCaptureKit (`desktopIndependentWindow`), so covered windows come out whole, with transparent corners, no cursor, and the app-drawn shadow and border around the window itself (the system shadow is dropped until its sizing is verified on a Mac). The window is captured when you click it, not at the moment the overlay opened.

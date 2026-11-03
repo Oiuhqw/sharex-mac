@@ -48,7 +48,7 @@ struct SettingsView: View {
                 Toggle("Also save PNG to folder", isOn: binding(\.saveToFile))
                 TextField("Folder (empty = ~/Pictures/ShareX)", text: binding(\.saveFolder))
                 if store.value.saveToFile, Export.resolveFolder(store.value.saveFolder, create: false) == nil {
-                    Text("Not a writable folder; screenshots will only go to the clipboard.")
+                    Text("Use an absolute path to a writable folder. Failed saves offer Retry or Save As.")
                         .font(.caption).foregroundStyle(.red)
                 }
                 Toggle("Play sound after capture", isOn: binding(\.playSound))

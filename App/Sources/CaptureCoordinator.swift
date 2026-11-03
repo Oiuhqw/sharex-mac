@@ -171,14 +171,21 @@ final class CaptureCoordinator {
         let encoded = await Task.detached(priority: .userInitiated) { () -> Export.Encoded? in
             Export.encode(Export.decorateOffMain(box.image, options: opts, scale: scale), scale: scale)
         }.value
-        guard let encoded, Export.write(encoded) else { NSSound.beep(); return }
-        Perf.stamp("clipboard-ready")
-        // The clipboard already has the image; a failed save must still be visible, not silent.
-        if s.saveToFile, await Export.savePNGData(encoded.png, folder: s.saveFolder) == nil {
-            NSSound.beep(); Log.export.error("could not save PNG to \(s.saveFolder, privacy: .private)")
+        guard let encoded else {
+            let previous = NSWorkspace.shared.frontmostApplication
+            NSApp.activate()
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Screenshot could not be prepared"
+            alert.informativeText = "No image was copied or saved. Try a smaller capture or close other apps to free memory."
+            alert.runModal()
+            if NSWorkspace.shared.frontmostApplication == .current { Focus.restore(previous) }
+            return
         }
-        if let last { settings.update { $0.lastRegion = last } }
-        if s.playSound { NSSound(named: "Tink")?.play() }
+        let delivery = ExportDelivery(encoded: encoded, folder: s.saveToFile ? s.saveFolder : nil)
+        await delivery.attempt()
+        await delivery.finish(playSound: s.playSound)
+        if delivery.hasOutput, let last { settings.update { $0.lastRegion = last } }
     }
 
     /// Places every display at its global position. Output uses the highest scale so Retina detail survives.

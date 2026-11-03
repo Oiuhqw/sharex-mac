@@ -106,3 +106,7 @@ jobs:
             xcodebuild.log
             smoke.log
           if-no-files-found: ignore
+
+  package:
+    needs: build-and-test
+    uses: ./.github/workflows/dmg.yml

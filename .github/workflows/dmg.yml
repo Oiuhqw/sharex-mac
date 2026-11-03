@@ -1,7 +1,9 @@
 # Builds the shipped DMG. No Developer ID / notarization is available (no paid Apple account), so the app is
 # ad-hoc signed with the Hardened Runtime. Gatekeeper still rejects it on first open: see README "Installing".
 name: DMG
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -37,6 +39,12 @@ jobs:
           SYMS=$(nm -a "$BIN" 2>/dev/null | grep -E 'E2E|e2eFixture|e2eDisplayFixture|e2eSurfaces' || true)
           if [ -n "$SYMS" ]; then echo "$SYMS" | head -20; echo "::error::E2E symbols found in the shipped binary"; exit 1; fi
           echo "nm: no E2E symbols ($(nm -a "$BIN" 2>/dev/null | wc -l | tr -d ' ') symbols checked)"
+      - name: Verify packaged icon
+        run: |
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$APP/Contents/Info.plist")" = AppIcon
+          test -s "$APP/Contents/Resources/AppIcon.icns"
+          iconutil -c iconset "$APP/Contents/Resources/AppIcon.icns" -o /tmp/ShareX.iconset
+          test -s /tmp/ShareX.iconset/icon_512x512@2x.png
       - name: Ad-hoc sign inside-out with Hardened Runtime (no --deep)
         run: |
           # Nested code first (frameworks, dylibs, helpers, XPC, bundles), deepest paths first, then the app.
@@ -63,6 +71,7 @@ jobs:
           mkdir dmgroot
           cp -R "$APP" dmgroot/
           ln -s /Applications dmgroot/Applications
+          cp INSTALL.txt dmgroot/
           hdiutil create -volname ShareX -srcfolder dmgroot -ov -format UDZO ShareX.dmg
           hdiutil verify ShareX.dmg
           shasum -a 256 ShareX.dmg | tee ShareX.dmg.sha256
@@ -72,6 +81,7 @@ jobs:
           path: |
             ShareX.dmg
             ShareX.dmg.sha256
+            INSTALL.txt
       - name: Quarantine-simulated install + launch (what a downloaded DMG gets)
         timeout-minutes: 4
         run: |
