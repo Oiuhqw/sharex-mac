@@ -78,7 +78,10 @@ enum E2EOrientation {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
             if let sw = content.windows.first(where: { $0.windowID == CGWindowID(w.windowNumber) }) {
-                let cfg = SCStreamConfiguration(); cfg.width = Int(size.width * sc); cfg.height = Int(size.height * sc); cfg.showsCursor = false
+                // Capture at the window's real backing scale (1x on the CI display); a larger buffer leaves the window
+                // unscaled in its top-left corner and the samples land on empty pixels.
+                let bs = w.backingScaleFactor
+                let cfg = SCStreamConfiguration(); cfg.width = Int(size.width * bs); cfg.height = Int(size.height * bs); cfg.showsCursor = false
                 cfg.colorSpaceName = CGColorSpace.sRGB
                 let shot = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: sw), configuration: cfg)
                 writePNG(shot, "onscreen-orientation.png")
@@ -90,7 +93,9 @@ enum E2EOrientation {
             let pw = Int(size.width * sc), ph = Int(size.height * sc)
             if let ctx = CGContext(data: nil, width: pw, height: ph, bitsPerComponent: 8, bytesPerRow: 0, space: Imaging.colorSpace,
                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
-                ctx.scaleBy(x: sc, y: sc)
+                // CGBitmapContext is y-up; a flipped view's layer tree renders y-down, so flip the probe context
+                // (without this the HUD text comes out mirrored, i.e. the inversion is the probe's, not the app's).
+                if v.isFlipped { ctx.translateBy(x: 0, y: CGFloat(ph)); ctx.scaleBy(x: sc, y: -sc) } else { ctx.scaleBy(x: sc, y: sc) }
                 layer.render(in: ctx)
                 if let li = ctx.makeImage() {
                     writePNG(li, "onscreen-orientation-layer.png")
