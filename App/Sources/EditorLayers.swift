@@ -32,32 +32,50 @@ final class FrameView: PassThroughView {
 }
 
 /// The frame plus annotations, drawn exactly as the exporter draws them (blend modes need the frame beneath),
-/// but only inside invalidated rects.
+/// but only inside invalidated rects. The surface is split into 256 pt tiles, each with its own small backing
+/// store: a partial update of one full-screen 30 MB Retina layer makes Core Animation copy the whole store when
+/// the window server still holds the last frame, which showed up as 16 ms spikes on every few drag events.
 @MainActor
 final class AnnotationsView: PassThroughView {
     private let renderer: Renderer
-    private var doc: EditorDocument?
-    private var hiddenID: Int?
+    fileprivate var doc: EditorDocument?
+    fileprivate var hiddenID: Int?
     private var previous: [Int: Annotation] = [:]
     private var previousOrder: [Int] = []
+    private var tiles: [AnnotationTile] = []
+    static let tile: CGFloat = 256
 
     init(frame: NSRect, renderer: Renderer) {
         self.renderer = renderer
         super.init(frame: frame)
-        layerContentsRedrawPolicy = .onSetNeedsDisplay
-        layer?.isOpaque = true
+        layerContentsRedrawPolicy = .never
+        var y: CGFloat = 0
+        while y < frame.height {
+            var x: CGFloat = 0
+            while x < frame.width {
+                let r = CGRect(x: x, y: y, width: min(Self.tile, frame.width - x), height: min(Self.tile, frame.height - y))
+                let t = AnnotationTile(frame: r, owner: self, renderer: renderer)
+                addSubview(t); tiles.append(t)
+                x += Self.tile
+            }
+            y += Self.tile
+        }
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("unused") }
+
+    private func invalidateAll() { tiles.forEach { $0.needsDisplay = true } }
+    private func invalidate(_ r: CGRect) {
+        for t in tiles where t.frame.intersects(r) { t.setNeedsDisplay(t.convert(r, from: self).intersection(t.bounds).integral) }
+    }
 
     /// Invalidates the union of what changed: old and new bounds of every added, removed or edited mark.
     func sync(_ doc: EditorDocument, hide: Int?) {
         let now = doc.annotations
-        defer {
-            self.doc = doc; hiddenID = hide
-            previous = Dictionary(uniqueKeysWithValues: now.map { ($0.id, $0) }); previousOrder = now.map(\.id)
-        }
-        guard self.doc != nil else { needsDisplay = true; return }
-        if hide != hiddenID { needsDisplay = true; return }
+        let first = self.doc == nil, hideChanged = hide != hiddenID
+        let old = previous, oldOrder = previousOrder
+        self.doc = doc; hiddenID = hide
+        previous = Dictionary(uniqueKeysWithValues: now.map { ($0.id, $0) }); previousOrder = now.map(\.id)
+        if first || hideChanged { return invalidateAll() }
         var dirty = CGRect.null
         var everything = false
         func mark(_ a: Annotation) {
@@ -67,13 +85,13 @@ final class AnnotationsView: PassThroughView {
             }
         }
         let ids = Set(now.map(\.id))
-        for a in now where previous[a.id] != a { mark(a); if let old = previous[a.id] { mark(old) } }
-        for (id, a) in previous where !ids.contains(id) { mark(a) }
+        for a in now where old[a.id] != a { mark(a); if let o = old[a.id] { mark(o) } }
+        for (id, a) in old where !ids.contains(id) { mark(a) }
         // A reorder (undo of a delete, z-order change) changes overlap even when no mark changed.
-        if !everything, previousOrder != now.map(\.id).filter({ previous[$0] != nil }) {
+        if !everything, oldOrder.filter({ ids.contains($0) }) != now.map(\.id).filter({ old[$0] != nil }) {
             for a in now { dirty = dirty.union(Self.reach(a)) }
         }
-        if everything { needsDisplay = true } else if !dirty.isNull { setNeedsDisplay(dirty.integral) }
+        if everything { invalidateAll() } else if !dirty.isNull { invalidate(dirty) }
     }
 
     /// Everything a mark can paint: stroke width, arrow head, round caps.
@@ -81,12 +99,28 @@ final class AnnotationsView: PassThroughView {
         let pad = CGFloat(a.style.width) * 4 + 12
         return a.bounds.standardized.insetBy(dx: -pad, dy: -pad)
     }
+}
+
+@MainActor
+final class AnnotationTile: PassThroughView {
+    private unowned let owner: AnnotationsView
+    private let renderer: Renderer
+    init(frame: NSRect, owner: AnnotationsView, renderer: Renderer) {
+        self.owner = owner; self.renderer = renderer
+        super.init(frame: frame)
+        autoresizingMask = []
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+        layer?.isOpaque = true
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError("unused") }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext, let doc else { return }
-        let area = dirtyRect
+        guard let ctx = NSGraphicsContext.current?.cgContext, let doc = owner.doc else { return }
+        // Draw in the parent's (frame point) coordinates.
+        ctx.translateBy(x: -frame.minX, y: -frame.minY)
+        let area = dirtyRect.offsetBy(dx: frame.minX, dy: frame.minY)
         renderer.drawFrame(ctx, in: area)
-        renderer.draw(doc, in: ctx, hide: hiddenID, clip: area)
+        renderer.draw(doc, in: ctx, hide: owner.hiddenID, clip: area)
     }
 }
 

@@ -1,6 +1,7 @@
 // Compiled only into CI test builds (SWIFT_ACTIVE_COMPILATION_CONDITIONS += SHAREX_E2E); never shipped.
 #if SHAREX_E2E
 import AppKit
+import ScreenCaptureKit
 import ShareXCore
 
 /// `--e2e <out> --perf`: timings only, written to perf.json. Retina 2x full display of a 16" M-series MacBook
@@ -78,27 +79,40 @@ enum E2EPerf {
             w.orderOut(nil); w.contentView = nil
         }
 
-        // Orientation check for the layer chrome: an editing crop in the top-left quarter must leave the top-left
-        // undimmed and the bottom-right dimmed in the rendered layer tree.
+        // Orientation check for the layer views, from real window pixels (ScreenCaptureKit): a uniform grey frame
+        // with an editing crop in the top-left quarter must be bright top-left and dimmed bottom-right.
         do {
-            let v = EditorView(frame: CGRect(origin: .zero, size: ptSize), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
-                               initialCrop: CGRect(x: 0, y: 0, width: ptSize.width / 2, height: ptSize.height / 2), styles: [:],
-                               showMagnifier: false, pickRects: [], finishOnPick: false)
-            let w = window(for: v); w.displayIfNeeded(); CATransaction.flush()
-            let W = 64, H = 64
-            if let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: W * 4, space: Imaging.colorSpace,
-                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let layer = v.layer {
-                ctx.scaleBy(x: CGFloat(W) / ptSize.width, y: CGFloat(H) / ptSize.height)
-                layer.render(in: ctx)
-                // Bitmap memory row 0 is the top of the image.
-                func lum(_ x: Int, _ y: Int) -> Int { let p = ctx.data!.assumingMemoryBound(to: UInt8.self) + (y * W + x) * 4; return Int(p[0]) + Int(p[1]) + Int(p[2]) }
-                let tl = lum(8, 8), br = lum(56, 56)
-                ctx.clear(CGRect(origin: .zero, size: ptSize))
-                ctx.draw(img, in: CGRect(origin: .zero, size: ptSize))   // reference, undimmed (y-up draw: top row at top)
-                out["layerOrientation"] = ["topLeftLum": tl, "bottomRightLum": br, "refTopLeft": lum(8, 8), "refBottomRight": lum(56, 56),
-                                           "geometryFlipped": layer.isGeometryFlipped] as [String: Any]
+            let gw = 400, gh = 300
+            if let g = Imaging.context(width: gw, height: gh, flipped: true) {
+                g.setFillColor(CGColor(gray: 0.8, alpha: 1)); g.fill(CGRect(x: 0, y: 0, width: gw, height: gh))
+                if let grey = g.makeImage() {
+                    let size = CGSize(width: 200, height: 150)
+                    let v = EditorView(frame: CGRect(origin: .zero, size: size), renderer: Renderer(frame: grey, scale: 2), mode: .rectangle,
+                                       initialCrop: CGRect(x: 0, y: 0, width: 100, height: 75), styles: [:],
+                                       showMagnifier: false, pickRects: [], finishOnPick: false)
+                    let w = OverlayWindow(contentRect: CGRect(x: 100, y: 100, width: 200, height: 150), styleMask: .borderless, backing: .buffered, defer: false)
+                    w.isReleasedWhenClosed = false; w.sharingType = .readOnly; w.contentView = v; w.orderFrontRegardless()
+                    w.displayIfNeeded(); CATransaction.flush()
+                    await E2E.wait(300)
+                    var res: [String: Any] = [:]
+                    do {
+                        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                        if let sw = content.windows.first(where: { $0.windowID == CGWindowID(w.windowNumber) }) {
+                            let cfg = SCStreamConfiguration(); cfg.width = 200; cfg.height = 150; cfg.showsCursor = false
+                            let shot = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: sw), configuration: cfg)
+                            if let c = CGContext(data: nil, width: 200, height: 150, bitsPerComponent: 8, bytesPerRow: 800, space: Imaging.colorSpace,
+                                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+                                c.draw(shot, in: CGRect(x: 0, y: 0, width: 200, height: 150))
+                                let p = c.data!.assumingMemoryBound(to: UInt8.self)
+                                func g(_ x: Int, _ y: Int) -> Int { Int(p[(y * 200 + x) * 4]) }   // row 0 = top
+                                res = ["topLeft": g(40, 30), "bottomRight": g(160, 120), "ok": g(40, 30) > g(160, 120) + 40]
+                            }
+                        } else { res = ["skipped": "window not in SCShareableContent"] }
+                    } catch { res = ["skipped": "\(error.localizedDescription)"] }
+                    out["layerOrientation"] = res
+                    w.orderOut(nil); w.contentView = nil
+                }
             }
-            w.orderOut(nil); w.contentView = nil
         }
 
         // 3. Annotation drags with 3 blur + 2 pixelate + shapes already committed.
