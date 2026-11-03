@@ -37,7 +37,7 @@ final class FrameView: PassThroughView {
 final class AnnotationsView: PassThroughView {
     private let renderer: Renderer
     private var doc: EditorDocument?
-    private var hidden: Int?
+    private var hiddenID: Int?
     private var previous: [Int: Annotation] = [:]
     private var previousOrder: [Int] = []
 
@@ -53,11 +53,11 @@ final class AnnotationsView: PassThroughView {
     func sync(_ doc: EditorDocument, hide: Int?) {
         let now = doc.annotations
         defer {
-            self.doc = doc; hidden = hide
+            self.doc = doc; hiddenID = hide
             previous = Dictionary(uniqueKeysWithValues: now.map { ($0.id, $0) }); previousOrder = now.map(\.id)
         }
         guard self.doc != nil else { needsDisplay = true; return }
-        if hide != hidden { needsDisplay = true; return }
+        if hide != hiddenID { needsDisplay = true; return }
         var dirty = CGRect.null
         var everything = false
         func mark(_ a: Annotation) {
@@ -86,7 +86,7 @@ final class AnnotationsView: PassThroughView {
         guard let ctx = NSGraphicsContext.current?.cgContext, let doc else { return }
         let area = dirtyRect
         renderer.drawFrame(ctx, in: area)
-        renderer.draw(doc, in: ctx, hide: hidden, clip: area)
+        renderer.draw(doc, in: ctx, hide: hiddenID, clip: area)
     }
 }
 
