@@ -41,6 +41,39 @@ enum E2ERedaction {
         return E2E.bitmap(image)
     }
 
+    /// Native 2x-to-1x snapshots must not depend on which texel nearest-neighbor sampling
+    /// chooses at a half-pixel boundary. Replicate each logical pixel without filtering. The
+    /// original high-frequency 2x fixture still exercises the software move/export path below.
+    private static func displayAlignedFixture(scale: CGFloat) -> CGImage? {
+        let factor = Int(scale)
+        guard factor > 0, CGFloat(factor) == scale,
+              let logical = E2E.checker(Int(size.width), Int(size.height)),
+              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        let base = E2E.bitmap(logical)
+        let width = base.w * factor, height = base.h * factor
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for y in 0..<height { for x in 0..<width {
+            let source = ((y / factor) * base.w + x / factor) * 4
+            let target = (y * width + x) * 4
+            for channel in 0..<4 { pixels[target + channel] = base.px[source + channel] }
+        } }
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                                  bytesPerRow: width * 4, space: colorSpace,
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
+        // Verify the actual CGImage bytes, not only the buffer used to construct it. Every
+        // possible nearest-neighbor phase must produce the exact same nonuniform logical image.
+        let actual = E2E.bitmap(image)
+        guard actual.w == width, actual.h == height else { return nil }
+        for y in 0..<height { for x in 0..<width {
+            let source = ((y / factor) * base.w + x / factor) * 4
+            let target = (y * width + x) * 4
+            guard actual.px[target..<(target + 4)] == base.px[source..<(source + 4)] else { return nil }
+        } }
+        return image
+    }
+
     private static func windowSnapshot(_ window: NSWindow, name: String) async -> E2E.Bitmap? {
         window.displayIfNeeded(); CATransaction.flush()
         await E2E.wait(40)
@@ -199,7 +232,15 @@ enum E2ERedaction {
                 }
             }
             overlappingEffects(image: image, scale: scale)
-            await movingFailedEffect(image: image, scale: scale)
+            await movingFailedEffect(image: image, scale: scale, nativeRequiresMatchingScale: scale > 1)
+            if scale > 1 {
+                let aligned = displayAlignedFixture(scale: scale)
+                E2E.record("redaction-native-fixture-display-aligned-\(Int(scale))x", aligned != nil,
+                           ["sourceScale": scale, "logicalPixelsReplicated": true])
+                if let aligned {
+                    await movingFailedEffect(image: aligned, scale: scale, suffix: "-display-aligned")
+                }
+            }
             await partialRedrawRecovery(image: image, scale: scale)
         }
     }
@@ -268,9 +309,10 @@ enum E2ERedaction {
         }
     }
 
-    private static func movingFailedEffect(image: CGImage, scale: CGFloat) async {
+    private static func movingFailedEffect(image: CGImage, scale: CGFloat, nativeRequiresMatchingScale: Bool = false,
+                                           suffix: String = "") async {
         for kind in [ShapeKind.blur, .pixelate] {
-            let name = "\(kind.rawValue)-\(Int(scale))x"
+            let name = "\(kind.rawValue)-\(Int(scale))x\(suffix)"
             var doc = EditorDocument()
             let id = doc.addShape(kind, at: CGPoint(x: 20, y: 20))
             doc.extendShape(id, to: CGPoint(x: 100, y: 90))
@@ -287,7 +329,13 @@ enum E2ERedaction {
             window.isReleasedWhenClosed = false; window.sharingType = .readOnly; window.hasShadow = false
             window.contentView = root; window.orderFrontRegardless()
             let baseline = snapshot(root, scale: scale, name: "redaction-move-\(name)-baseline.png")
-            let nativeBaseline = await windowSnapshot(window, name: "redaction-move-\(name)-native-baseline.png")
+            // Keep the original high-frequency native check on real Retina displays. Only
+            // mismatched display scales need the separate sampling-invariant fixture.
+            let captureNative = !nativeRequiresMatchingScale || abs(scale - window.backingScaleFactor) < 0.001
+            var nativeBaseline: E2E.Bitmap?
+            if captureNative {
+                nativeBaseline = await windowSnapshot(window, name: "redaction-move-\(name)-native-baseline.png")
+            }
             committed.sync(doc, hide: nil)
             live.show(nil, renderer: renderer)
             _ = snapshot(root, scale: scale, name: "redaction-move-\(name)-committed.png")
@@ -306,26 +354,29 @@ enum E2ERedaction {
             let moveOK = baseline.flatMap { base in moved.map { matchesMask($0, baseline: base, area: area) } } ?? false
             await E2E.wait(20)
             let movedSettled = snapshot(root, scale: scale, name: "redaction-move-\(name)-moved-settled.png")
-            E2E.record("redaction-failed-move-clears-old-\(name)", moveOK && area != nil,
+            let settledMoveOK = baseline.flatMap { base in movedSettled.map { matchesMask($0, baseline: base, area: area) } } ?? false
+            E2E.record("redaction-failed-move-clears-old-\(name)", moveOK && settledMoveOK && area != nil,
                        ["immediate": differences(moved, expected: baseline, mask: area),
                         "settled": differences(movedSettled, expected: baseline, mask: area),
                         "failureRects": renderer.redactionFailureRects.map { [$0.minX, $0.minY, $0.width, $0.height] }])
 
-            let nativeMoved = await windowSnapshot(window, name: "redaction-move-\(name)-native-moved.png")
             let nativeScale = window.backingScaleFactor
             let nativeArea = doc.selected.flatMap {
                 Geometry.pixelRect($0.rect, scale: nativeScale).clamped(width: Int(size.width * nativeScale), height: Int(size.height * nativeScale))
             }
-            let composedMoved = snapshot(root, scale: nativeScale, name: "redaction-move-\(name)-composed-native-scale.png")
-            let nativeMoveOK: Bool
-            if let nativeMoved, let nativeBaseline, let nativeArea {
-                nativeMoveOK = matchesMask(nativeMoved, baseline: nativeBaseline, area: nativeArea)
-            } else { nativeMoveOK = false }
-            E2E.record("redaction-native-move-mask-\(name)", nativeMoveOK,
-                       ["actualBackingScale": nativeScale, "nativeVsComposed": differences(nativeMoved, expected: composedMoved),
-                        "nativeMask": differences(nativeMoved, expected: nativeBaseline, mask: nativeArea)])
-            recordNativeComparison("move-\(name)", native: nativeMoved, composed: composedMoved,
-                                   sourceScale: scale, backingScale: nativeScale)
+            if captureNative {
+                let nativeMoved = await windowSnapshot(window, name: "redaction-move-\(name)-native-moved.png")
+                let composedMoved = snapshot(root, scale: nativeScale, name: "redaction-move-\(name)-composed-native-scale.png")
+                let nativeMoveOK: Bool
+                if let nativeMoved, let nativeBaseline, let nativeArea {
+                    nativeMoveOK = matchesMask(nativeMoved, baseline: nativeBaseline, area: nativeArea)
+                } else { nativeMoveOK = false }
+                E2E.record("redaction-native-move-mask-\(name)", nativeMoveOK,
+                           ["actualBackingScale": nativeScale, "nativeVsComposed": differences(nativeMoved, expected: composedMoved),
+                            "nativeMask": differences(nativeMoved, expected: nativeBaseline, mask: nativeArea)])
+                recordNativeComparison("move-\(name)", native: nativeMoved, composed: composedMoved,
+                                       sourceScale: scale, backingScale: nativeScale)
+            }
 
             renderer.e2eRejectEffectImage = false
             live.show(doc.selected, renderer: renderer)
@@ -335,33 +386,36 @@ enum E2ERedaction {
             await E2E.wait(20)
             let recoveredSettled = snapshot(root, scale: scale, name: "redaction-move-\(name)-recovered-settled.png")
             let recoveryOK: Bool
-            if let recovered, let flat, let baseline, let area {
+            if let recovered, let recoveredSettled, let flat, let baseline, let area {
+                let exported = E2E.bitmap(flat)
                 recoveryOK = renderer.redactionFailureRects.isEmpty
                     && effectRestored(recovered, baseline: baseline, area: area)
-                    && recovered.px == E2E.bitmap(flat).px
+                    && recovered.px == exported.px && recoveredSettled.px == exported.px
             } else { recoveryOK = false }
             E2E.record("redaction-failed-move-recovery-\(name)", recoveryOK,
                        ["immediateVsExport": differences(recovered, expected: flat.map(E2E.bitmap)),
                         "settledVsExport": differences(recoveredSettled, expected: flat.map(E2E.bitmap)),
                         "failureRects": renderer.redactionFailureRects.map { [$0.minX, $0.minY, $0.width, $0.height] }])
-            let nativeRecovered = await windowSnapshot(window, name: "redaction-move-\(name)-native-recovered.png")
-            let composedRecovered = snapshot(root, scale: nativeScale, name: "redaction-move-\(name)-recovered-composed-native-scale.png")
-            var nativeReference: E2E.Bitmap?
-            if let mark = doc.selected {
-                nativeReference = await freshNativePreview(image: image, mark: mark, scale: scale,
-                                                          name: "redaction-move-\(name)-native-fresh-reference.png")
+            if captureNative {
+                let nativeRecovered = await windowSnapshot(window, name: "redaction-move-\(name)-native-recovered.png")
+                let composedRecovered = snapshot(root, scale: nativeScale, name: "redaction-move-\(name)-recovered-composed-native-scale.png")
+                var nativeReference: E2E.Bitmap?
+                if let mark = doc.selected {
+                    nativeReference = await freshNativePreview(image: image, mark: mark, scale: scale,
+                                                              name: "redaction-move-\(name)-native-fresh-reference.png")
+                }
+                let nativeRecoveryOK: Bool
+                if let nativeRecovered, let nativeBaseline, let nativeArea, let nativeReference {
+                    nativeRecoveryOK = renderer.redactionFailureRects.isEmpty
+                        && effectRestored(nativeRecovered, baseline: nativeBaseline, area: nativeArea)
+                        && nativeRecovered.px == nativeReference.px
+                } else { nativeRecoveryOK = false }
+                E2E.record("redaction-native-recovery-content-\(name)", nativeRecoveryOK,
+                           ["actualBackingScale": nativeScale, "nativeVsComposed": differences(nativeRecovered, expected: composedRecovered),
+                            "nativeVsFreshReference": differences(nativeRecovered, expected: nativeReference)])
+                recordNativeComparison("recovery-\(name)", native: nativeRecovered, composed: composedRecovered,
+                                       sourceScale: scale, backingScale: nativeScale)
             }
-            let nativeRecoveryOK: Bool
-            if let nativeRecovered, let nativeBaseline, let nativeArea, let nativeReference {
-                nativeRecoveryOK = renderer.redactionFailureRects.isEmpty
-                    && effectRestored(nativeRecovered, baseline: nativeBaseline, area: nativeArea)
-                    && nativeRecovered.px == nativeReference.px
-            } else { nativeRecoveryOK = false }
-            E2E.record("redaction-native-recovery-content-\(name)", nativeRecoveryOK,
-                       ["actualBackingScale": nativeScale, "nativeVsComposed": differences(nativeRecovered, expected: composedRecovered),
-                        "nativeVsFreshReference": differences(nativeRecovered, expected: nativeReference)])
-            recordNativeComparison("recovery-\(name)", native: nativeRecovered, composed: composedRecovered,
-                                   sourceScale: scale, backingScale: nativeScale)
             window.orderOut(nil); window.contentView = nil
         }
     }
