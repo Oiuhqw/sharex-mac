@@ -1,7 +1,7 @@
 // Compiled only into CI test builds (SWIFT_ACTIVE_COMPILATION_CONDITIONS += SHAREX_E2E); never shipped.
 #if SHAREX_E2E
 import AppKit
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 import ShareXCore
 
 /// `--e2e <out> --perf`: timings only, written to perf.json. Retina 2x full display of a 16" M-series MacBook
