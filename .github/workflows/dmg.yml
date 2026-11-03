@@ -1,0 +1,49 @@
+name: DMG
+on: workflow_dispatch
+jobs:
+  dmg:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select newest Xcode 16
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+          xcodebuild -version
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - name: Build universal Release (unsigned, signed ad-hoc below)
+        run: |
+          set -o pipefail
+          xcodebuild build -project ShareXMac.xcodeproj -scheme ShareX -configuration Release \
+            -destination 'generic/platform=macOS' -derivedDataPath build \
+            ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" ENABLE_HARDENED_RUNTIME=NO | tail -40
+          APP=build/Build/Products/Release/ShareX.app
+          test -d "$APP"
+          echo "APP=$APP" >> $GITHUB_ENV
+      - name: Ad-hoc sign and verify
+        run: |
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -dv "$APP" 2>&1
+          lipo -info "$APP/Contents/MacOS/ShareX"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' -c 'Print :LSMinimumSystemVersion' -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist"
+      - name: Launch smoke test
+        run: |
+          "$APP/Contents/MacOS/ShareX" & PID=$!
+          sleep 8
+          kill -0 $PID && echo "still running after 8s"
+          kill $PID || true
+      - name: Make DMG
+        run: |
+          mkdir dmgroot
+          cp -R "$APP" dmgroot/
+          ln -s /Applications dmgroot/Applications
+          hdiutil create -volname ShareX -srcfolder dmgroot -ov -format UDZO ShareX.dmg
+          hdiutil verify ShareX.dmg
+          ls -l ShareX.dmg; shasum -a 256 ShareX.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShareX-dmg
+          path: ShareX.dmg
