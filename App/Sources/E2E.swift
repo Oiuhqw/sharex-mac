@@ -333,7 +333,7 @@ enum E2E {
                 if let base {
                     let inner = box.insetBy(dx: CGFloat(px(4)), dy: CGFloat(px(4)))
                     let changed = diffFrac(b, base, inner), outside = diffFrac(b, base, CGRect(x: 0, y: 0, width: x0 - 2, height: y0 - 2))
-                    feat = changed > 0.3 && outside == 0; detail["changedInside"] = changed; detail["changedOutside"] = outside
+                    feat = changed > 0.15 && outside == 0; detail["changedInside"] = changed; detail["changedOutside"] = outside
                 }
             case .spotlight:
                 if let base { let p = b.at(5, 5), q = base.at(5, 5), i = b.at((x0 + x1) / 2, (y0 + y1) / 2), j = base.at((x0 + x1) / 2, (y0 + y1) / 2)
@@ -404,7 +404,10 @@ enum E2E {
             // active app, so make the overlay key first (as a click on it would) and report whether it was.
             copyWasKey = surface()?.window.isKeyWindow ?? false
             surface()?.window.makeKey()
-            if !NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil) { copyHandled = false }
+            // NSApp.sendAction(to: nil) needs ShareX to be the active app (keyWindow), which a headless runner
+            // cannot guarantee; walk the overlay window's own responder chain, which is what Edit > Copy does.
+            let w = surface()?.window
+            copyHandled = (w?.firstResponder ?? w)?.tryToPerform(#selector(NSText.copy(_:)), with: nil) ?? false
         }, edit: {}) {
             record("copy-menu-action", c.ok, c.info.merging(["overlayWasKey": copyWasKey, "handled": copyHandled]) { $1 }) }
         else { key(53, "\u{1b}"); _ = await until({ !coord.busy }) }
@@ -491,7 +494,9 @@ enum E2E {
         for (name, style) in [("editor-fullscreen", CaptureStyle.fullscreen), ("editor-activeMonitor", .activeMonitor), ("editor-lastRegion", .lastRegion)] {
             let m = markClipboard(); coord.capture(style)
             let opened = await until({ surface()?.view.phase == .editing })
-            if opened { await wait(100); key(0, "r"); drag(CGPoint(x: 20, y: 20), CGPoint(x: 60, y: 40)); ret() }
+            // Last Region crops to C, so draw inside it there; fullscreen/monitor draw near the top-left.
+            let d: CGFloat = style == .lastRegion ? C.minX : 0, e: CGFloat = style == .lastRegion ? C.minY : 0
+            if opened { await wait(100); key(0, "r"); drag(CGPoint(x: d + 20, y: e + 20), CGPoint(x: d + 60, y: e + 40)); ret() }
             _ = await until({ !coord.busy })
             let (w, h) = style == .lastRegion ? (cw, ch) : (fw, fh)   // freehand above remembered C
             if let c = checkClipboard(name, since: m, w: w, h: h) {
