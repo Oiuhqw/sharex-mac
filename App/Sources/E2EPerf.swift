@@ -74,6 +74,7 @@ enum E2EPerf {
     static func run() async {
         guard let img = E2E.checker(pxW, pxH) else { return }
         out["display"] = ["px": [pxW, pxH], "scale": sc, "runnerScale": NSScreen.screens.first?.backingScaleFactor ?? 0]
+        E2ERenderer.benchmark(image: img, scale: sc)
 
         // 1. Editor construction + first frame at 2x (part of hotkey -> overlay visible).
         var builds: [Double] = []
@@ -127,6 +128,7 @@ enum E2EPerf {
             shape(.rectangle, CGPoint(x: 1100, y: 600), CGPoint(x: 1500, y: 900))
             shape(.arrow, CGPoint(x: 1200, y: 950), CGPoint(x: 1600, y: 650))
             shape(.pen, CGPoint(x: 150, y: 950), CGPoint(x: 900, y: 1000))
+            let movingBlurID = v.doc.annotations.first(where: { $0.kind == .blur })?.id
 
             let vs = Vsync(w)
             var ups: [Double] = []
@@ -143,10 +145,21 @@ enum E2EPerf {
             await timedShape(.blur, "annotNewBlurDrag2x_ms", CGPoint(x: 700, y: 550), CGPoint(x: 1300, y: 1000))
             // Move an existing blur (live effect recomputed as it moves).
             v.setTool(.select)
-            _ = frame(.leftMouseDown, CGPoint(x: 300, y: 350), v, w)
-            for p in path(120, from: CGPoint(x: 300, y: 350), to: CGPoint(x: 900, y: 700)) { await timed(.leftMouseDragged, p, v, w, vs) }
+            // The newer highlighter covers x >= 200 here. Start in the uncovered first blur, not the highlighter.
+            let blurStart = CGPoint(x: 150, y: 350), blurEnd = CGPoint(x: 850, y: 700)
+            _ = frame(.leftMouseDown, blurStart, v, w)
+            let selectedBlur = v.doc.selected?.kind == .blur && v.doc.selectedID == movingBlurID
+            E2E.record("perf-move-target-is-blur", selectedBlur,
+                       ["expectedID": movingBlurID ?? -1, "selectedID": v.doc.selectedID ?? -1,
+                        "selectedKind": v.doc.selected?.kind.rawValue ?? "none"])
+            guard selectedBlur else {
+                _ = frame(.leftMouseUp, blurStart, v, w)
+                w.orderOut(nil); w.contentView = nil
+                return
+            }
+            for p in path(120, from: blurStart, to: blurEnd) { await timed(.leftMouseDragged, p, v, w, vs) }
             takeSamples("annotMoveBlur2x_ms")
-            ups.append(frame(.leftMouseUp, CGPoint(x: 900, y: 700), v, w))
+            ups.append(frame(.leftMouseUp, blurEnd, v, w))
             out["annotCommitOnMouseUp2x_wall_ms"] = stats(ups)
 
             // 4. Commit -> clipboard ready (flatten + decorate + PNG/TIFF on the pasteboard), full 2x display crop.
@@ -230,3 +243,4 @@ enum E2EPerf {
     }
 }
 #endif
+

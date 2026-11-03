@@ -317,6 +317,8 @@ enum E2E {
         if args.contains("--perf") { await E2EPerf.run(); return }
         await probeNativeWindow()
         await E2EExport.run()
+        E2ERenderer.run()
+        await E2ERedaction.run()
         E2EStylePersistence.run()
         await menuAndSettings()
 

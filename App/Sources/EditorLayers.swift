@@ -50,6 +50,11 @@ final class AnnotationsView: PassThroughView {
         super.init(frame: frame)
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         layer?.isOpaque = false
+        renderer.redactionFailuresNeedDisplay = { [weak self] rect in
+            self?.setNeedsDisplay(rect.integral)
+            // A transition can occur inside draw; request the full repaint again after that pass finishes.
+            DispatchQueue.main.async { [weak self] in self?.setNeedsDisplay(rect.integral) }
+        }
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("unused") }
 
@@ -102,6 +107,9 @@ final class AnnotationsView: PassThroughView {
 @MainActor
 final class LiveMarkView: PassThroughView {
     private let stroke = CAShapeLayer(), head = CAShapeLayer(), highlight = CAShapeLayer(), patch = CALayer()
+    private let failedMasks = CAShapeLayer()
+    private weak var observedRenderer: Renderer?
+    private var shownFailureRects: [CGRect] = []
     static func supports(_ k: ShapeKind) -> Bool {
         switch k {
         case .rectangle, .ellipse, .line, .arrow, .pen, .highlighter, .blur, .pixelate: true
@@ -122,11 +130,21 @@ final class LiveMarkView: PassThroughView {
             l.isHidden = true
             layer!.addSublayer(l)
         }
+        failedMasks.fillColor = CGColor(gray: 0, alpha: 1)
+        failedMasks.actions = ["path": NSNull(), "hidden": NSNull()]
+        failedMasks.isHidden = true
+        layer!.addSublayer(failedMasks)
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("unused") }
 
     func show(_ a: Annotation?, renderer: Renderer) {
         CATransaction.begin(); CATransaction.setDisableActions(true); defer { CATransaction.commit() }
+        if observedRenderer !== renderer {
+            observedRenderer?.redactionFailuresChanged = nil
+            observedRenderer = renderer
+            renderer.redactionFailuresChanged = { [weak self] in self?.showFailedMasks($0) }
+        }
+        showFailedMasks(renderer.redactionFailureRects)
         for l in [stroke, head, highlight, patch] as [CALayer] { l.isHidden = true }
         guard let a else { return }
         let s = a.style, color = Imaging.cgColor(s.color, opacity: s.opacity)
@@ -152,14 +170,30 @@ final class LiveMarkView: PassThroughView {
             highlight.path = CGPath(rect: a.rect, transform: nil); highlight.fillColor = color; highlight.isHidden = false
             return
         case .blur, .pixelate:
-            guard let pt = renderer.livePatch(a) else { return }
-            patch.contents = pt.image; patch.frame = pt.rect
+            if let pt = renderer.livePatch(a) {
+                patch.contents = pt.image; patch.frame = pt.rect
+                patch.backgroundColor = nil
+            } else if let rect = renderer.redactionBounds(a) {
+                // Match the export fallback without allocating another image after a render failure.
+                patch.contents = nil; patch.frame = rect
+                patch.backgroundColor = CGColor(gray: 0, alpha: 1)
+            } else { return }
             patch.magnificationFilter = renderer.smoothFrame ? .linear : .nearest
             patch.isHidden = false
             return
         default: return
         }
         stroke.path = p; stroke.isHidden = false
+    }
+
+    private func showFailedMasks(_ rects: [CGRect]) {
+        guard rects != shownFailureRects else { return }
+        shownFailureRects = rects
+        CATransaction.begin(); CATransaction.setDisableActions(true); defer { CATransaction.commit() }
+        let path = CGMutablePath()
+        for rect in rects { path.addRect(rect) }
+        failedMasks.path = path
+        failedMasks.isHidden = rects.isEmpty
     }
 }
 
@@ -304,3 +338,4 @@ final class ChromeView: PassThroughView {
         return p
     }
 }
+

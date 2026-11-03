@@ -17,6 +17,15 @@ final class Renderer {
     var smoothFrame = false
     /// The effect mark currently being dragged; its patches are not cached.
     var liveEffectID: Int?
+    private var failedRedactions: [Int: CGRect] = [:]
+    var redactionFailureRects: [CGRect] { Array(failedRedactions.values) }
+    var redactionFailuresChanged: (([CGRect]) -> Void)?
+    var redactionFailuresNeedDisplay: ((CGRect) -> Void)?
+    #if SHAREX_E2E
+    /// Simulates failure to materialize an uncached CoreImage effect.
+    var e2eRejectEffectImage = false
+    var e2eRejectedEffectIDs: Set<Int> = []
+    #endif
 
     init(frame: CGImage, scale: CGFloat) { (self.frame, self.scale) = (frame, scale) }
 
@@ -43,11 +52,31 @@ final class Renderer {
     func draw(_ doc: EditorDocument, in ctx: CGContext, hide hiddenID: Int? = nil, skip: Int? = nil, clip: CGRect? = nil) {
         let live = Set(doc.annotations.map(\.id))
         effectCache = effectCache.filter { live.contains($0.key) }
+        pruneRedactionFailures(doc)
+        var step = 0
+        for a in doc.annotations {
+            // Hidden and clipped marks still participate in the document's step numbering.
+            if a.kind == .step { step += 1 }
+            guard a.id != hiddenID && a.id != skip else { continue }
+            if let clip, a.kind != .spotlight, a.kind != .text, a.kind != .step, !AnnotationsView.reach(a).intersects(clip) { continue }
+            draw(a, number: step, ctx: ctx)
+        }
+        coverRedactionFailures(in: ctx, hide: hiddenID, skip: skip)
+    }
+
+    #if SHAREX_E2E
+    /// The pre-optimization loop for pixel-equivalence tests and paired Release measurements.
+    func e2eDrawLegacy(_ doc: EditorDocument, in ctx: CGContext, hide hiddenID: Int? = nil, skip: Int? = nil, clip: CGRect? = nil) {
+        let live = Set(doc.annotations.map(\.id))
+        effectCache = effectCache.filter { live.contains($0.key) }
+        pruneRedactionFailures(doc)
         for a in doc.annotations where a.id != hiddenID && a.id != skip {
             if let clip, a.kind != .spotlight, a.kind != .text, a.kind != .step, !AnnotationsView.reach(a).intersects(clip) { continue }
             draw(a, number: doc.stepNumber(of: a), ctx: ctx)
         }
+        coverRedactionFailures(in: ctx, hide: hiddenID, skip: skip)
     }
+    #endif
 
     func draw(_ a: Annotation, number: Int, ctx: CGContext) {
         let s = a.style
@@ -77,7 +106,12 @@ final class Renderer {
             for p in a.points.dropFirst() { ctx.addLine(to: p) }
             ctx.strokePath()
         case .blur, .pixelate:
-            if let patch = effectPatch(a) { ctx.interpolationQuality = smoothFrame ? .medium : .none; Imaging.drawUpright(patch.image, in: patch.rect, ctx: ctx) }
+            if let patch = effectPatch(a) {
+                ctx.interpolationQuality = smoothFrame ? .medium : .none
+                Imaging.drawUpright(patch.image, in: patch.rect, ctx: ctx)
+            } else if let rect = redactionBounds(a) {
+                coverRedaction(rect, in: ctx)
+            }
         case .spotlight:
             ctx.beginPath()
             ctx.addRect(CGRect(origin: .zero, size: pointSize))
@@ -118,14 +152,54 @@ final class Renderer {
         NSGraphicsContext.restoreGraphicsState()
     }
 
+    /// Pixel-snapped coverage shared by successful effects and their opaque failure fallback.
+    func redactionBounds(_ a: Annotation) -> CGRect? {
+        Geometry.pixelRect(a.rect, scale: scale).clamped(width: frame.width, height: frame.height)?.points(scale: scale)
+    }
+
+    private func setRedactionFailure(_ id: Int, rect: CGRect?) {
+        let old = failedRedactions[id]
+        guard old != rect else { return }
+        failedRedactions[id] = rect
+        redactionFailuresChanged?(redactionFailureRects)
+        let dirty = (old ?? .null).union(rect ?? .null)
+        if !dirty.isNull { redactionFailuresNeedDisplay?(dirty) }
+    }
+
+    private func pruneRedactionFailures(_ doc: EditorDocument) {
+        guard !failedRedactions.isEmpty else { return }
+        let live = Set(doc.annotations.filter { $0.kind == .blur || $0.kind == .pixelate }.map(\.id))
+        let count = failedRedactions.count
+        let removed = failedRedactions.filter { !live.contains($0.key) }.map(\.value)
+        failedRedactions = failedRedactions.filter { live.contains($0.key) }
+        if failedRedactions.count != count {
+            redactionFailuresChanged?(redactionFailureRects)
+            for rect in removed { redactionFailuresNeedDisplay?(rect) }
+        }
+    }
+
+    private func coverRedaction(_ rect: CGRect, in ctx: CGContext) {
+        ctx.saveGState(); defer { ctx.restoreGState() }
+        ctx.setBlendMode(.copy); ctx.setAlpha(1); ctx.setShouldAntialias(false)
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1)); ctx.fill(rect)
+    }
+
+    private func coverRedactionFailures(in ctx: CGContext, hide: Int?, skip: Int?) {
+        // Later effects sample the original frame, so failed privacy masks must be the final layer.
+        // A skipped live mark belongs only to the live layer, or its old location would stick in this bitmap.
+        for (id, rect) in failedRedactions where id != hide && id != skip { coverRedaction(rect, in: ctx) }
+    }
+
     /// The blurred/pixelated pixels for an effect, computed from the frozen frame (not from other marks)
     /// at full frame resolution. The patch replaces what is beneath it, so the redaction is real.
     /// CoreImage does the work on the GPU; one cached patch per committed mark.
     private func effectPatch(_ a: Annotation) -> (image: CGImage, rect: CGRect)? {
-        guard let px = Geometry.pixelRect(a.rect, scale: scale).clamped(width: frame.width, height: frame.height) else { return nil }
+        guard let px = Geometry.pixelRect(a.rect, scale: scale).clamped(width: frame.width, height: frame.height) else {
+            setRedactionFailure(a.id, rect: nil); return nil
+        }
         let rect = px.points(scale: scale)
         let key = EffectKey(kind: a.kind, rect: px, strength: a.style.strength)
-        if let hit = effectCache[a.id], hit.key == key { return (hit.image, rect) }
+        if let hit = effectCache[a.id], hit.key == key { setRedactionFailure(a.id, rect: nil); return (hit.image, rect) }
         // CoreImage is y-up.
         let ciRect = px.flippedY(height: frame.height).cgRect
         // Clamp to the region's own edges so nothing outside it bleeds in and the edge is not faded.
@@ -136,8 +210,14 @@ final class Renderer {
             ? src.applyingGaussianBlur(sigma: EffectMath.blurSigma(strength: a.style.strength, scale: scale))
             : src.applyingFilter("CIPixellate", parameters: [kCIInputScaleKey: EffectMath.pixelateBlock(strength: a.style.strength, scale: scale),
                                                              kCIInputCenterKey: CIVector(x: anchor.x, y: anchor.y)])
+        #if SHAREX_E2E
+        if e2eRejectEffectImage || e2eRejectedEffectIDs.contains(a.id) { setRedactionFailure(a.id, rect: rect); return nil }
+        #endif
         guard let cg = ciContext.createCGImage(out.cropped(to: ciRect), from: ciRect, format: .RGBA8,
-                                               colorSpace: frame.colorSpace ?? Imaging.colorSpace) else { return nil }
+                                               colorSpace: frame.colorSpace ?? Imaging.colorSpace) else {
+            setRedactionFailure(a.id, rect: rect); return nil
+        }
+        setRedactionFailure(a.id, rect: nil)
         // While a mark is drawn, moved or resized every drag event has a new rect; don't cache those.
         if a.id != liveEffectID { effectCache[a.id] = (key, cg) }
         return (cg, rect)
@@ -147,9 +227,11 @@ final class Renderer {
     /// (pointer jitter under a pixel, a pure resize back to a seen size), never stored in effectCache.
     private var liveCache: (key: EffectKey, image: CGImage)?
     func livePatch(_ a: Annotation) -> (image: CGImage, rect: CGRect)? {
-        guard let px = Geometry.pixelRect(a.rect, scale: scale).clamped(width: frame.width, height: frame.height) else { return nil }
+        guard let px = Geometry.pixelRect(a.rect, scale: scale).clamped(width: frame.width, height: frame.height) else {
+            setRedactionFailure(a.id, rect: nil); return nil
+        }
         let key = EffectKey(kind: a.kind, rect: px, strength: a.style.strength)
-        if let c = liveCache, c.key == key { return (c.image, px.points(scale: scale)) }
+        if let c = liveCache, c.key == key { setRedactionFailure(a.id, rect: nil); return (c.image, px.points(scale: scale)) }
         guard let p = effectPatch(a) else { return nil }
         liveCache = (key, p.image)
         return p
@@ -167,3 +249,4 @@ final class Renderer {
     private var ciContext: CIContext { Self.sharedCI }
     private lazy var ciFrame = CIImage(cgImage: frame)
 }
+
