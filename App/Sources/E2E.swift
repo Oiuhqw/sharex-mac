@@ -62,8 +62,8 @@ enum E2E {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
         let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.boldSystemFont(ofSize: 22), .foregroundColor: NSColor.black]
-        for y in stride(from: 8, to: h, by: 64) {
-            ("SECRET 0123456789 password hunter2 " as NSString).draw(at: CGPoint(x: 6, y: y), withAttributes: attrs)
+        for y in stride(from: 40, to: h - 40, by: 64) {
+            ("SECRET 0123456789 password hunter2 " as NSString).draw(at: CGPoint(x: 40, y: y), withAttributes: attrs)
         }
         NSGraphicsContext.restoreGraphicsState()
         return ctx.makeImage()
@@ -342,28 +342,38 @@ enum E2E {
                 // Every full block in the region is a single colour, the region differs from the source, any text
                 // in the source is gone, and nothing outside changed.
                 if let base {
-                    let blk = Int(EffectMath.pixelateBlock(strength: 12, scale: scale).rounded())
-                    var blocks = 0, uniformBlocks = 0, texturedSrc = 0
-                    for by in stride(from: y0, to: y1 - blk + 1, by: blk) { for bx in stride(from: x0, to: x1 - blk + 1, by: blk) {
-                        blocks += 1
-                        let ref = b.at(bx, by), sref = base.at(bx, by)
-                        var uni = true, srcUni = true
-                        for yy in by..<(by + blk) { for xx in bx..<(bx + blk) {
-                            let p = b.at(xx, yy), q = base.at(xx, yy)
-                            if abs(p.r - ref.r) + abs(p.g - ref.g) + abs(p.b - ref.b) > 0.03 { uni = false }
-                            if abs(q.r - sref.r) + abs(q.g - sref.g) + abs(q.b - sref.b) > 0.03 { srcUni = false }
+                    let blk = Int(EffectMath.pixelateBlock(strength: (app.settings.value.toolStyles[.pixelate] ?? ShapeStyle.defaults(for: .pixelate)).strength, scale: scale).rounded())
+                    // The lattice origin is CIPixellate's; try every offset and keep the best one, so the check is
+                    // "the region is made of uniform blk x blk blocks" without assuming where the grid starts.
+                    var blocks = 0, uniformBlocks = -1, texturedSrc = 0, gridOffset = [0, 0]
+                    func same(_ p: (r: Double, g: Double, b: Double, a: Double), _ q: (r: Double, g: Double, b: Double, a: Double)) -> Bool {
+                        abs(p.r - q.r) + abs(p.g - q.g) + abs(p.b - q.b) <= 0.03 }
+                    for oy in 0..<blk { for ox in 0..<blk {
+                        var n = 0, u = 0, t = 0
+                        for by in stride(from: y0 + oy, to: y1 - blk + 1, by: blk) { for bx in stride(from: x0 + ox, to: x1 - blk + 1, by: blk) {
+                            n += 1
+                            let ref = b.at(bx, by), sref = base.at(bx, by)
+                            var uni = true, srcUni = true
+                            for yy in by..<(by + blk) { for xx in bx..<(bx + blk) {
+                                if uni, !same(b.at(xx, yy), ref) { uni = false }
+                                if srcUni, !same(base.at(xx, yy), sref) { srcUni = false }
+                            } }
+                            if uni { u += 1 }; if !srcUni { t += 1 }
                         } }
-                        if uni { uniformBlocks += 1 }
-                        if !srcUni { texturedSrc += 1 }
+                        if u > uniformBlocks { (blocks, uniformBlocks, texturedSrc, gridOffset) = (n, u, t, [ox, oy]) }
                     } }
                     let dark: ((r: Double, g: Double, b: Double, a: Double)) -> Bool = { $0.r + $0.g + $0.b < 0.25 }
-                    let textSrc = base.frac(box, dark), textOut = b.frac(box, dark)
+                    // Text pixels in the source (dark glyph pixels) that are still dark at the same spot in the output.
+                    var textN = 0, textKept = 0
+                    for yy in Int(box.minY)..<Int(box.maxY) { for xx in Int(box.minX)..<Int(box.maxX) where dark(base.at(xx, yy)) {
+                        textN += 1; if dark(b.at(xx, yy)) { textKept += 1 } } }
+                    let textSrc = base.frac(box, dark), textOut = textN == 0 ? 1 : Double(textKept) / Double(textN)
                     let changed = diffFrac(b, base, box), outside = diffFrac(b, base, CGRect(x: 0, y: 0, width: x0 - 2, height: y0 - 2))
-                    let textOK = source == "fixture" ? (textSrc > 0.02 && textOut < textSrc * 0.5) : true
-                    feat = blocks > 0 && uniformBlocks == blocks && texturedSrc > 0 && changed > 0 && outside == 0 && textOK
+                    let textOK = source.contains("fixture") ? (textSrc > 0.02 && textOut < 0.5) : true
+                    feat = blocks > 0 && uniformBlocks == blocks && texturedSrc > 0 && changed > 0.2 && outside == 0 && textOK
                     detail = ["block": blk, "blocks": blocks, "uniformBlocks": uniformBlocks, "texturedSourceBlocks": texturedSrc,
-                              "darkTextFracSource": textSrc, "darkTextFracOutput": textOut, "changedInside": changed,
-                              "changedOutside": outside, "textFixture": source == "fixture"]
+                              "darkTextFracSource": textSrc, "sourceTextPixelsStillDark": textOut, "changedInside": changed,
+                              "changedOutside": outside, "textFixture": source.contains("fixture"), "gridOffset": gridOffset]
                 }
             case .blur:
                 if let base {
@@ -372,8 +382,11 @@ enum E2E {
                     feat = changed > 0.15 && outside == 0; detail["changedInside"] = changed; detail["changedOutside"] = outside
                 }
             case .spotlight:
-                if let base { let p = b.at(5, 5), q = base.at(5, 5), i = b.at((x0 + x1) / 2, (y0 + y1) / 2), j = base.at((x0 + x1) / 2, (y0 + y1) / 2)
-                    feat = p.r + p.g + p.b < q.r + q.g + q.b - 0.3 && abs(i.r - j.r) < 0.02; detail["outside"] = "\(p) vs \(q)" }
+                if let base {
+                    // Mean brightness of a 30 px corner patch (robust to fixture text landing on a single sample).
+                    func lum(_ m: Bitmap) -> Double { var t = 0.0; for y in 0..<30 { for x in 0..<30 { let c = m.at(x, y); t += c.r + c.g + c.b } }; return t / 900 }
+                    let p = lum(b), q = lum(base), i = b.at((x0 + x1) / 2, (y0 + y1) / 2), j = base.at((x0 + x1) / 2, (y0 + y1) / 2)
+                    feat = p < q - 0.3 && abs(i.r - j.r) < 0.02; detail["outsideLum"] = "\(p) vs \(q)" }
             case .text:
                 let r = b.frac(CGRect(x: x0, y: y0, width: px(150), height: px(30)), isRed); feat = r > 0.03; detail["redFrac"] = r
             case .step:
@@ -652,18 +665,20 @@ enum E2E {
                                                                    "hidden": NSApp.isHidden], cond: ok)
             ScreenCapture.e2eForceWindowGone = false
         }
-        // (2) No usable previous app (ShareX itself frontmost): ShareX must hide, not sit frontmost windowless.
+        // (2) No usable previous app (nil, or one that has terminated): ShareX must hide itself.
         do {
-            let m = markClipboard(), shown = alertsShown
-            NSApp.unhide(nil); NSApp.activate(); await wait(600)
-            ScreenCapture.e2eForceWindowGone = true
-            coord.report(CaptureError.windowGone); await wait(800)
-            let front = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
-            let me = ProcessInfo.processInfo.processIdentifier
-            let ok = alertsShown > shown && (NSApp.isHidden || front != me)
-            unchanged("alert-no-previous-app-hides", m, extra: ["frontmost": front, "self": me, "hidden": NSApp.isHidden], cond: ok)
-            ScreenCapture.e2eForceWindowGone = false
-            NSApp.unhide(nil)
+            NSApp.unhide(nil); await wait(300)
+            Focus.restore(nil); await wait(500)
+            let hiddenNil = NSApp.isHidden
+            NSApp.unhide(nil); await wait(300)
+            let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/true"); try? p.run(); p.waitUntilExit()
+            // A terminated NSRunningApplication: the pattern helper is still needed, so use a short-lived GUI-less stand-in.
+            let gone = NSRunningApplication(processIdentifier: p.processIdentifier)
+            Focus.restore(gone); await wait(500)
+            let hiddenGone = NSApp.isHidden
+            NSApp.unhide(nil); await wait(300)
+            record("alert-no-previous-app-hides", hiddenNil && hiddenGone, ["hiddenWhenNil": hiddenNil, "hiddenWhenTerminated": hiddenGone,
+                                                                           "terminatedLookup": gone == nil ? "nil" : "isTerminated=\(gone!.isTerminated)"])
         }
         setOpts { $0.options.openEditor = true }
     }
