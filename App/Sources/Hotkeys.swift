@@ -23,7 +23,8 @@ enum Hotkeys {
     @MainActor
     static func register(_ capture: @escaping @MainActor @Sendable (CaptureStyle) -> Void) {
         for (style, name) in all {
-            KeyboardShortcuts.onKeyUp(for: name) { Task { @MainActor in capture(style) } }
+            // Key down, not key up: waiting for the release added the whole key-hold time to every capture.
+            KeyboardShortcuts.onKeyDown(for: name) { Task { @MainActor in capture(style) } }
         }
     }
 }

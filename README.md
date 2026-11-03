@@ -94,3 +94,14 @@ Keep the signing team and bundle ID (`com.sharexmac.ShareX`) stable. Screen Reco
 
 **Release**
 - [ ] Archive → Developer ID → `xcrun notarytool submit --wait` → `xcrun stapler staple` → `spctl -a -vv` passes on a clean account.
+
+## Installing the DMG (unsigned by Apple)
+
+The DMG is ad-hoc signed with the Hardened Runtime but **not notarized**: there is no paid Apple Developer
+account, so no Developer ID certificate. Gatekeeper therefore blocks the first open of a downloaded copy.
+Either:
+
+- open it once, then **System Settings → Privacy & Security → Open Anyway**, or
+- remove the quarantine flag: `xattr -dr com.apple.quarantine /Applications/ShareX.app`
+
+Verify the download first: `shasum -a 256 ShareX.dmg` must match `ShareX.dmg.sha256` from the same CI run.

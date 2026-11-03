@@ -31,7 +31,9 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
 
     private var surfaces: [Surface] = []
     /// E2E seam: the live windows and editors of this session.
+    #if SHAREX_E2E
     var e2eSurfaces: [(window: NSWindow, view: EditorView)] { surfaces.map { ($0.window, $0.view) } }
+    #endif
     private var completion: ((EditorOutcome) -> Void)?
     private let onStyles: ([ShapeKind: ShapeStyle]) -> Void
     private var previousApp: NSRunningApplication?
@@ -120,6 +122,9 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
 
     private func add(_ w: NSWindow, _ view: EditorView, displayID: CGDirectDisplayID, outputScale: CGFloat, pickWindows: [WindowInfo]) {
         view.delegate = self
+        // The overlay shows the frozen (possibly sensitive) frame; other apps' screen captures must not see it.
+        // Our own freeze happens before any overlay exists, so this never affects what we capture.
+        w.sharingType = .none
         w.hidesOnDeactivate = false
         w.isReleasedWhenClosed = false
         w.acceptsMouseMovedEvents = true

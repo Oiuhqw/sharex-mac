@@ -5,6 +5,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: macos-${{ github.ref }}
   cancel-in-progress: true
@@ -14,7 +17,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Toolchain
         run: |
@@ -24,14 +27,11 @@ jobs:
           xcodebuild -version
           swift --version
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
       - name: Local.xcconfig (no team, unsigned)
         run: printf 'DEVELOPMENT_TEAM =\nSHAREX_LOCAL_CONFIG = present\nCODE_SIGN_IDENTITY = -\n' > Local.xcconfig
 
-      - name: Generate project
-        run: xcodegen generate
+      - name: Generate project (pinned XcodeGen + Package.resolved)
+        run: scripts/ci-setup.sh
 
       - name: Core tests (seeded fuzz harness included)
         working-directory: Packages/ShareXCore
@@ -46,7 +46,9 @@ jobs:
             -configuration Debug \
             -destination 'platform=macOS' \
             -derivedDataPath build \
+            -disableAutomaticPackageResolution \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) SHAREX_E2E' \
             | tee xcodebuild.log
 
       - name: Smoke test (launch, stay alive 10 s, quit)
@@ -71,8 +73,9 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild build -project ShareXMac.xcodeproj -scheme ShareX -configuration Release \
-            -destination 'platform=macOS' -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | tail -5
+            -destination 'platform=macOS' -derivedDataPath build -disableAutomaticPackageResolution \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) SHAREX_E2E' | tail -5
 
       - name: Perf scenario (Release, 2x synthetic display)
         if: always()
@@ -80,7 +83,7 @@ jobs:
 
       - name: Upload perf
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: perf
           path: perf-out
@@ -88,7 +91,7 @@ jobs:
 
       - name: Upload E2E artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e
           path: e2e-out
@@ -96,7 +99,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: logs
           path: |

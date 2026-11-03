@@ -1,3 +1,5 @@
+// Compiled only into CI test builds (SWIFT_ACTIVE_COMPILATION_CONDITIONS += SHAREX_E2E); never shipped.
+#if SHAREX_E2E
 import AppKit
 import ShareXCore
 
@@ -76,6 +78,29 @@ enum E2EPerf {
             w.orderOut(nil); w.contentView = nil
         }
 
+        // Orientation check for the layer chrome: an editing crop in the top-left quarter must leave the top-left
+        // undimmed and the bottom-right dimmed in the rendered layer tree.
+        do {
+            let v = EditorView(frame: CGRect(origin: .zero, size: ptSize), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
+                               initialCrop: CGRect(x: 0, y: 0, width: ptSize.width / 2, height: ptSize.height / 2), styles: [:],
+                               showMagnifier: false, pickRects: [], finishOnPick: false)
+            let w = window(for: v); w.displayIfNeeded(); CATransaction.flush()
+            let W = 64, H = 64
+            if let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: W * 4, space: Imaging.colorSpace,
+                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let layer = v.layer {
+                ctx.scaleBy(x: CGFloat(W) / ptSize.width, y: CGFloat(H) / ptSize.height)
+                layer.render(in: ctx)
+                // Bitmap memory row 0 is the top of the image.
+                func lum(_ x: Int, _ y: Int) -> Int { let p = ctx.data!.assumingMemoryBound(to: UInt8.self) + (y * W + x) * 4; return Int(p[0]) + Int(p[1]) + Int(p[2]) }
+                let tl = lum(8, 8), br = lum(56, 56)
+                ctx.clear(CGRect(origin: .zero, size: ptSize))
+                ctx.draw(img, in: CGRect(origin: .zero, size: ptSize))   // reference, undimmed (y-up draw: top row at top)
+                out["layerOrientation"] = ["topLeftLum": tl, "bottomRightLum": br, "refTopLeft": lum(8, 8), "refBottomRight": lum(56, 56),
+                                           "geometryFlipped": layer.isGeometryFlipped] as [String: Any]
+            }
+            w.orderOut(nil); w.contentView = nil
+        }
+
         // 3. Annotation drags with 3 blur + 2 pixelate + shapes already committed.
         do {
             var styles: [ShapeKind: ShapeStyle] = [:]
@@ -135,6 +160,21 @@ enum E2EPerf {
                 save.append(Perf.now() - t1)
             }
             out["commitToClipboard2x_ms"] = stats(clip)
+            // What the shipped path keeps on the main thread: flatten + pasteboard write. Decorate + encode run detached.
+            var mainOnly: [Double] = [], pipeline: [Double] = []
+            for _ in 0..<5 {
+                let t0 = Perf.now()
+                guard let flat = Export.flatten(renderer: v.renderer, doc: v.doc, crop: CGRect(origin: .zero, size: ptSize), lasso: nil) else { break }
+                let tFlat = Perf.now() - t0
+                let box = ImageBox(image: flat), o = opts, k = sc
+                let enc = await Task.detached { Export.encode(Export.decorateOffMain(box.image, options: o, scale: k), scale: k) }.value
+                let t1 = Perf.now()
+                if let enc { _ = Export.write(enc) }
+                mainOnly.append(tFlat + Perf.now() - t1)
+                pipeline.append(Perf.now() - t0)
+            }
+            out["commitMainThreadOnly2x_ms"] = stats(mainOnly)
+            out["commitPipelineAsync2x_ms"] = stats(pipeline)
             out["savePNG2x_ms"] = stats(save)
             w.orderOut(nil); w.contentView = nil
         }
@@ -162,3 +202,4 @@ enum E2EPerf {
         for _ in 0..<500 where NSPasteboard.general.changeCount == c { await Task.yield(); try? await Task.sleep(for: .milliseconds(1)) }
     }
 }
+#endif

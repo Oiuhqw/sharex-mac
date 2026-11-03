@@ -1,40 +1,59 @@
+# Builds the shipped DMG. No Developer ID / notarization is available (no paid Apple account), so the app is
+# ad-hoc signed with the Hardened Runtime. Gatekeeper still rejects it on first open: see README "Installing".
 name: DMG
 on: workflow_dispatch
+permissions:
+  contents: read
 jobs:
   dmg:
     runs-on: macos-15
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Select newest Xcode 16
         run: |
           sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
           xcodebuild -version
-      - run: brew install xcodegen
-      - run: xcodegen generate
-      - name: Build universal Release (unsigned, signed ad-hoc below)
+      - name: Generate project (pinned XcodeGen + Package.resolved)
+        run: scripts/ci-setup.sh
+      - name: Build universal Release (no E2E code; signed ad-hoc below)
         run: |
           set -o pipefail
           xcodebuild build -project ShareXMac.xcodeproj -scheme ShareX -configuration Release \
-            -destination 'generic/platform=macOS' -derivedDataPath build \
+            -destination 'generic/platform=macOS' -derivedDataPath build -disableAutomaticPackageResolution \
             ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" ENABLE_HARDENED_RUNTIME=NO | tail -40
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" | tail -40
           APP=build/Build/Products/Release/ShareX.app
           test -d "$APP"
           echo "APP=$APP" >> $GITHUB_ENV
-      - name: Ad-hoc sign and verify
+      - name: Shipped binary has no test driver
         run: |
-          codesign --force --deep --sign - "$APP"
-          codesign --verify --deep --strict --verbose=2 "$APP"
-          codesign -dv "$APP" 2>&1
+          BIN="$APP/Contents/MacOS/ShareX"
+          if strings -a "$BIN" | grep -E -- '--e2e|E2E PERF|e2e-helper'; then
+            echo "::error::E2E code found in the shipped binary"; exit 1
+          fi
+          echo "no --e2e strings in $BIN"
+      - name: Ad-hoc sign inside-out with Hardened Runtime (no --deep)
+        run: |
+          # Nested code first (frameworks, dylibs, helpers, XPC, bundles), deepest paths first, then the app.
+          find "$APP/Contents" -depth \( -name '*.framework' -o -name '*.dylib' -o -name '*.xpc' -o -name '*.appex' -o -name '*.bundle' -o -name '*.app' \) -print0 \
+            | while IFS= read -r -d '' item; do
+                [ "$item" = "$APP" ] && continue
+                echo "sign $item"; codesign --force --options runtime --timestamp=none --sign - "$item"
+              done
+          codesign --force --options runtime --timestamp=none --sign - "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+          codesign -dv --verbose=4 "$APP" 2>&1 | tee sig.txt
+          grep -E 'flags=0x[0-9a-f]+\(.*runtime' sig.txt || { echo "::error::Hardened Runtime flag missing"; exit 1; }
+          spctl -a -vvv -t exec "$APP" || echo "spctl rejects (expected: ad-hoc, not notarized)"
           lipo -info "$APP/Contents/MacOS/ShareX"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' -c 'Print :LSMinimumSystemVersion' -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist"
-      - name: Launch smoke test
+      - name: Launch smoke test (direct exec, Hardened Runtime)
         run: |
           "$APP/Contents/MacOS/ShareX" & PID=$!
           sleep 8
-          kill -0 $PID && echo "still running after 8s"
-          kill $PID || true
+          kill -0 $PID || { echo "::error::app exited under Hardened Runtime"; exit 1; }
+          echo "still running after 8s"; kill $PID || true
       - name: Make DMG
         run: |
           mkdir dmgroot
@@ -42,8 +61,28 @@ jobs:
           ln -s /Applications dmgroot/Applications
           hdiutil create -volname ShareX -srcfolder dmgroot -ov -format UDZO ShareX.dmg
           hdiutil verify ShareX.dmg
-          ls -l ShareX.dmg; shasum -a 256 ShareX.dmg
-      - uses: actions/upload-artifact@v4
+          shasum -a 256 ShareX.dmg | tee ShareX.dmg.sha256
+      - name: Quarantine-simulated install + launch (what a downloaded DMG gets)
+        run: |
+          xattr -w com.apple.quarantine "0081;$(printf %x $(date +%s));Safari;" ShareX.dmg
+          MNT=$(hdiutil attach -nobrowse -readonly ShareX.dmg | awk -F'\t' '/\/Volumes\//{print $NF}')
+          rm -rf /tmp/inst && mkdir /tmp/inst && cp -R "$MNT/ShareX.app" /tmp/inst/
+          hdiutil detach "$MNT"
+          xattr -w com.apple.quarantine "0081;$(printf %x $(date +%s));Safari;" /tmp/inst/ShareX.app
+          xattr -l /tmp/inst/ShareX.app
+          codesign --verify --strict --verbose=2 /tmp/inst/ShareX.app
+          spctl -a -vvv -t exec /tmp/inst/ShareX.app || echo "Gatekeeper assessment: rejected (unnotarized) - user needs Open Anyway or xattr -dr com.apple.quarantine"
+          open /tmp/inst/ShareX.app || true
+          sleep 6
+          if pgrep -x ShareX; then echo "launched with quarantine (runner Gatekeeper allowed it)"; pkill -x ShareX || true
+          else echo "blocked under quarantine (expected for unnotarized); verifying the documented workaround"; fi
+          xattr -dr com.apple.quarantine /tmp/inst/ShareX.app
+          open /tmp/inst/ShareX.app; sleep 6
+          pgrep -x ShareX || { echo "::error::app does not launch even after removing quarantine"; exit 1; }
+          pkill -x ShareX || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ShareX-dmg
-          path: ShareX.dmg
+          path: |
+            ShareX.dmg
+            ShareX.dmg.sha256

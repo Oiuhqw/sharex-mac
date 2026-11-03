@@ -7,7 +7,9 @@ import SwiftUI
 enum Main {
     static func main() {
         let app = NSApplication.shared
+        #if SHAREX_E2E
         if E2E.handlesHelperMode() { return }
+        #endif
         let delegate = AppDelegate()
         app.delegate = delegate
         // LSUIElement in Info.plist already makes this a menu-bar app with no Dock icon.
@@ -54,7 +56,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
         Hotkeys.register { [weak self] in self?.coordinator.capture($0) }
+        ScreenCapture.prefetch()
+        #if SHAREX_E2E
         if E2E.enabled { E2E.start(self); return }
+        #endif
         if !Permissions.hasScreenRecording { Permissions.requestScreenRecording() }
     }
 

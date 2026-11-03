@@ -2,6 +2,12 @@ import AppKit
 import ImageIO
 import ShareXCore
 import UniformTypeIdentifiers
+import os
+
+enum Log {
+    static let export = Logger(subsystem: "com.sharexmac.ShareX", category: "export")
+    static let capture = Logger(subsystem: "com.sharexmac.ShareX", category: "capture")
+}
 
 /// Flattens frame + annotations into the final image, decorates it, and writes the outputs.
 @MainActor
@@ -23,6 +29,10 @@ enum Export {
 
     /// Adds the border and drop shadow from the capture options (ShareX "image effects" subset).
     static func decorate(_ image: CGImage, options: CaptureOptions, scale: CGFloat) -> CGImage {
+        decorateOffMain(image, options: options, scale: scale)
+    }
+    /// Pure CoreGraphics on a private context: safe off the main thread.
+    nonisolated static func decorateOffMain(_ image: CGImage, options: CaptureOptions, scale: CGFloat) -> CGImage {
         let o = options.sanitized()   // never trust a width that could overflow the pixel maths
         let border = Int((CGFloat(o.borderWidth) * scale).rounded())
         guard border > 0 || o.shadow else { return image }
@@ -44,33 +54,91 @@ enum Export {
         return ctx.makeImage() ?? image
     }
 
+    /// PNG + TIFF bytes with the real DPI (72 × scale), so a Retina capture pastes and opens at on-screen size.
+    /// ImageIO only (thread-safe), so this runs off the main thread.
+    struct Encoded: Sendable { let png: Data; let tiff: Data }
+    nonisolated static func encode(_ image: CGImage, scale: CGFloat) -> Encoded? {
+        let dpi = 72 * scale
+        let props = [kCGImagePropertyDPIWidth: dpi, kCGImagePropertyDPIHeight: dpi] as CFDictionary
+        func bytes(_ type: UTType) -> Data? {
+            let d = NSMutableData()
+            guard let dest = CGImageDestinationCreateWithData(d as CFMutableData, type.identifier as CFString, 1, nil) else { return nil }
+            CGImageDestinationAddImage(dest, image, props)
+            return CGImageDestinationFinalize(dest) ? d as Data : nil
+        }
+        guard let png = bytes(.png), let tiff = bytes(.tiff) else { return nil }
+        return Encoded(png: png, tiff: tiff)
+    }
+
+    /// Encodes on a background thread so the main thread (and the closing overlay) never waits on PNG compression.
+    static func encodeOffMain(_ image: CGImage, scale: CGFloat) async -> Encoded? {
+        let box = ImageBox(image: image)
+        return await Task.detached(priority: .userInitiated) { encode(box.image, scale: scale) }.value
+    }
+
     /// Clears the pasteboard and writes one item carrying PNG and TIFF. Returns false if nothing was written.
     @discardableResult
-    static func copyToClipboard(_ image: CGImage, scale: CGFloat) -> Bool {
-        let rep = NSBitmapImageRep(cgImage: image)
-        // Point size = pixels / scale, so Retina captures paste at on-screen size (144 dpi at 2x).
-        rep.size = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
-        guard let png = rep.representation(using: .png, properties: [:]), let tiff = rep.tiffRepresentation else { return false }
+    static func write(_ e: Encoded) -> Bool {
         let pb = NSPasteboard.general
         pb.clearContents()
         let item = NSPasteboardItem()
-        item.setData(png, forType: .png)
-        item.setData(tiff, forType: .tiff)
+        item.setData(e.png, forType: .png)
+        item.setData(e.tiff, forType: .tiff)
         return pb.writeObjects([item])
+    }
+
+    @discardableResult
+    static func copyToClipboard(_ image: CGImage, scale: CGFloat) -> Bool {
+        guard let e = encode(image, scale: scale) else { return false }
+        return write(e)
+    }
+
+    /// Saves already-encoded PNG bytes (the same bytes as the clipboard) off the main thread.
+    static func savePNGData(_ png: Data, folder: String) async -> URL? {
+        await Task.detached(priority: .utility) { writePNG(png, folder: folder) }.value
     }
 
     /// Writes the PNG with its real DPI (72 × scale) so a Retina capture opens at on-screen size.
     static func savePNG(_ image: CGImage, scale: CGFloat, folder: String) -> URL? {
-        let dir = folder.isEmpty
-            ? (FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
-               ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Pictures")).appendingPathComponent("ShareX")
-            : URL(fileURLWithPath: (folder as NSString).expandingTildeInPath)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let name = AppSettings.uniqueFileName(for: Date()) { FileManager.default.fileExists(atPath: dir.appendingPathComponent($0).path) }
-        let url = dir.appendingPathComponent(name)
-        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else { return nil }
-        let dpi = 72 * scale
-        CGImageDestinationAddImage(dest, image, [kCGImagePropertyDPIWidth: dpi, kCGImagePropertyDPIHeight: dpi] as CFDictionary)
-        return CGImageDestinationFinalize(dest) ? url : nil
+        encode(image, scale: scale).flatMap { writePNG($0.png, folder: folder) }
+    }
+
+    /// The save folder as a real directory: tilde expanded, symlinks resolved, created if missing (only then),
+    /// and rejected if the resolved path is not a directory. Nil means "don't save".
+    nonisolated static func resolveFolder(_ folder: String, create: Bool = true) -> URL? {
+        let fm = FileManager.default
+        let raw = folder.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = raw.isEmpty
+            ? (fm.urls(for: .picturesDirectory, in: .userDomainMask).first
+               ?? fm.homeDirectoryForCurrentUser.appendingPathComponent("Pictures")).appendingPathComponent("ShareX")
+            : URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
+        guard base.path.hasPrefix("/") else { return nil }
+        var isDir: ObjCBool = false
+        if !fm.fileExists(atPath: base.path) {
+            if !create { return base }   // Settings preview: it will be created on first save
+            do { try fm.createDirectory(at: base, withIntermediateDirectories: true) } catch { return nil }
+        }
+        let dir = base.resolvingSymlinksInPath().standardizedFileURL
+        guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue, fm.isWritableFile(atPath: dir.path) else { return nil }
+        return dir
+    }
+
+    /// Exclusive create (O_CREAT|O_EXCL via .withoutOverwriting): never replaces or follows an existing file;
+    /// a name taken between the check and the write gets the next free name.
+    nonisolated static func writePNG(_ png: Data, folder: String) -> URL? {
+        guard let dir = resolveFolder(folder) else {
+            Log.export.error("save folder rejected: \(folder, privacy: .private)"); return nil
+        }
+        for _ in 0..<5 {
+            let name = AppSettings.uniqueFileName(for: Date()) { FileManager.default.fileExists(atPath: dir.appendingPathComponent($0).path) }
+            let url = dir.appendingPathComponent(name)
+            do { try png.write(to: url, options: .withoutOverwriting); return url }
+            catch CocoaError.fileWriteFileExists { continue }
+            catch { Log.export.error("save failed at \(url.path, privacy: .private): \(error.localizedDescription, privacy: .public)"); return nil }
+        }
+        return nil
     }
 }
+
+/// CGImage is immutable; this only carries it across the detached-task boundary.
+struct ImageBox: @unchecked Sendable { let image: CGImage }

@@ -47,6 +47,10 @@ struct SettingsView: View {
             Form {
                 Toggle("Also save PNG to folder", isOn: binding(\.saveToFile))
                 TextField("Folder (empty = ~/Pictures/ShareX)", text: binding(\.saveFolder))
+                if store.value.saveToFile, Export.resolveFolder(store.value.saveFolder, create: false) == nil {
+                    Text("Not a writable folder; screenshots will only go to the clipboard.")
+                        .font(.caption).foregroundStyle(.red)
+                }
                 Toggle("Play sound after capture", isOn: binding(\.playSound))
                 Button("Open Screen Recording settings") { Permissions.openSettings() }
             }

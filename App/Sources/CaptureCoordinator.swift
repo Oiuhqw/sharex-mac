@@ -62,14 +62,14 @@ final class CaptureCoordinator {
             let scale = frozen.map(\.scale).max() ?? 1
             guard let img = stitch(frozen) else { return }   // same scale StitchLayout picks
             if o.openEditor { openCanvas(img, scale: scale, screen: underMouse, title: "All displays") }
-            else { deliver(img, scale: scale, last: nil) }
+            else { await deliver(img, scale: scale, last: nil) }
             return
         }
 
         if let preset, !o.openEditor, let f = frozen.first(where: { $0.displayID == preset.displayID }) {
             let r = Renderer(frame: f.image, scale: f.scale)
             if let img = Export.flatten(renderer: r, doc: EditorDocument(), crop: preset.rect, lasso: nil) {
-                deliver(img, scale: f.scale,
+                await deliver(img, scale: f.scale,
                         last: style == .lastRegion ? LastRegion(displayID: preset.displayID, rect: preset.rect) : nil)
             }
             return
@@ -82,9 +82,13 @@ final class CaptureCoordinator {
             switch outcome {
             case .cancelled: self.endSession()
             case .finished(let r):
-                self.endSession()
-                self.deliver(r.image, scale: r.scale,
-                             last: remember ? LastRegion(displayID: r.displayID, rect: r.crop) : nil)
+                // The overlay is already gone; stay busy until the clipboard holds the image.
+                self.overlay = nil
+                Task { @MainActor in
+                    await self.deliver(r.image, scale: r.scale,
+                                       last: remember ? LastRegion(displayID: r.displayID, rect: r.crop) : nil)
+                    self.busy = false
+                }
             case .pickedWindow(let w):
                 self.overlay = nil   // stay busy: the live capture follows
                 Task { @MainActor in
@@ -100,15 +104,19 @@ final class CaptureCoordinator {
     private func editOrDeliver(window w: WindowInfo) async throws {
         let shot = try await ScreenCapture.captureWindow(w)
         if settings.value.options.openEditor { openCanvas(shot.image, scale: shot.scale, screen: shot.screen, title: w.title) }
-        else { deliver(shot.image, scale: shot.scale, last: nil) }
+        else { await deliver(shot.image, scale: shot.scale, last: nil) }
     }
 
     private func openCanvas(_ image: CGImage, scale: CGFloat, screen: NSScreen, title: String) {
         present(OverlayController(canvas: image, scale: scale, screen: screen, title: title.isEmpty ? "ShareX" : title,
                                   settings: settings.value, onStyles: { [weak self] in self?.saveStyles($0) }) { [weak self] outcome in
             guard let self else { return }
-            self.endSession()
-            if case .finished(let r) = outcome { self.deliver(r.image, scale: r.scale, last: nil) }
+            guard case .finished(let r) = outcome else { self.endSession(); return }
+            self.overlay = nil
+            Task { @MainActor in
+                await self.deliver(r.image, scale: r.scale, last: nil)
+                self.busy = false
+            }
         })
     }
 
@@ -142,22 +150,32 @@ final class CaptureCoordinator {
         case CaptureError.windowGone:
             // Not a fault, but silent beeps leave the user guessing.
             NSApp.activate()
+            #if SHAREX_E2E
             if E2E.suppressAlerts { E2E.alertsShown += 1; break }   // E2E seam: no modal on a headless runner
+            #endif
             let a = NSAlert()
             a.messageText = "Window not captured"
             a.informativeText = error.localizedDescription
             a.runModal()
-        default: NSSound.beep(); NSLog("ShareX capture failed: \(error.localizedDescription)")
+        default: NSSound.beep(); Log.capture.error("capture failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
-    private func deliver(_ flat: CGImage, scale: CGFloat, last: LastRegion?) {
+    /// Decorate + PNG/TIFF encode run off the main thread; the pasteboard write is on main. The saved file is
+    /// the clipboard's own PNG bytes, so the two can never differ.
+    private func deliver(_ flat: CGImage, scale: CGFloat, last: LastRegion?) async {
         let s = settings.value
-        let image = Export.decorate(flat, options: s.options, scale: scale)
-        guard Export.copyToClipboard(image, scale: scale) else { NSSound.beep(); return }
+        let st = Perf.signposter.beginInterval("deliver")
+        defer { Perf.signposter.endInterval("deliver", st) }
+        let box = ImageBox(image: flat), opts = s.options
+        let encoded = await Task.detached(priority: .userInitiated) { () -> Export.Encoded? in
+            Export.encode(Export.decorateOffMain(box.image, options: opts, scale: scale), scale: scale)
+        }.value
+        guard let encoded, Export.write(encoded) else { NSSound.beep(); return }
+        Perf.stamp("clipboard-ready")
         // The clipboard already has the image; a failed save must still be visible, not silent.
-        if s.saveToFile, Export.savePNG(image, scale: scale, folder: s.saveFolder) == nil {
-            NSSound.beep(); NSLog("ShareX: could not save PNG to \(s.saveFolder.isEmpty ? "~/Pictures/ShareX" : s.saveFolder)")
+        if s.saveToFile, await Export.savePNGData(encoded.png, folder: s.saveFolder) == nil {
+            NSSound.beep(); Log.export.error("could not save PNG to \(s.saveFolder, privacy: .private)")
         }
         if let last { settings.update { $0.lastRegion = last } }
         if s.playSound { NSSound(named: "Tink")?.play() }

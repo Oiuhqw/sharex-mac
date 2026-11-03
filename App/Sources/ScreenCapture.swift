@@ -41,10 +41,19 @@ enum CaptureError: LocalizedError {
 /// displays; window styles capture the window itself with a desktop-independent filter.
 @MainActor
 enum ScreenCapture {
+#if SHAREX_E2E
     /// E2E seam, set only by `--e2e` when Screen Recording cannot be granted: a synthetic frame of the given pixel size.
     static var e2eFixture: ((Int, Int) -> CGImage?)?
     /// E2E seam: synthetic display frames only (window captures stay real ScreenCaptureKit).
     static var e2eDisplayFixture: ((Int, Int) -> CGImage?)?
+    /// E2E seam: the next window capture fails as if the window closed, to drive the error-alert path.
+    static var e2eForceWindowGone = false
+    #else
+    // Shipped builds: the seams are constant nil/false, so the compiler drops every test branch.
+    static let e2eFixture: ((Int, Int) -> CGImage?)? = nil
+    static let e2eDisplayFixture: ((Int, Int) -> CGImage?)? = nil
+    static let e2eForceWindowGone = false
+    #endif
 
     static func displayID(of screen: NSScreen) -> CGDirectDisplayID {
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
@@ -59,6 +68,30 @@ enum ScreenCapture {
     private static func shareableContent() async throws -> SCShareableContent {
         do { return try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) }
         catch { throw mapped(error) }
+    }
+
+    /// Display/app lists change rarely; fetching SCShareableContent costs tens of ms per capture. It is prefetched
+    /// at launch, refreshed after each capture and dropped on display changes. Window captures always fetch fresh.
+    private static var cached: (content: SCShareableContent, at: Double)?
+    private static var observing = false
+    static func prefetch() {
+        if !observing {
+            observing = true
+            NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { cached = nil }
+            }
+        }
+        guard e2eFixture == nil, CGPreflightScreenCaptureAccess() else { return }
+        Task { @MainActor in
+            if let c = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) { cached = (c, Perf.now()) }
+        }
+    }
+    private static func displayContent(for ids: [CGDirectDisplayID]) async throws -> SCShareableContent {
+        if let c = cached, Perf.now() - c.at < 60_000,
+           ids.allSatisfy({ id in c.content.displays.contains { $0.displayID == id } }) { return c.content }
+        let c = try await shareableContent()
+        cached = (c, Perf.now())
+        return c
     }
 
     private static func baseConfig(showCursor: Bool) -> SCStreamConfiguration {
@@ -78,7 +111,10 @@ enum ScreenCapture {
                 return fx(Int(s.frame.width * sc), Int(s.frame.height * sc)).map { FrozenScreen(screen: s, displayID: displayID(of: s), image: $0) }
             }
         }
-        let content = try await shareableContent()
+        let sp = Perf.signposter.beginInterval("shareable-content")
+        let content = try await displayContent(for: screens.map(displayID(of:)))
+        Perf.signposter.endInterval("shareable-content", sp)
+        defer { prefetch() }
         let ours = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
         var out: [FrozenScreen] = []
         for screen in screens {
@@ -101,10 +137,12 @@ enum ScreenCapture {
     /// Captures one window by itself, including parts other windows cover, at exactly its frame in pixels.
     /// The system shadow is always dropped: how SCK sizes a kept shadow is unverified, so the app draws its own
     /// shadow (DecorationLayout) and the border wraps the window, not shadow padding. No cursor, as in ShareX.
-    /// E2E seam: the next window capture fails as if the window closed, to drive the error-alert path.
-    static var e2eForceWindowGone = false
     static func captureWindow(_ info: WindowInfo) async throws -> WindowShot {
-        if e2eForceWindowGone { e2eForceWindowGone = false; throw CaptureError.windowGone }
+        if e2eForceWindowGone {
+            #if SHAREX_E2E
+            e2eForceWindowGone = false
+            #endif
+            throw CaptureError.windowGone }
         if let fx = e2eFixture, let s = NSScreen.screens.first {
             let sc = s.backingScaleFactor
             guard let img = fx(Int((info.frame.width * sc).rounded()), Int((info.frame.height * sc).rounded())) else { throw CaptureError.noDisplays }

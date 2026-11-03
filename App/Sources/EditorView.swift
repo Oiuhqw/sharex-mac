@@ -58,6 +58,9 @@ final class EditorView: NSView, NSTextFieldDelegate {
     private var textField: NSTextField?
     private var editingTextID: Int?
     private lazy var toolbar = ToolbarView(editor: self)
+    private let frameView: FrameView
+    private var annotationsView: AnnotationsView?
+    private let chrome: ChromeView
 
     init(frame: CGRect, renderer: Renderer, mode: SelectionMode, initialCrop: CGRect?, styles: [ShapeKind: ShapeStyle],
          showMagnifier: Bool, pickRects: [CGRect], finishOnPick: Bool) {
@@ -68,8 +71,16 @@ final class EditorView: NSView, NSTextFieldDelegate {
         self.showMagnifier = showMagnifier
         self.pickRects = pickRects
         self.selectionMode = initialCrop == nil ? mode : nil
+        let local = CGRect(origin: .zero, size: frame.size)
+        self.frameView = FrameView(frame: local, image: renderer.frame, smooth: renderer.smoothFrame)
+        self.chrome = ChromeView(frame: local)
         super.init(frame: frame)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .never
+        addSubview(frameView)
+        addSubview(chrome)
         if phase == .editing { showToolbar() }
+        refresh()
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("unused") }
@@ -92,7 +103,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
     /// Another screen became active: drop back to an untouched selection state.
     func deactivate() {
         guard case .selecting = phase else { return }
-        drag = .none; lasso = nil; hover = nil; needsDisplay = true
+        drag = .none; lasso = nil; hover = nil; refresh()
     }
 
     // MARK: Commands (toolbar + keys)
@@ -108,7 +119,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
     private func refocus() {
         if textField == nil { window?.makeFirstResponder(self) }
         toolbar.sync()
-        needsDisplay = true
+        refresh()
     }
     func undo() { commitText(); doc.undo(); refocus() }
     func redo() { commitText(); doc.redo(); refocus() }
@@ -145,10 +156,10 @@ final class EditorView: NSView, NSTextFieldDelegate {
         let p = convert(e.locationInWindow, from: nil)
         mouse = p
         if case .selecting = phase { hover = pickTarget(at: p) }
-        needsDisplay = true
+        refresh()
     }
 
-    override func mouseExited(with event: NSEvent) { mouse = nil; hover = nil; needsDisplay = true }
+    override func mouseExited(with event: NSEvent) { mouse = nil; hover = nil; refresh() }
 
     private func pickTarget(at p: CGPoint) -> CGRect? { pickIndex(at: p).map { pickRects[$0] } }
 
@@ -171,7 +182,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
         case .selecting: drag = .none
         case .editing: editingMouseDown(p)
         }
-        needsDisplay = true
+        refresh()
     }
 
     private func editingMouseDown(_ p: CGPoint) {
@@ -222,7 +233,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
             drag = .cropResize(h, last: p)
         case .none: break
         }
-        needsDisplay = true
+        refresh()
     }
 
     override func mouseUp(with e: NSEvent) {
@@ -250,7 +261,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
         }
         drag = .none
         if phase == .editing { toolbar.sync(); layoutToolbar() }
-        needsDisplay = true
+        refresh()
     }
 
     override func rightMouseDown(with e: NSEvent) {
@@ -268,7 +279,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
         toolbar.removeFromSuperview()
         window?.invalidateCursorRects(for: self)
         delegate?.editorDidReturnToSelection(self)
-        needsDisplay = true
+        refresh()
     }
 
     override func resetCursorRects() {
@@ -333,7 +344,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
         default: Offset(dx: 0, dy: -n)
         }
         doc.beginDrag(); doc.move(id, by: d); doc.endDrag()
-        needsDisplay = true
+        refresh()
     }
 
     // MARK: Text
@@ -353,7 +364,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
         addSubview(f)
         window?.makeFirstResponder(f)
         textField = f
-        needsDisplay = true
+        refresh()
     }
 
     func controlTextDidEndEditing(_ obj: Notification) { commitText() }
@@ -372,114 +383,49 @@ final class EditorView: NSView, NSTextFieldDelegate {
         doc.setText(id, f.stringValue)
         f.removeFromSuperview()
         window?.makeFirstResponder(self)
-        needsDisplay = true
+        refresh()
     }
 
     // MARK: Drawing
 
-    override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        renderer.drawFrame(ctx)
-        let dim = CGColor(gray: 0, alpha: 0.35)
+    /// Pushes the current state into the layer views. Replaces a full-screen draw(_:) on every mouse event.
+    func refresh() {
+        var c = ChromeView.State()
         switch phase {
         case .selecting(let mode):
+            annotationsView?.isHidden = true
             var hole: CGRect? = hover
             if case .region(let s) = drag, dragMoved, let m = mouse { hole = Geometry.rect(from: s, to: m) }
-            dimOutside(hole, ctx: ctx, color: dim)
-            if let h = hole { outline(h, ctx: ctx); sizeLabel(for: h) }
-            if mode == .lasso, let pts = lasso, pts.count > 1 {
-                ctx.setStrokeColor(.white); ctx.setLineWidth(1.5); ctx.setLineDash(phase: 0, lengths: [5, 3])
-                ctx.beginPath(); ctx.addLines(between: pts); ctx.strokePath(); ctx.setLineDash(phase: 0, lengths: [])
+            c.dimEverything = true
+            c.dimHole = hole.map { CGPath(rect: $0, transform: nil) }
+            if let h = hole { c.outline = h; c.sizeLabel = (h, sizeText(h)) }
+            if mode == .lasso { c.lasso = lasso }
+            if showMagnifier, mode == .rectangle || mode == .lasso, let m = mouse {
+                c.crosshair = m
+                c.magnifier = (m, renderer.frame.cropping(to: ChromeView.source(m, scale: renderer.scale)), renderer.scale)
             }
-            if showMagnifier, mode == .rectangle || mode == .lasso, let m = mouse { drawCrosshair(m, ctx: ctx); drawMagnifier(m, ctx: ctx) }
         case .editing:
-            renderer.draw(doc, in: ctx, hide: editingTextID)
+            if annotationsView == nil {
+                let v = AnnotationsView(frame: CGRect(origin: .zero, size: bounds.size), renderer: renderer)
+                addSubview(v, positioned: .above, relativeTo: frameView)
+                annotationsView = v
+            }
+            annotationsView?.isHidden = false
+            annotationsView?.sync(doc, hide: editingTextID)
             let crop = doc.state.crop ?? bounds0
-            ctx.saveGState()
-            ctx.beginPath(); ctx.addRect(bounds0)
-            if let pts = lasso { ctx.addLines(between: pts); ctx.closePath() } else { ctx.addRect(crop) }
-            ctx.setFillColor(dim); ctx.fillPath(using: .evenOdd)
-            ctx.restoreGState()
-            outline(crop, ctx: ctx)
-            if doc.tool == .crop { handles(crop, ctx: ctx) }
-            if let s = doc.selected { selection(s.bounds, ctx: ctx) }
-            sizeLabel(for: crop)
+            let hole = CGMutablePath()
+            if let pts = lasso { hole.addLines(between: pts); hole.closeSubpath() } else { hole.addRect(crop) }
+            c.dimEverything = true; c.dimHole = hole
+            c.outline = crop
+            if doc.tool == .crop { c.cropHandles = crop }
+            if let s = doc.selected { c.selection = s.bounds }
+            c.sizeLabel = (crop, sizeText(crop))
         }
+        chrome.apply(c)
     }
 
-    private func dimOutside(_ r: CGRect?, ctx: CGContext, color: CGColor) {
-        ctx.saveGState()
-        ctx.beginPath(); ctx.addRect(bounds0); if let r { ctx.addRect(r) }
-        ctx.setFillColor(color); ctx.fillPath(using: .evenOdd)
-        ctx.restoreGState()
-    }
-
-    private func outline(_ r: CGRect, ctx: CGContext) {
-        ctx.saveGState()
-        ctx.setLineWidth(1); ctx.setStrokeColor(.white); ctx.stroke(r.insetBy(dx: -0.5, dy: -0.5))
-        ctx.setStrokeColor(CGColor(gray: 0, alpha: 1)); ctx.setLineDash(phase: 0, lengths: [4, 4]); ctx.stroke(r.insetBy(dx: -0.5, dy: -0.5))
-        ctx.restoreGState()
-    }
-
-    private func handles(_ r: CGRect, ctx: CGContext) {
-        for h in Handle.allCases {
-            let c = h.point(on: r)
-            let box = CGRect(x: c.x - 4, y: c.y - 4, width: 8, height: 8)
-            ctx.setFillColor(.white); ctx.fill(box)
-            ctx.setStrokeColor(CGColor(gray: 0, alpha: 1)); ctx.setLineWidth(1); ctx.stroke(box)
-        }
-    }
-
-    private func selection(_ r: CGRect, ctx: CGContext) {
-        ctx.saveGState()
-        ctx.setStrokeColor(CGColor(srgbRed: 0.2, green: 0.55, blue: 1, alpha: 1)); ctx.setLineWidth(1)
-        ctx.setLineDash(phase: 0, lengths: [3, 3]); ctx.stroke(r.insetBy(dx: -3, dy: -3))
-        ctx.restoreGState()
-        handles(r, ctx: ctx)
-    }
-
-    private func sizeLabel(for r: CGRect) {
+    private func sizeText(_ r: CGRect) -> String {
         let s = renderer.scale
-        let text = "\(Int((r.width * s).rounded())) × \(Int((r.height * s).rounded()))"
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
-                                                    .foregroundColor: NSColor.white, .backgroundColor: NSColor.black.withAlphaComponent(0.6)]
-        let y = r.maxY + 4 < bounds.height - 16 ? r.maxY + 4 : r.minY + 4
-        NSAttributedString(string: " \(text) ", attributes: attrs).draw(at: CGPoint(x: r.minX, y: y))
-    }
-
-    private func drawCrosshair(_ p: CGPoint, ctx: CGContext) {
-        ctx.saveGState()
-        ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.6)); ctx.setLineWidth(1)
-        ctx.strokeLineSegments(between: [CGPoint(x: 0, y: p.y), CGPoint(x: bounds.width, y: p.y),
-                                         CGPoint(x: p.x, y: 0), CGPoint(x: p.x, y: bounds.height)])
-        ctx.restoreGState()
-    }
-
-    /// 15×15 source pixels at 8x, nearest neighbour, with the pixel position underneath.
-    private func drawMagnifier(_ p: CGPoint, ctx: CGContext) {
-        let n: CGFloat = 15, zoom: CGFloat = 8, side = n * zoom
-        let s = renderer.scale
-        let src = CGRect(x: (p.x * s).rounded(.down) - (n - 1) / 2, y: (p.y * s).rounded(.down) - (n - 1) / 2, width: n, height: n)
-        guard let crop = renderer.frame.cropping(to: src) else { return }
-        var origin = CGPoint(x: p.x + 20, y: p.y + 20)
-        if origin.x + side > bounds.width { origin.x = p.x - 20 - side }
-        if origin.y + side + 18 > bounds.height { origin.y = p.y - 20 - side - 18 }
-        let box = CGRect(origin: origin, size: CGSize(width: side, height: side))
-        ctx.saveGState()
-        ctx.interpolationQuality = .none
-        // cropping(to:) clips at image edges; place what we got where it belongs.
-        let got = CGRect(x: box.minX + (max(src.minX, 0) - src.minX) * zoom, y: box.minY + (max(src.minY, 0) - src.minY) * zoom,
-                         width: CGFloat(crop.width) * zoom, height: CGFloat(crop.height) * zoom)
-        ctx.setFillColor(CGColor(gray: 0, alpha: 1)); ctx.fill(box)
-        Imaging.drawUpright(crop, in: got, ctx: ctx)
-        let mid = CGRect(x: box.minX + (n - 1) / 2 * zoom, y: box.minY + (n - 1) / 2 * zoom, width: zoom, height: zoom)
-        ctx.setStrokeColor(CGColor(srgbRed: 1, green: 0.2, blue: 0.2, alpha: 1)); ctx.setLineWidth(1); ctx.stroke(mid)
-        ctx.setStrokeColor(.white); ctx.setLineWidth(2); ctx.stroke(box)
-        ctx.restoreGState()
-        let label = " X: \(Int(p.x * s))  Y: \(Int(p.y * s)) "
-        NSAttributedString(string: label, attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
-                                                       .foregroundColor: NSColor.white,
-                                                       .backgroundColor: NSColor.black.withAlphaComponent(0.7)])
-            .draw(at: CGPoint(x: box.minX, y: box.maxY + 2))
+        return "\(Int((r.width * s).rounded())) × \(Int((r.height * s).rounded()))"
     }
 }

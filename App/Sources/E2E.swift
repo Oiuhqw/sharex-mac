@@ -1,3 +1,5 @@
+// Compiled only into CI test builds (SWIFT_ACTIVE_COMPILATION_CONDITIONS += SHAREX_E2E); never shipped.
+#if SHAREX_E2E
 import AppKit
 import ImageIO
 import ShareXCore
@@ -758,3 +760,4 @@ enum E2E {
         record("settings-window", shown, [:])
     }
 }
+#endif

@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import CoreImage
+import Metal
 import ShareXCore
 
 /// Draws a frozen frame plus annotations into a y-down context in frame points.
@@ -26,10 +27,26 @@ final class Renderer {
         Imaging.drawUpright(frame, in: CGRect(origin: .zero, size: pointSize), ctx: ctx)
     }
 
-    func draw(_ doc: EditorDocument, in ctx: CGContext, hide hiddenID: Int? = nil) {
+    /// Only the part of the frame under `area` (view points): a crop of the same pixels, not a full-screen raster.
+    func drawFrame(_ ctx: CGContext, in area: CGRect) {
+        let full = CGRect(origin: .zero, size: pointSize)
+        let a = area.intersection(full)
+        guard !a.isNull, !a.isEmpty else { return }
+        if a == full { return drawFrame(ctx) }
+        let px = CGRect(x: a.minX * scale, y: a.minY * scale, width: a.width * scale, height: a.height * scale).integral
+        guard let crop = frame.cropping(to: px) else { return }
+        ctx.interpolationQuality = smoothFrame ? .medium : .none
+        Imaging.drawUpright(crop, in: CGRect(x: px.minX / scale, y: px.minY / scale, width: px.width / scale, height: px.height / scale), ctx: ctx)
+    }
+
+    /// `clip` skips marks that cannot touch the invalidated area (CG would clip them anyway, after paying for them).
+    func draw(_ doc: EditorDocument, in ctx: CGContext, hide hiddenID: Int? = nil, clip: CGRect? = nil) {
         let live = Set(doc.annotations.map(\.id))
         effectCache = effectCache.filter { live.contains($0.key) }
-        for a in doc.annotations where a.id != hiddenID { draw(a, number: doc.stepNumber(of: a), ctx: ctx) }
+        for a in doc.annotations where a.id != hiddenID {
+            if let clip, a.kind != .spotlight, a.kind != .text, a.kind != .step, !AnnotationsView.reach(a).intersects(clip) { continue }
+            draw(a, number: doc.stepNumber(of: a), ctx: ctx)
+        }
     }
 
     func draw(_ a: Annotation, number: Int, ctx: CGContext) {
@@ -129,6 +146,12 @@ final class Renderer {
     private struct EffectKey: Hashable {
         let kind: ShapeKind, rect: PixelRect, strength: Double
     }
-    private let ciContext = CIContext(options: [.cacheIntermediates: false, .workingColorSpace: Imaging.colorSpace])
+    /// One Metal-backed CIContext for the whole app: creating one costs a pipeline/shader-cache setup per capture.
+    private static let sharedCI: CIContext = {
+        let opts: [CIContextOption: Any] = [.cacheIntermediates: false, .workingColorSpace: Imaging.colorSpace]
+        if let dev = MTLCreateSystemDefaultDevice() { return CIContext(mtlDevice: dev, options: opts) }
+        return CIContext(options: opts)
+    }()
+    private var ciContext: CIContext { Self.sharedCI }
     private lazy var ciFrame = CIImage(cgImage: frame)
 }
