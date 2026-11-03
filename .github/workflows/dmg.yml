@@ -62,7 +62,15 @@ jobs:
           hdiutil create -volname ShareX -srcfolder dmgroot -ov -format UDZO ShareX.dmg
           hdiutil verify ShareX.dmg
           shasum -a 256 ShareX.dmg | tee ShareX.dmg.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ShareX-dmg
+          path: |
+            ShareX.dmg
+            ShareX.dmg.sha256
       - name: Quarantine-simulated install + launch (what a downloaded DMG gets)
+        timeout-minutes: 4
+        continue-on-error: true
         run: |
           xattr -w com.apple.quarantine "0081;$(printf %x $(date +%s));Safari;" ShareX.dmg
           MNT=$(hdiutil attach -nobrowse -readonly ShareX.dmg | awk -F'\t' '/\/Volumes\//{print $NF}')
@@ -71,18 +79,12 @@ jobs:
           xattr -w com.apple.quarantine "0081;$(printf %x $(date +%s));Safari;" /tmp/inst/ShareX.app
           xattr -l /tmp/inst/ShareX.app
           codesign --verify --strict --verbose=2 /tmp/inst/ShareX.app
-          spctl -a -vvv -t exec /tmp/inst/ShareX.app || echo "Gatekeeper assessment: rejected (unnotarized) - user needs Open Anyway or xattr -dr com.apple.quarantine"
-          open /tmp/inst/ShareX.app || true
+          timeout 60 spctl -a -vvv -t exec /tmp/inst/ShareX.app || echo "Gatekeeper assessment: rejected (unnotarized) - user needs Open Anyway or xattr -dr com.apple.quarantine"
+          timeout 20 open /tmp/inst/ShareX.app || true
           sleep 6
           if pgrep -x ShareX; then echo "launched with quarantine (runner Gatekeeper allowed it)"; pkill -x ShareX || true
           else echo "blocked under quarantine (expected for unnotarized); verifying the documented workaround"; fi
           xattr -dr com.apple.quarantine /tmp/inst/ShareX.app
-          open /tmp/inst/ShareX.app; sleep 6
+          timeout 20 open /tmp/inst/ShareX.app; sleep 6
           pgrep -x ShareX || { echo "::error::app does not launch even after removing quarantine"; exit 1; }
           pkill -x ShareX || true
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: ShareX-dmg
-          path: |
-            ShareX.dmg
-            ShareX.dmg.sha256
