@@ -77,7 +77,7 @@ final class Renderer {
             for p in a.points.dropFirst() { ctx.addLine(to: p) }
             ctx.strokePath()
         case .blur, .pixelate:
-            if let patch = effectPatch(a) { ctx.interpolationQuality = smoothFrame || a.id == liveEffectID ? .medium : .none; Imaging.drawUpright(patch.image, in: patch.rect, ctx: ctx) }
+            if let patch = effectPatch(a) { ctx.interpolationQuality = smoothFrame ? .medium : .none; Imaging.drawUpright(patch.image, in: patch.rect, ctx: ctx) }
         case .spotlight:
             ctx.beginPath()
             ctx.addRect(CGRect(origin: .zero, size: pointSize))
@@ -132,14 +132,6 @@ final class Renderer {
         let src = ciFrame.cropped(to: ciRect).clampedToExtent()
         // Strength and grid placement are decided in the core (EffectMath, unit-tested); CoreImage makes the pixels.
         let anchor = EffectMath.pixelateCenter(yUp: px.flippedY(height: frame.height))
-        // While a blur is being dragged, work at half resolution (a Gaussian looks the same; 4x fewer pixels to
-        // filter and read back). The committed mark is recomputed at full resolution on mouse-up.
-        if a.kind == .blur, a.id == liveEffectID, px.w >= 64, px.h >= 64 {
-            let half = src.transformed(by: CGAffineTransform(scaleX: 0.5, y: 0.5))
-            let hr = CGRect(x: ciRect.minX / 2, y: ciRect.minY / 2, width: ciRect.width / 2, height: ciRect.height / 2).integral
-            let o = half.applyingGaussianBlur(sigma: EffectMath.blurSigma(strength: a.style.strength, scale: scale) / 2).cropped(to: hr)
-            if let cg = ciContext.createCGImage(o, from: hr, format: .RGBA8, colorSpace: frame.colorSpace ?? Imaging.colorSpace) { return (cg, rect) }
-        }
         let out: CIImage = a.kind == .blur
             ? src.applyingGaussianBlur(sigma: EffectMath.blurSigma(strength: a.style.strength, scale: scale))
             : src.applyingFilter("CIPixellate", parameters: [kCIInputScaleKey: EffectMath.pixelateBlock(strength: a.style.strength, scale: scale),
