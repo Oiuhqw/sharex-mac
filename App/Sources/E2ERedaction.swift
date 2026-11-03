@@ -18,14 +18,16 @@ enum E2ERedaction {
         return true
     }
 
-    private static func snapshot(_ view: NSView, scale: CGFloat) -> E2E.Bitmap? {
+    private static func snapshot(_ view: NSView, scale: CGFloat, name: String? = nil) -> E2E.Bitmap? {
         view.window?.displayIfNeeded()
         CATransaction.flush()
         guard let layer = view.layer,
               let ctx = Imaging.context(width: Int(size.width * scale), height: Int(size.height * scale), flipped: true) else { return nil }
         ctx.scaleBy(x: scale, y: scale)
         layer.render(in: ctx)
-        return ctx.makeImage().map(E2E.bitmap)
+        guard let image = ctx.makeImage() else { return nil }
+        if let name { E2EOrientation.writePNG(image, name) }
+        return E2E.bitmap(image)
     }
 
     private static func effectRestored(_ image: E2E.Bitmap, baseline: E2E.Bitmap, area: PixelRect) -> Bool {
@@ -41,6 +43,21 @@ enum E2ERedaction {
             } else if !same { return false }
         } }
         return hasColor && changed
+    }
+
+    private static func differences(_ actual: E2E.Bitmap?, expected: E2E.Bitmap?, mask: PixelRect? = nil) -> [String: Any] {
+        guard let actual, let expected, actual.w == expected.w, actual.h == expected.h else { return ["missingOrWrongSize": true] }
+        var count = 0, bounds = CGRect.null
+        var first: [String: Any] = [:]
+        for y in 0..<actual.h { for x in 0..<actual.w {
+            let i = (y * actual.w + x) * 4
+            let covered = mask.map { x >= $0.x && x < $0.x + $0.w && y >= $0.y && y < $0.y + $0.h } ?? false
+            let wanted = covered ? [UInt8(0), 0, 0, 255] : Array(expected.px[i..<(i + 4)])
+            if actual.px[i..<(i + 4)].elementsEqual(wanted) { continue }
+            count += 1; bounds = bounds.union(CGRect(x: x, y: y, width: 1, height: 1))
+            if first.isEmpty { first = ["xy": [x, y], "actual": Array(actual.px[i..<(i + 4)]), "expected": wanted] }
+        } }
+        return ["pixels": count, "bounds": bounds.isNull ? [] : [bounds.minX, bounds.minY, bounds.width, bounds.height], "first": first]
     }
 
     static func run() async {
@@ -119,7 +136,7 @@ enum E2ERedaction {
                 }
             }
             overlappingEffects(image: image, scale: scale)
-            movingFailedEffect(image: image, scale: scale)
+            await movingFailedEffect(image: image, scale: scale)
             await partialRedrawRecovery(image: image, scale: scale)
         }
     }
@@ -188,7 +205,7 @@ enum E2ERedaction {
         }
     }
 
-    private static func movingFailedEffect(image: CGImage, scale: CGFloat) {
+    private static func movingFailedEffect(image: CGImage, scale: CGFloat) async {
         for kind in [ShapeKind.blur, .pixelate] {
             let name = "\(kind.rawValue)-\(Int(scale))x"
             var doc = EditorDocument()
@@ -205,36 +222,47 @@ enum E2ERedaction {
             root.addSubview(live)
             let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false; window.contentView = root; window.orderFrontRegardless()
-            let baseline = snapshot(root, scale: scale)
+            let baseline = snapshot(root, scale: scale, name: "redaction-move-\(name)-baseline.png")
             committed.sync(doc, hide: nil)
             live.show(nil, renderer: renderer)
-            _ = snapshot(root, scale: scale)
+            _ = snapshot(root, scale: scale, name: "redaction-move-\(name)-committed.png")
             renderer.liveEffectID = id
             committed.sync(doc, hide: nil, live: id)
             live.show(doc.selected, renderer: renderer)
-            _ = snapshot(root, scale: scale)
+            _ = snapshot(root, scale: scale, name: "redaction-move-\(name)-drag-start.png")
 
             doc.move(id, by: Offset(dx: 130, dy: 100))
             committed.sync(doc, hide: nil, live: id)
             live.show(doc.selected, renderer: renderer)
-            let moved = snapshot(root, scale: scale)
+            let moved = snapshot(root, scale: scale, name: "redaction-move-\(name)-moved-immediate.png")
             let area = doc.selected.flatMap {
                 Geometry.pixelRect($0.rect, scale: scale).clamped(width: image.width, height: image.height)
             }
             let moveOK = baseline.flatMap { base in moved.map { matchesMask($0, baseline: base, area: area) } } ?? false
-            E2E.record("redaction-failed-move-clears-old-\(name)", moveOK && area != nil)
+            await E2E.wait(20)
+            let movedSettled = snapshot(root, scale: scale, name: "redaction-move-\(name)-moved-settled.png")
+            E2E.record("redaction-failed-move-clears-old-\(name)", moveOK && area != nil,
+                       ["immediate": differences(moved, expected: baseline, mask: area),
+                        "settled": differences(movedSettled, expected: baseline, mask: area),
+                        "failureRects": renderer.redactionFailureRects.map { [$0.minX, $0.minY, $0.width, $0.height] }])
 
             renderer.e2eRejectEffectImage = false
             live.show(doc.selected, renderer: renderer)
-            let recovered = snapshot(root, scale: scale)
+            let recovered = snapshot(root, scale: scale, name: "redaction-move-\(name)-recovered-immediate.png")
             let flat = Export.flatten(renderer: renderer, doc: doc, crop: CGRect(origin: .zero, size: size), lasso: nil)
+            if let flat { E2EOrientation.writePNG(flat, "redaction-move-\(name)-export.png") }
+            await E2E.wait(20)
+            let recoveredSettled = snapshot(root, scale: scale, name: "redaction-move-\(name)-recovered-settled.png")
             let recoveryOK: Bool
             if let recovered, let flat, let baseline, let area {
                 recoveryOK = renderer.redactionFailureRects.isEmpty
                     && effectRestored(recovered, baseline: baseline, area: area)
                     && recovered.px == E2E.bitmap(flat).px
             } else { recoveryOK = false }
-            E2E.record("redaction-failed-move-recovery-\(name)", recoveryOK)
+            E2E.record("redaction-failed-move-recovery-\(name)", recoveryOK,
+                       ["immediateVsExport": differences(recovered, expected: flat.map(E2E.bitmap)),
+                        "settledVsExport": differences(recoveredSettled, expected: flat.map(E2E.bitmap)),
+                        "failureRects": renderer.redactionFailureRects.map { [$0.minX, $0.minY, $0.width, $0.height] }])
             window.orderOut(nil); window.contentView = nil
         }
     }
