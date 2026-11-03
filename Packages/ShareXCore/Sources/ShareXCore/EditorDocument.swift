@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 /// The undoable part of the editor: marks plus the crop. Selection and the active tool are not undoable.
 public struct EditorState: Codable, Equatable, Sendable {

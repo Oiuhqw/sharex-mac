@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 /// Kinds of mark the editor can place. All geometry is in frozen-frame points, y-down.
 public enum ShapeKind: String, Codable, CaseIterable, Sendable {

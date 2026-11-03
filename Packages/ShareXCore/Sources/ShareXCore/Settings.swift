@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 /// The last region, stored per display so it replays on the same monitor at the same spot.
 public struct LastRegion: Codable, Equatable, Sendable {

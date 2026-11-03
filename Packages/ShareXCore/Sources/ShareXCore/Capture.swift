@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 /// What the user picks before the shot. Mirrors ShareX's Capture menu, screenshot items only.
 public enum CaptureStyle: String, Codable, CaseIterable, Sendable {
