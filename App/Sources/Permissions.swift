@@ -8,7 +8,7 @@ enum Permissions {
     /// Prompts once per install. Returns whether access is granted right now.
     @discardableResult
     static func requestScreenRecording() -> Bool {
-        hasScreenRecording || CGRequestScreenCaptureAccess()
+        ScreenCapture.e2eFixture != nil || hasScreenRecording || CGRequestScreenCaptureAccess()
     }
 
     static func openSettings() {

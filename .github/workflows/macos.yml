@@ -63,6 +63,17 @@ jobs:
           kill "$PID"; wait "$PID" 2>/dev/null || true
           echo "ShareX stayed up for 10 s"
 
+      - name: E2E (real app, real pasteboard; SCK if TCC grant works)
+        run: scripts/e2e.sh
+
+      - name: Upload E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e
+          path: e2e-out
+          if-no-files-found: ignore
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4

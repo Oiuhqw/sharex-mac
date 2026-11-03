@@ -7,6 +7,7 @@ import SwiftUI
 enum Main {
     static func main() {
         let app = NSApplication.shared
+        if E2E.handlesHelperMode() { return }
         let delegate = AppDelegate()
         app.delegate = delegate
         // LSUIElement in Info.plist already makes this a menu-bar app with no Dock icon.
@@ -41,10 +42,10 @@ private func editMenuBar() -> NSMenu {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private let settings = SettingsStore()
-    private lazy var coordinator = CaptureCoordinator(settings: settings)
-    private var statusItem: NSStatusItem!
-    private var settingsWindow: NSWindow?
+    let settings = SettingsStore()
+    lazy var coordinator = CaptureCoordinator(settings: settings)
+    var statusItem: NSStatusItem!
+    var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -53,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
         Hotkeys.register { [weak self] in self?.coordinator.capture($0) }
+        if E2E.enabled { E2E.start(self); return }
         if !Permissions.hasScreenRecording { Permissions.requestScreenRecording() }
     }
 
@@ -127,7 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func openSettings() {
+    @objc func openSettings() {
         if settingsWindow == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(store: settings)))
             w.title = "ShareX Settings"

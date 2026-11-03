@@ -30,6 +30,8 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
     }
 
     private var surfaces: [Surface] = []
+    /// E2E seam: the live windows and editors of this session.
+    var e2eSurfaces: [(window: NSWindow, view: EditorView)] { surfaces.map { ($0.window, $0.view) } }
     private var completion: ((EditorOutcome) -> Void)?
     private let onStyles: ([ShapeKind: ShapeStyle]) -> Void
     private var previousApp: NSRunningApplication?

@@ -5,8 +5,8 @@ import ShareXCore
 @MainActor
 final class CaptureCoordinator {
     private let settings: SettingsStore
-    private var overlay: OverlayController?
-    private var busy = false
+    private(set) var overlay: OverlayController?
+    private(set) var busy = false
 
     init(settings: SettingsStore) { self.settings = settings }
 

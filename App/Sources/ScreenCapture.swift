@@ -41,6 +41,9 @@ enum CaptureError: LocalizedError {
 /// displays; window styles capture the window itself with a desktop-independent filter.
 @MainActor
 enum ScreenCapture {
+    /// E2E seam, set only by `--e2e` when Screen Recording cannot be granted: a synthetic frame of the given pixel size.
+    static var e2eFixture: ((Int, Int) -> CGImage?)?
+
     static func displayID(of screen: NSScreen) -> CGDirectDisplayID {
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
     }
@@ -67,6 +70,12 @@ enum ScreenCapture {
 
     /// Freezes the given screens. Our own windows are excluded from the frame.
     static func freeze(_ screens: [NSScreen], showCursor: Bool) async throws -> [FrozenScreen] {
+        if let fx = e2eFixture {
+            return screens.compactMap { s in
+                let sc = s.backingScaleFactor
+                return fx(Int(s.frame.width * sc), Int(s.frame.height * sc)).map { FrozenScreen(screen: s, displayID: displayID(of: s), image: $0) }
+            }
+        }
         let content = try await shareableContent()
         let ours = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
         var out: [FrozenScreen] = []
@@ -91,6 +100,11 @@ enum ScreenCapture {
     /// The system shadow is always dropped: how SCK sizes a kept shadow is unverified, so the app draws its own
     /// shadow (DecorationLayout) and the border wraps the window, not shadow padding. No cursor, as in ShareX.
     static func captureWindow(_ info: WindowInfo) async throws -> WindowShot {
+        if let fx = e2eFixture, let s = NSScreen.screens.first {
+            let sc = s.backingScaleFactor
+            guard let img = fx(Int((info.frame.width * sc).rounded()), Int((info.frame.height * sc).rounded())) else { throw CaptureError.noDisplays }
+            return WindowShot(image: img, scale: sc, screen: s)
+        }
         let content = try await shareableContent()
         guard let w = content.windows.first(where: { $0.windowID == info.id }) else { throw CaptureError.windowGone }
         guard let screen = NSScreen.screens.max(by: { overlap($0.frame, info.frame) < overlap($1.frame, info.frame) })
