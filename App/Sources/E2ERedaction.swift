@@ -61,6 +61,24 @@ enum E2ERedaction {
         }
     }
 
+    private static func freshNativePreview(image: CGImage, mark: Annotation, scale: CGFloat, name: String) async -> E2E.Bitmap? {
+        let renderer = Renderer(frame: image, scale: scale)
+        renderer.liveEffectID = mark.id
+        let root = PassThroughView(frame: CGRect(origin: .zero, size: size))
+        root.layerContentsRedrawPolicy = .never
+        root.addSubview(FrameView(frame: root.bounds, image: image, smooth: false))
+        let committed = AnnotationsView(frame: root.bounds, renderer: renderer)
+        root.addSubview(committed); committed.sync(EditorDocument(), hide: nil)
+        let live = LiveMarkView(frame: root.bounds)
+        root.addSubview(live); live.show(mark, renderer: renderer)
+        let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.sharingType = .readOnly; window.hasShadow = false
+        window.contentView = root; window.orderFrontRegardless()
+        let result = await windowSnapshot(window, name: name)
+        window.orderOut(nil); window.contentView = nil
+        return result
+    }
+
     private static func effectRestored(_ image: E2E.Bitmap, baseline: E2E.Bitmap, area: PixelRect) -> Bool {
         guard image.w == baseline.w, image.h == baseline.h else { return false }
         var hasColor = false, changed = false
@@ -89,6 +107,20 @@ enum E2ERedaction {
             if first.isEmpty { first = ["xy": [x, y], "actual": Array(actual.px[i..<(i + 4)]), "expected": wanted] }
         } }
         return ["pixels": count, "bounds": bounds.isNull ? [] : [bounds.minX, bounds.minY, bounds.width, bounds.height], "first": first]
+    }
+
+    private static func recordNativeComparison(_ name: String, native: E2E.Bitmap?, composed: E2E.Bitmap?,
+                                              sourceScale: CGFloat, backingScale: CGFloat) {
+        guard let native, let composed else {
+            E2E.record("redaction-native-compositor-\(name)", false, ["error": "missing comparison image"]); return
+        }
+        let sameScale = abs(sourceScale - backingScale) < 0.001
+        E2E.record("redaction-native-compositor-\(name)", sameScale && native.px == composed.px,
+                   ["sourceScale": sourceScale, "actualBackingScale": backingScale,
+                    "nativeVsComposed": differences(native, expected: composed),
+                    "note": sameScale ? "Exact comparison at matching source and display scale."
+                        : "The runner downsamples the source to its lower display scale. WindowServer and software layer rendering use different sampling. This does not verify a physical Retina compositor."],
+                   status: sameScale ? nil : "unverifiable")
     }
 
     static func run() async {
@@ -286,13 +318,14 @@ enum E2ERedaction {
             }
             let composedMoved = snapshot(root, scale: nativeScale, name: "redaction-move-\(name)-composed-native-scale.png")
             let nativeMoveOK: Bool
-            if let nativeMoved, let nativeBaseline, let composedMoved, let nativeArea {
+            if let nativeMoved, let nativeBaseline, let nativeArea {
                 nativeMoveOK = matchesMask(nativeMoved, baseline: nativeBaseline, area: nativeArea)
-                    && nativeMoved.px == composedMoved.px
             } else { nativeMoveOK = false }
-            E2E.record("redaction-native-move-equivalence-\(name)", nativeMoveOK,
+            E2E.record("redaction-native-move-mask-\(name)", nativeMoveOK,
                        ["actualBackingScale": nativeScale, "nativeVsComposed": differences(nativeMoved, expected: composedMoved),
                         "nativeMask": differences(nativeMoved, expected: nativeBaseline, mask: nativeArea)])
+            recordNativeComparison("move-\(name)", native: nativeMoved, composed: composedMoved,
+                                   sourceScale: scale, backingScale: nativeScale)
 
             renderer.e2eRejectEffectImage = false
             live.show(doc.selected, renderer: renderer)
@@ -313,14 +346,22 @@ enum E2ERedaction {
                         "failureRects": renderer.redactionFailureRects.map { [$0.minX, $0.minY, $0.width, $0.height] }])
             let nativeRecovered = await windowSnapshot(window, name: "redaction-move-\(name)-native-recovered.png")
             let composedRecovered = snapshot(root, scale: nativeScale, name: "redaction-move-\(name)-recovered-composed-native-scale.png")
+            var nativeReference: E2E.Bitmap?
+            if let mark = doc.selected {
+                nativeReference = await freshNativePreview(image: image, mark: mark, scale: scale,
+                                                          name: "redaction-move-\(name)-native-fresh-reference.png")
+            }
             let nativeRecoveryOK: Bool
-            if let nativeRecovered, let nativeBaseline, let composedRecovered, let nativeArea {
+            if let nativeRecovered, let nativeBaseline, let nativeArea, let nativeReference {
                 nativeRecoveryOK = renderer.redactionFailureRects.isEmpty
                     && effectRestored(nativeRecovered, baseline: nativeBaseline, area: nativeArea)
-                    && nativeRecovered.px == composedRecovered.px
+                    && nativeRecovered.px == nativeReference.px
             } else { nativeRecoveryOK = false }
-            E2E.record("redaction-native-recovery-equivalence-\(name)", nativeRecoveryOK,
-                       ["actualBackingScale": nativeScale, "nativeVsComposed": differences(nativeRecovered, expected: composedRecovered)])
+            E2E.record("redaction-native-recovery-content-\(name)", nativeRecoveryOK,
+                       ["actualBackingScale": nativeScale, "nativeVsComposed": differences(nativeRecovered, expected: composedRecovered),
+                        "nativeVsFreshReference": differences(nativeRecovered, expected: nativeReference)])
+            recordNativeComparison("recovery-\(name)", native: nativeRecovered, composed: composedRecovered,
+                                   sourceScale: scale, backingScale: nativeScale)
             window.orderOut(nil); window.contentView = nil
         }
     }
