@@ -33,6 +33,10 @@ jobs:
             echo "::error::E2E code found in the shipped binary"; exit 1
           fi
           echo "no --e2e strings in $BIN"
+          # Symbols too: any E2E/E2EPerf/E2EOrientation type or function left in the binary fails the build.
+          SYMS=$(nm -a "$BIN" 2>/dev/null | grep -E 'E2E|e2eFixture|e2eDisplayFixture|e2eSurfaces' || true)
+          if [ -n "$SYMS" ]; then echo "$SYMS" | head -20; echo "::error::E2E symbols found in the shipped binary"; exit 1; fi
+          echo "nm: no E2E symbols ($(nm -a "$BIN" 2>/dev/null | wc -l | tr -d ' ') symbols checked)"
       - name: Ad-hoc sign inside-out with Hardened Runtime (no --deep)
         run: |
           # Nested code first (frameworks, dylibs, helpers, XPC, bundles), deepest paths first, then the app.
@@ -70,21 +74,29 @@ jobs:
             ShareX.dmg.sha256
       - name: Quarantine-simulated install + launch (what a downloaded DMG gets)
         timeout-minutes: 4
-        continue-on-error: true
         run: |
+          # macOS has no GNU timeout: bound each Gatekeeper call with a perl alarm (SIGALRM kills it, exit 142).
+          t() { local s=$1; shift; perl -e 'alarm shift; exec @ARGV' "$s" "$@"; }
+          R="$GITHUB_STEP_SUMMARY"; echo "### Quarantine probe" >> "$R"
           xattr -w com.apple.quarantine "0081;$(printf %x $(date +%s));Safari;" ShareX.dmg
           MNT=$(hdiutil attach -nobrowse -readonly ShareX.dmg | awk -F'\t' '/\/Volumes\//{print $NF}')
           rm -rf /tmp/inst && mkdir /tmp/inst && cp -R "$MNT/ShareX.app" /tmp/inst/
           hdiutil detach "$MNT"
           xattr -w com.apple.quarantine "0081;$(printf %x $(date +%s));Safari;" /tmp/inst/ShareX.app
-          xattr -l /tmp/inst/ShareX.app
+          xattr -l /tmp/inst/ShareX.app | tee -a "$R"
           codesign --verify --strict --verbose=2 /tmp/inst/ShareX.app
-          timeout 60 spctl -a -vvv -t exec /tmp/inst/ShareX.app || echo "Gatekeeper assessment: rejected (unnotarized) - user needs Open Anyway or xattr -dr com.apple.quarantine"
-          timeout 20 open /tmp/inst/ShareX.app || true
+          set +e
+          t 60 spctl -a -vvv -t exec /tmp/inst/ShareX.app > spctl.txt 2>&1; SP=$?
+          cat spctl.txt; echo "- spctl exit $SP: $(tr '\n' ' ' < spctl.txt)" >> "$R"
+          t 20 open /tmp/inst/ShareX.app; OP=$?
           sleep 6
-          if pgrep -x ShareX; then echo "launched with quarantine (runner Gatekeeper allowed it)"; pkill -x ShareX || true
-          else echo "blocked under quarantine (expected for unnotarized); verifying the documented workaround"; fi
+          if pgrep -x ShareX >/dev/null; then Q="launched with quarantine (runner Gatekeeper allowed it)"; pkill -x ShareX
+          else Q="blocked under quarantine (expected for unnotarized)"; fi
+          echo "- open exit $OP; $Q" | tee -a "$R"
           xattr -dr com.apple.quarantine /tmp/inst/ShareX.app
-          timeout 20 open /tmp/inst/ShareX.app; sleep 6
-          pgrep -x ShareX || { echo "::error::app does not launch even after removing quarantine"; exit 1; }
-          pkill -x ShareX || true
+          echo "- quarantine after xattr -dr: $(xattr -p com.apple.quarantine /tmp/inst/ShareX.app 2>&1)" | tee -a "$R"
+          t 20 open /tmp/inst/ShareX.app; OP2=$?
+          sleep 6
+          if pgrep -x ShareX >/dev/null; then echo "- xattr -dr workaround: launched (open exit $OP2)" | tee -a "$R"; pkill -x ShareX; RC=0
+          else echo "- xattr -dr workaround: FAILED to launch (open exit $OP2)" | tee -a "$R"; echo "::error::app does not launch after removing quarantine"; RC=1; fi
+          exit $RC

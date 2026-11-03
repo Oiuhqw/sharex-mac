@@ -42,6 +42,31 @@ enum E2EPerf {
         return Perf.now() - t0
     }
 
+    static func cpuNow() -> Double { Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)) / 1e6 }
+
+    /// One drag event, measured three ways:
+    /// cpu = main-thread CPU time (event + any raster + layer commit), excludes time blocked waiting;
+    /// wall = the same span in wall time (includes waits inside displayIfNeeded/flush);
+    /// onScreen = from the event until the next display-link tick after the commit, i.e. the earliest frame it
+    /// can appear in (WindowServer compositing itself is not visible to the app).
+    static var samples: (cpu: [Double], wall: [Double], screen: [Double]) = ([], [], [])
+    static func timed(_ t: NSEvent.EventType, _ p: CGPoint, _ v: EditorView, _ w: NSWindow, _ vs: Vsync) async {
+        let t0 = Perf.now(), c0 = cpuNow()
+        send(t, p, v, w)
+        w.displayIfNeeded()
+        CATransaction.flush()
+        let c1 = cpuNow(), t1 = Perf.now()
+        let tick = await vs.next()
+        samples.cpu.append(c1 - c0); samples.wall.append(t1 - t0)
+        if tick > 0 { samples.screen.append(tick - t0) }
+    }
+    static func takeSamples(_ key: String) {
+        out[key] = stats(samples.cpu)
+        out[key.replacingOccurrences(of: "_ms", with: "_wall_ms")] = stats(samples.wall)
+        out[key.replacingOccurrences(of: "_ms", with: "_onScreen_ms")] = stats(samples.screen)
+        samples = ([], [], [])
+    }
+
     static func path(_ n: Int, from a: CGPoint, to b: CGPoint) -> [CGPoint] {
         (0..<n).map { i in let f = CGFloat(i) / CGFloat(n - 1); return CGPoint(x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f + 30 * sin(f * 12)) }
     }
@@ -68,52 +93,17 @@ enum E2EPerf {
             let v = EditorView(frame: CGRect(origin: .zero, size: ptSize), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
                                initialCrop: nil, styles: [:], showMagnifier: true, pickRects: [], finishOnPick: false)
             let w = window(for: v); w.displayIfNeeded()
-            var moves: [Double] = []
-            for p in path(60, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 1500, y: 900)) { moves.append(frame(.mouseMoved, p, v, w)) }
-            out["hoverMove2x_ms"] = stats(moves)
+            let vs = Vsync(w)
+            for p in path(60, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 1500, y: 900)) { await timed(.mouseMoved, p, v, w, vs) }
+            takeSamples("hoverMove2x_ms")
             _ = frame(.leftMouseDown, CGPoint(x: 200, y: 150), v, w)
-            var t: [Double] = []
-            for p in path(120, from: CGPoint(x: 210, y: 160), to: CGPoint(x: 1400, y: 950)) { t.append(frame(.leftMouseDragged, p, v, w)) }
-            out["regionDrag2x_ms"] = stats(t)
+            for p in path(120, from: CGPoint(x: 210, y: 160), to: CGPoint(x: 1400, y: 950)) { await timed(.leftMouseDragged, p, v, w, vs) }
+            takeSamples("regionDrag2x_ms")
             _ = frame(.leftMouseUp, CGPoint(x: 1400, y: 950), v, w)
             w.orderOut(nil); w.contentView = nil
         }
 
-        // Orientation check for the layer views, from real window pixels (ScreenCaptureKit): a uniform grey frame
-        // with an editing crop in the top-left quarter must be bright top-left and dimmed bottom-right.
-        do {
-            let gw = 400, gh = 300
-            if let g = Imaging.context(width: gw, height: gh, flipped: true) {
-                g.setFillColor(CGColor(gray: 0.8, alpha: 1)); g.fill(CGRect(x: 0, y: 0, width: gw, height: gh))
-                if let grey = g.makeImage() {
-                    let size = CGSize(width: 200, height: 150)
-                    let v = EditorView(frame: CGRect(origin: .zero, size: size), renderer: Renderer(frame: grey, scale: 2), mode: .rectangle,
-                                       initialCrop: CGRect(x: 0, y: 0, width: 100, height: 75), styles: [:],
-                                       showMagnifier: false, pickRects: [], finishOnPick: false)
-                    let w = OverlayWindow(contentRect: CGRect(x: 100, y: 100, width: 200, height: 150), styleMask: .borderless, backing: .buffered, defer: false)
-                    w.isReleasedWhenClosed = false; w.sharingType = .readOnly; w.contentView = v; w.orderFrontRegardless()
-                    w.displayIfNeeded(); CATransaction.flush()
-                    await E2E.wait(300)
-                    var res: [String: Any] = [:]
-                    do {
-                        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                        if let sw = content.windows.first(where: { $0.windowID == CGWindowID(w.windowNumber) }) {
-                            let cfg = SCStreamConfiguration(); cfg.width = 200; cfg.height = 150; cfg.showsCursor = false
-                            let shot = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: sw), configuration: cfg)
-                            if let c = CGContext(data: nil, width: 200, height: 150, bitsPerComponent: 8, bytesPerRow: 800, space: Imaging.colorSpace,
-                                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
-                                c.draw(shot, in: CGRect(x: 0, y: 0, width: 200, height: 150))
-                                let p = c.data!.assumingMemoryBound(to: UInt8.self)
-                                func g(_ x: Int, _ y: Int) -> Int { Int(p[(y * 200 + x) * 4]) }   // row 0 = top
-                                res = ["topLeft": g(40, 30), "bottomRight": g(160, 120), "ok": g(40, 30) > g(160, 120) + 40]
-                            }
-                        } else { res = ["skipped": "window not in SCShareableContent"] }
-                    } catch { res = ["skipped": "\(error.localizedDescription)"] }
-                    out["layerOrientation"] = res
-                    w.orderOut(nil); w.contentView = nil
-                }
-            }
-        }
+        // On-screen orientation is checked by E2EOrientation (E2E run, fails CI).
 
         // 3. Annotation drags with 3 blur + 2 pixelate + shapes already committed.
         do {
@@ -138,25 +128,26 @@ enum E2EPerf {
             shape(.arrow, CGPoint(x: 1200, y: 950), CGPoint(x: 1600, y: 650))
             shape(.pen, CGPoint(x: 150, y: 950), CGPoint(x: 900, y: 1000))
 
-            func timedShape(_ k: ShapeKind, _ key: String, _ a: CGPoint, _ b: CGPoint) {
+            let vs = Vsync(w)
+            var ups: [Double] = []
+            func timedShape(_ k: ShapeKind, _ key: String, _ a: CGPoint, _ b: CGPoint) async {
                 v.setTool(.shape(k))
                 _ = frame(.leftMouseDown, a, v, w)
-                var t: [Double] = []
-                for p in path(120, from: a, to: b) { t.append(frame(.leftMouseDragged, p, v, w)) }
-                _ = frame(.leftMouseUp, b, v, w)
-                out[key] = stats(t)
+                for p in path(120, from: a, to: b) { await timed(.leftMouseDragged, p, v, w, vs) }
+                takeSamples(key)
+                ups.append(frame(.leftMouseUp, b, v, w))   // commit into the annotation bitmap
             }
-            timedShape(.rectangle, "annotRectDrag2x_ms", CGPoint(x: 300, y: 300), CGPoint(x: 1300, y: 1000))
-            timedShape(.pen, "annotPenDrag2x_ms", CGPoint(x: 300, y: 300), CGPoint(x: 1500, y: 1000))
-            timedShape(.highlighter, "annotHighlighterDrag2x_ms", CGPoint(x: 200, y: 250), CGPoint(x: 1200, y: 700))
-            timedShape(.blur, "annotNewBlurDrag2x_ms", CGPoint(x: 700, y: 550), CGPoint(x: 1300, y: 1000))
+            await timedShape(.rectangle, "annotRectDrag2x_ms", CGPoint(x: 300, y: 300), CGPoint(x: 1300, y: 1000))
+            await timedShape(.pen, "annotPenDrag2x_ms", CGPoint(x: 300, y: 300), CGPoint(x: 1500, y: 1000))
+            await timedShape(.highlighter, "annotHighlighterDrag2x_ms", CGPoint(x: 200, y: 250), CGPoint(x: 1200, y: 700))
+            await timedShape(.blur, "annotNewBlurDrag2x_ms", CGPoint(x: 700, y: 550), CGPoint(x: 1300, y: 1000))
             // Move an existing blur (live effect recomputed as it moves).
             v.setTool(.select)
             _ = frame(.leftMouseDown, CGPoint(x: 300, y: 350), v, w)
-            var mv: [Double] = []
-            for p in path(120, from: CGPoint(x: 300, y: 350), to: CGPoint(x: 900, y: 700)) { mv.append(frame(.leftMouseDragged, p, v, w)) }
-            _ = frame(.leftMouseUp, CGPoint(x: 900, y: 700), v, w)
-            out["annotMoveBlur2x_ms"] = stats(mv)
+            for p in path(120, from: CGPoint(x: 300, y: 350), to: CGPoint(x: 900, y: 700)) { await timed(.leftMouseDragged, p, v, w, vs) }
+            takeSamples("annotMoveBlur2x_ms")
+            ups.append(frame(.leftMouseUp, CGPoint(x: 900, y: 700), v, w))
+            out["annotCommitOnMouseUp2x_wall_ms"] = stats(ups)
 
             // 4. Commit -> clipboard ready (flatten + decorate + PNG/TIFF on the pasteboard), full 2x display crop.
             var clip: [Double] = [], save: [Double] = []
@@ -209,6 +200,28 @@ enum E2EPerf {
         if let d = try? JSONSerialization.data(withJSONObject: out, options: [.prettyPrinted, .sortedKeys]) {
             try? d.write(to: E2E.out.appendingPathComponent("perf.json"))
             NSLog("E2E PERF %@", String(decoding: d, as: UTF8.self))
+        }
+    }
+
+    /// Resolves at the window's next display-link tick (or -1 after 100 ms when the runner never ticks).
+    @MainActor final class Vsync: NSObject {
+        private var token = 0
+        private var link: CADisplayLink?
+        private var cont: CheckedContinuation<Double, Never>?
+        init(_ w: NSWindow) {
+            super.init()
+            link = w.displayLink(target: self, selector: #selector(tick(_:)))
+            link?.isPaused = true
+            link?.add(to: .main, forMode: .common)
+        }
+        @objc func tick(_ l: CADisplayLink) { resume(Perf.now()) }
+        private func resume(_ v: Double) { link?.isPaused = true; let c = cont; cont = nil; c?.resume(returning: v) }
+        func next() async -> Double {
+            await withCheckedContinuation { c in
+                token += 1; let t = token
+                cont = c; link?.isPaused = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { MainActor.assumeIsolated { if self.token == t { self.resume(-1) } } }
+            }
         }
     }
 

@@ -74,23 +74,29 @@ enum ScreenCapture {
     /// at launch, refreshed after each capture and dropped on display changes. Window captures always fetch fresh.
     private static var cached: (content: SCShareableContent, at: Double)?
     private static var observing = false
+    /// Bumped on every screen change; a fetch that started under an older generation is discarded.
+    private static var generation = 0
     static func prefetch() {
         if !observing {
             observing = true
             NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
-                MainActor.assumeIsolated { cached = nil }
+                MainActor.assumeIsolated { cached = nil; generation += 1 }
             }
         }
         guard e2eFixture == nil, CGPreflightScreenCaptureAccess() else { return }
+        let gen = generation
         Task { @MainActor in
-            if let c = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) { cached = (c, Perf.now()) }
+            if let c = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true), gen == generation {
+                cached = (c, Perf.now())
+            }
         }
     }
     private static func displayContent(for ids: [CGDirectDisplayID]) async throws -> SCShareableContent {
         if let c = cached, Perf.now() - c.at < 60_000,
            ids.allSatisfy({ id in c.content.displays.contains { $0.displayID == id } }) { return c.content }
+        let gen = generation
         let c = try await shareableContent()
-        cached = (c, Perf.now())
+        if gen == generation { cached = (c, Perf.now()) }
         return c
     }
 

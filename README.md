@@ -104,4 +104,10 @@ Either:
 - open it once, then **System Settings → Privacy & Security → Open Anyway**, or
 - remove the quarantine flag: `xattr -dr com.apple.quarantine /Applications/ShareX.app`
 
+**After every update, re-grant Screen Recording.** Each CI build has a new ad-hoc signature, so macOS treats
+the updated app as a different program and the old grant no longer applies (captures fail with the permission
+alert or show only the desktop). Open **System Settings → Privacy & Security → Screen Recording**, remove
+ShareX with **−**, add the new `/Applications/ShareX.app` with **+** (or toggle it on when prompted), then quit
+and reopen ShareX. `tccutil reset ScreenCapture com.sharexmac.ShareX` clears the stale entry from Terminal.
+
 Verify the download first: `shasum -a 256 ShareX.dmg` must match `ShareX.dmg.sha256` from the same CI run.

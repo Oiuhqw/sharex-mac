@@ -40,10 +40,10 @@ final class Renderer {
     }
 
     /// `clip` skips marks that cannot touch the invalidated area (CG would clip them anyway, after paying for them).
-    func draw(_ doc: EditorDocument, in ctx: CGContext, hide hiddenID: Int? = nil, clip: CGRect? = nil) {
+    func draw(_ doc: EditorDocument, in ctx: CGContext, hide hiddenID: Int? = nil, skip: Int? = nil, clip: CGRect? = nil) {
         let live = Set(doc.annotations.map(\.id))
         effectCache = effectCache.filter { live.contains($0.key) }
-        for a in doc.annotations where a.id != hiddenID {
+        for a in doc.annotations where a.id != hiddenID && a.id != skip {
             if let clip, a.kind != .spotlight, a.kind != .text, a.kind != .step, !AnnotationsView.reach(a).intersects(clip) { continue }
             draw(a, number: doc.stepNumber(of: a), ctx: ctx)
         }
@@ -141,6 +141,18 @@ final class Renderer {
         // While a mark is drawn, moved or resized every drag event has a new rect; don't cache those.
         if a.id != liveEffectID { effectCache[a.id] = (key, cg) }
         return (cg, rect)
+    }
+
+    /// The patch for the mark being dragged: one entry, reused while its pixel rect and strength are unchanged
+    /// (pointer jitter under a pixel, a pure resize back to a seen size), never stored in effectCache.
+    private var liveCache: (key: EffectKey, image: CGImage)?
+    func livePatch(_ a: Annotation) -> (image: CGImage, rect: CGRect)? {
+        guard let px = Geometry.pixelRect(a.rect, scale: scale).clamped(width: frame.width, height: frame.height) else { return nil }
+        let key = EffectKey(kind: a.kind, rect: px, strength: a.style.strength)
+        if let c = liveCache, c.key == key { return (c.image, px.points(scale: scale)) }
+        guard let p = effectPatch(a) else { return nil }
+        liveCache = (key, p.image)
+        return p
     }
 
     private struct EffectKey: Hashable {

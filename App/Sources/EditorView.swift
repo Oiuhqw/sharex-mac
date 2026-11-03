@@ -60,6 +60,9 @@ final class EditorView: NSView, NSTextFieldDelegate {
     private lazy var toolbar = ToolbarView(editor: self)
     private let frameView: FrameView
     private var annotationsView: AnnotationsView?
+    private var liveView: LiveMarkView?
+    /// The mark being drawn, moved or resized, shown by liveView until mouse-up.
+    private var liveID: Int?
     private let chrome: ChromeView
 
     init(frame: CGRect, renderer: Renderer, mode: SelectionMode, initialCrop: CGRect?, styles: [ShapeKind: ShapeStyle],
@@ -190,6 +193,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
         if let s = doc.selected, let h = Handle.hit(p, on: s.bounds, tolerance: 6) {
             doc.beginDrag(); drag = .resize(s.id, h, last: p)
             if s.kind.isEffect { renderer.liveEffectID = s.id }
+            if LiveMarkView.supports(s.kind) { liveID = s.id }
             return
         }
         switch doc.tool {
@@ -197,6 +201,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
             if let a = doc.hitTest(p) {
                 doc.selectedID = a.id; doc.beginDrag(); drag = .move(a.id, last: p)
                 if a.kind.isEffect { renderer.liveEffectID = a.id }
+                if LiveMarkView.supports(a.kind) { liveID = a.id }
             }
             else { doc.selectedID = nil; drag = .none }
         case .crop:
@@ -212,6 +217,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
             let id = doc.addShape(k, at: p)
             drag = .newShape(id)
             if k.isEffect { renderer.liveEffectID = id }
+            if LiveMarkView.supports(k) { liveID = id }
         }
         toolbar.sync()
     }
@@ -259,7 +265,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
             renderer.liveEffectID = nil
         default: break
         }
-        drag = .none
+        drag = .none; liveID = nil
         if phase == .editing { toolbar.sync(); layoutToolbar() }
         refresh()
     }
@@ -393,7 +399,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
         var c = ChromeView.State()
         switch phase {
         case .selecting(let mode):
-            annotationsView?.isHidden = true
+            annotationsView?.isHidden = true; liveView?.isHidden = true
             var hole: CGRect? = hover
             if case .region(let s) = drag, dragMoved, let m = mouse { hole = Geometry.rect(from: s, to: m) }
             c.dimEverything = true
@@ -409,9 +415,14 @@ final class EditorView: NSView, NSTextFieldDelegate {
                 let v = AnnotationsView(frame: CGRect(origin: .zero, size: bounds.size), renderer: renderer)
                 addSubview(v, positioned: .above, relativeTo: frameView)
                 annotationsView = v
+                let l = LiveMarkView(frame: CGRect(origin: .zero, size: bounds.size))
+                addSubview(l, positioned: .above, relativeTo: v)
+                liveView = l
             }
-            annotationsView?.isHidden = false
-            annotationsView?.sync(doc, hide: editingTextID)
+            annotationsView?.isHidden = false; liveView?.isHidden = false
+            let live = liveID.flatMap { id in doc.annotations.first { $0.id == id } }
+            annotationsView?.sync(doc, hide: editingTextID, live: live?.id)
+            liveView?.show(live, renderer: renderer)
             let crop = doc.state.crop ?? bounds0
             let hole = CGMutablePath()
             if let pts = lasso { hole.addLines(between: pts); hole.closeSubpath() } else { hole.addRect(crop) }

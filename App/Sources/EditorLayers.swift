@@ -31,31 +31,37 @@ final class FrameView: PassThroughView {
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("unused") }
 }
 
-/// The frame plus annotations, drawn exactly as the exporter draws them (blend modes need the frame beneath),
-/// but only inside invalidated rects.
+/// Committed annotations, redrawn only inside invalidated rects. Transparent over FrameView (no frame raster)
+/// unless a highlighter is present: its multiply blend needs the frame beneath in the same bitmap.
+/// The mark being dragged (`live`) is excluded here and shown by LiveMarkView; it is drawn into this bitmap
+/// once, on mouse-up, when `live` clears and the diff sees it as added.
 @MainActor
 final class AnnotationsView: PassThroughView {
     private let renderer: Renderer
     private var doc: EditorDocument?
     private var hiddenID: Int?
+    private var liveID: Int?
     private var previous: [Int: Annotation] = [:]
     private var previousOrder: [Int] = []
+    private(set) var drawsFrame = false
 
     init(frame: NSRect, renderer: Renderer) {
         self.renderer = renderer
         super.init(frame: frame)
         layerContentsRedrawPolicy = .onSetNeedsDisplay
-        layer?.isOpaque = true
+        layer?.isOpaque = false
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("unused") }
 
     /// Invalidates the union of what changed: old and new bounds of every added, removed or edited mark.
-    func sync(_ doc: EditorDocument, hide: Int?) {
-        let now = doc.annotations
+    func sync(_ doc: EditorDocument, hide: Int?, live: Int? = nil) {
+        let now = doc.annotations.filter { $0.id != live }
         defer {
-            self.doc = doc; hiddenID = hide
+            self.doc = doc; hiddenID = hide; liveID = live
             previous = Dictionary(uniqueKeysWithValues: now.map { ($0.id, $0) }); previousOrder = now.map(\.id)
         }
+        let wantFrame = doc.annotations.contains { $0.kind == .highlighter && $0.id != live }
+        if wantFrame != drawsFrame { drawsFrame = wantFrame; layer?.isOpaque = wantFrame; needsDisplay = true; return }
         guard self.doc != nil else { needsDisplay = true; return }
         if hide != hiddenID { needsDisplay = true; return }
         var dirty = CGRect.null
@@ -85,8 +91,75 @@ final class AnnotationsView: PassThroughView {
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext, let doc else { return }
         let area = dirtyRect
-        renderer.drawFrame(ctx, in: area)
-        renderer.draw(doc, in: ctx, hide: hiddenID, clip: area)
+        if drawsFrame { renderer.drawFrame(ctx, in: area) } else { ctx.clear(area) }
+        renderer.draw(doc, in: ctx, hide: hiddenID, skip: liveID, clip: area)
+    }
+}
+
+/// The mark under the mouse during a drag, as GPU-composited layers: a shape-path change per event instead of
+/// a CPU raster of the annotation bitmap. Highlighter uses multiply compositing; blur/pixelate show the live
+/// CoreImage patch as layer contents.
+@MainActor
+final class LiveMarkView: PassThroughView {
+    private let stroke = CAShapeLayer(), head = CAShapeLayer(), highlight = CAShapeLayer(), patch = CALayer()
+    static func supports(_ k: ShapeKind) -> Bool {
+        switch k {
+        case .rectangle, .ellipse, .line, .arrow, .pen, .highlighter, .blur, .pixelate: true
+        default: false
+        }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        layerContentsRedrawPolicy = .never
+        layer?.isOpaque = false
+        stroke.lineCap = .round; stroke.lineJoin = .round
+        highlight.compositingFilter = "multiplyBlendMode"
+        patch.contentsGravity = .resize
+        for l in [stroke, head, highlight, patch] as [CALayer] {
+            l.actions = ["position": NSNull(), "bounds": NSNull(), "path": NSNull(), "contents": NSNull(), "hidden": NSNull(),
+                         "frame": NSNull(), "fillColor": NSNull(), "strokeColor": NSNull(), "lineWidth": NSNull()]
+            l.isHidden = true
+            layer!.addSublayer(l)
+        }
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError("unused") }
+
+    func show(_ a: Annotation?, renderer: Renderer) {
+        CATransaction.begin(); CATransaction.setDisableActions(true); defer { CATransaction.commit() }
+        for l in [stroke, head, highlight, patch] as [CALayer] { l.isHidden = true }
+        guard let a else { return }
+        let s = a.style, color = Imaging.cgColor(s.color, opacity: s.opacity)
+        stroke.lineWidth = CGFloat(s.width); stroke.strokeColor = color; stroke.fillColor = nil
+        let p = CGMutablePath()
+        switch a.kind {
+        case .rectangle:
+            p.addRect(a.rect)
+            if s.filled { stroke.fillColor = color; stroke.strokeColor = nil }
+        case .ellipse:
+            p.addEllipse(in: a.rect)
+            if s.filled { stroke.fillColor = color; stroke.strokeColor = nil }
+        case .line:
+            p.addLines(between: [a.start, a.end])
+        case .arrow:
+            p.addLines(between: [a.start, a.end])
+            let (l, r) = Geometry.arrowHead(tail: a.start, tip: a.end, length: max(10, CGFloat(s.width) * 4))
+            let h = CGMutablePath(); h.addLines(between: [a.end, l, r]); h.closeSubpath()
+            head.path = h; head.fillColor = color; head.isHidden = false
+        case .pen:
+            if a.points.count > 1 { p.addLines(between: a.points) }
+        case .highlighter:
+            highlight.path = CGPath(rect: a.rect, transform: nil); highlight.fillColor = color; highlight.isHidden = false
+            return
+        case .blur, .pixelate:
+            guard let pt = renderer.livePatch(a) else { return }
+            patch.contents = pt.image; patch.frame = pt.rect
+            patch.magnificationFilter = renderer.smoothFrame ? .linear : .nearest
+            patch.isHidden = false
+            return
+        default: return
+        }
+        stroke.path = p; stroke.isHidden = false
     }
 }
 

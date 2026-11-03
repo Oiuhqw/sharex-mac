@@ -401,6 +401,7 @@ enum E2E {
         }
 
         await combined()
+        await E2EOrientation.run()
         await copyPaths()
         await nonEditorModes()
         await editorModes()
