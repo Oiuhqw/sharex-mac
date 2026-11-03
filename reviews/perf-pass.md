@@ -5,7 +5,7 @@ Frame time = main-thread `sendEvent` + `displayIfNeeded` + `CATransaction.flush`
 Signposts: `App/Sources/Perf.swift:6` (Points of Interest: `shareable-content`, `deliver`, `clipboard-ready`, …).
 
 - BEFORE: https://github.com/Oiuhqw/sharex-mac/actions/runs/41628832920
-- AFTER (final): https://github.com/Oiuhqw/sharex-mac/actions/runs/41631402963. E2E 49 results: 48 pass + 1 unverifiable (multi-display; the runner has one screen). 59/59 Linux `swift test` pass.
+- AFTER (final): https://github.com/Oiuhqw/sharex-mac/actions/runs/41636884082. E2E 50 results: 49 pass (incl. onscreen-orientation) + 1 unverifiable (multi-display; the runner has one screen). 59/59 Linux `swift test` pass.
 
 | metric (ms, p50 / p95) | target | BEFORE | AFTER |
 |---|---|---|---|
@@ -33,7 +33,7 @@ Signposts: `App/Sources/Perf.swift:6` (Points of Interest: `shareable-content`, 
 2. **E2E code is compiled out of shipped builds.** All E2E and E2EPerf code sits behind `#if SHAREX_E2E` (`App/Sources/E2E.swift:2`, `E2EPerf.swift:2`, `App.swift:10`, `:60`, `ScreenCapture.swift:44`, `:142`, `OverlayController.swift:34`, `CaptureCoordinator.swift:153`). Only the CI test builds set it (`.github/workflows/macos.yml:51`, `:78`). The DMG build fails if `strings` finds `--e2e` (`dmg.yml:32`).
 3. **Supply chain.** Actions are pinned to commit SHAs. `permissions: contents: read` is set (`macos.yml:8`, `dmg.yml:5`). XcodeGen 2.46.0 is pinned by sha256 (`scripts/ci-setup.sh:7-8`). `Package.resolved` is committed, and builds use `-disableAutomaticPackageResolution` (`macos.yml:49`, `dmg.yml:23`).
 4. **Save folder handling.** The folder is resolved with `resolvingSymlinksInPath` and must be a writable directory (`App/Sources/Export.swift:108`, `:121`). Files are created exclusively with `.withoutOverwriting` (`Export.swift:126-135`). Settings warns about an invalid folder (`App/Sources/SettingsView.swift:50`). `NSLog` is replaced with `os.Logger` (`Export.swift:7`), and paths are logged with `privacy: .private` (`Export.swift:130`, `:137`, `CaptureCoordinator.swift:178`).
-5. **Overlay hidden from screen capture.** The overlay window sets `sharingType = .none` (`App/Sources/OverlayController.swift:127`), and E2E still passes (48 pass + 1 unverifiable multi-display). No TransientType or ConcealedType is set, so clipboard managers still see screenshots.
+5. **Overlay hidden from screen capture.** The overlay window sets `sharingType = .none` (`App/Sources/OverlayController.swift:127`), and E2E still passes (49 pass + 1 unverifiable multi-display). No TransientType or ConcealedType is set, so clipboard managers still see screenshots.
 
 ## What CI can't measure
 - **ProMotion at 120 Hz** (8.3 ms budget) and real 2x Retina compositing. The runner is 1x and has no GPU compositor, so 2x is simulated in software.
