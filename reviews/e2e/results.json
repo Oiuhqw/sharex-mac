@@ -1,0 +1,1236 @@
+{
+  "frameSource" : "sck-window+fixture-display",
+  "macOS" : "Version 15.8.2 (Build 24H232)",
+  "pass" : true,
+  "results" : [
+    {
+      "beforeCapture" : [
+        "Delay",
+        "Show cursor",
+        "Magnifier",
+        "Border",
+        "Drop shadow",
+        "Open editor for fixed areas"
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "name" : "menu-bar",
+      "pass" : true,
+      "status" : "pass",
+      "titles" : [
+        "Fullscreen",
+        "Active Monitor",
+        "Monitor…",
+        "Active Window",
+        "Window…",
+        "Region",
+        "Last Region",
+        "Freehand",
+        "",
+        "Before capture",
+        "",
+        "Settings…",
+        "Quit ShareX"
+      ]
+    },
+    {
+      "frameSource" : "sck-window+fixture-display",
+      "name" : "settings-window",
+      "pass" : true,
+      "status" : "pass"
+    },
+    {
+      "changed" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "region-baseline",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-08.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "annotationVerified" : true,
+      "changed" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "leftEdge" : "(r: 0.9294117647058824, g: 0.1803921568627451, b: 0.1803921568627451, a: 1.0)",
+      "name" : "tool-rectangle",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-09.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "annotationVerified" : true,
+      "changed" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "leftEdge" : "(r: 0.9294117647058824, g: 0.1803921568627451, b: 0.1803921568627451, a: 1.0)",
+      "name" : "tool-ellipse",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-09-2.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "annotationVerified" : true,
+      "changed" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "mid" : "(r: 0.9294117647058824, g: 0.1803921568627451, b: 0.1803921568627451, a: 1.0)",
+      "name" : "tool-line",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-09-3.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "annotationVerified" : true,
+      "changed" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "mid" : "(r: 0.9294117647058824, g: 0.1803921568627451, b: 0.1803921568627451, a: 1.0)",
+      "name" : "tool-arrow",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-10.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "annotationVerified" : true,
+      "changed" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "mid" : "(r: 0.8784313725490196, g: 0.8313725490196079, b: 0.5607843137254902, a: 1.0) vs (r: 0.8784313725490196, g: 0.8784313725490196, b: 0.8784313725490196, a: 1.0)",
+      "name" : "tool-highlighter",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-10-2.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "annotationVerified" : true,
+      "changed" : true,
+      "changedInside" : 1,
+      "changedOutside" : 0,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "tool-blur",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-10-3.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "annotationVerified" : true,
+      "changed" : true,
+      "changedInside" : 0.25290875688916103,
+      "changedOutside" : 0,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "tool-pixelate",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-11.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "annotationVerified" : true,
+      "changed" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "tool-spotlight",
+      "nameOK" : true,
+      "outside" : "(r: 0.35294117647058826, g: 0.35294117647058826, b: 0.35294117647058826, a: 1.0) vs (r: 0.8784313725490196, g: 0.8784313725490196, b: 0.8784313725490196, a: 1.0)",
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-11-2.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "annotationVerified" : true,
+      "changed" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "mid" : "(r: 0.9294117647058824, g: 0.1803921568627451, b: 0.1803921568627451, a: 1.0)",
+      "name" : "tool-pen",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-11-3.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "annotationVerified" : true,
+      "changed" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "tool-text",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "redFrac" : 0.15044444444444444,
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-12.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "annotationVerified" : true,
+      "changed" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "tool-step",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "redFrac" : 0.84183673469387754,
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-12-2.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "blueRect" : true,
+      "changed" : true,
+      "expected" : [
+        300,
+        200
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "combined-rect-blur-arrow-crop-undo",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        300,
+        200
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-12-3.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        300,
+        200
+      ],
+      "toolStylesPersisted" : true,
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ],
+      "undoCounts" : [
+        3,
+        2,
+        3,
+        3
+      ]
+    },
+    {
+      "changed" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "copy-cmdC",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-13.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "changed" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "handled" : true,
+      "items" : 1,
+      "name" : "copy-menu-action",
+      "nameOK" : true,
+      "overlayWasKey" : false,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-13-2.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "changed" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "copy-double-click",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-13-3.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "clipboard-replaced-not-appended",
+      "pass" : true,
+      "size" : [
+        100,
+        50
+      ],
+      "status" : "pass"
+    },
+    {
+      "changed" : true,
+      "expected" : [
+        1024,
+        768
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "auto-fullscreen",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        1024,
+        768
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-14-2.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        1024,
+        768
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "changed" : true,
+      "expected" : [
+        1024,
+        768
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "auto-activeMonitor",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        1024,
+        768
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-14-3.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        1024,
+        768
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "changed" : true,
+      "expected" : [
+        100,
+        50
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "auto-lastRegion",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        100,
+        50
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-14-4.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        100,
+        50
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "changed" : true,
+      "expected" : [
+        1024,
+        768
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "auto-monitorPicker",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        1024,
+        768
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-14-5.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        1024,
+        768
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "changed" : true,
+      "expected" : [
+        944,
+        676
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "auto-windowPicker",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        944,
+        676
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-14-6.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        944,
+        676
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "changed" : true,
+      "expected" : [
+        944,
+        676
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "frontmost" : 3911,
+      "items" : 1,
+      "name" : "auto-activeWindow",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        944,
+        676
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-15.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        944,
+        676
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "alphaInside" : 1,
+      "alphaOutside" : 0,
+      "changed" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "freehand-lasso",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-16.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "changed" : true,
+      "editorOpened" : true,
+      "expected" : [
+        1024,
+        768
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "editor-fullscreen",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        1024,
+        768
+      ],
+      "rectDrawn" : true,
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-16-2.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        1024,
+        768
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "changed" : true,
+      "editorOpened" : true,
+      "expected" : [
+        1024,
+        768
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "editor-activeMonitor",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        1024,
+        768
+      ],
+      "rectDrawn" : true,
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-16-3.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        1024,
+        768
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "changed" : true,
+      "editorOpened" : true,
+      "expected" : [
+        400,
+        300
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "editor-lastRegion",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        400,
+        300
+      ],
+      "rectDrawn" : true,
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-16-4.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        400,
+        300
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "changed" : true,
+      "editorOpened" : true,
+      "expected" : [
+        1024,
+        768
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "editor-monitorPicker",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        1024,
+        768
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-17.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        1024,
+        768
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "canvasEditorOpened" : true,
+      "changed" : true,
+      "expected" : [
+        944,
+        676
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "editor-windowPicker",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        944,
+        676
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-17-2.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        944,
+        676
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "canvasEditorOpened" : true,
+      "changed" : true,
+      "expected" : [
+        944,
+        676
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "editor-activeWindow",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        944,
+        676
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-18.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        944,
+        676
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "busy" : false,
+      "clipboardUnchanged" : true,
+      "frameSource" : "sck-window+fixture-display",
+      "name" : "countdown-esc-cancels",
+      "overlay" : false,
+      "pass" : true,
+      "status" : "pass"
+    },
+    {
+      "changed" : true,
+      "expected" : [
+        1024,
+        768
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "countdown-completes",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        1024,
+        768
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-22.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        1024,
+        768
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "busy" : false,
+      "clipboardUnchanged" : true,
+      "frameSource" : "sck-window+fixture-display",
+      "name" : "overlay-esc-selecting",
+      "overlay" : false,
+      "pass" : true,
+      "status" : "pass"
+    },
+    {
+      "busy" : false,
+      "clipboardUnchanged" : true,
+      "frameSource" : "sck-window+fixture-display",
+      "name" : "overlay-esc-editing",
+      "overlay" : false,
+      "pass" : true,
+      "status" : "pass"
+    },
+    {
+      "busy" : false,
+      "clipboardUnchanged" : true,
+      "frameSource" : "sck-window+fixture-display",
+      "name" : "overlay-rightclick-fixed-cancels",
+      "overlay" : false,
+      "pass" : true,
+      "status" : "pass"
+    },
+    {
+      "busy" : false,
+      "clipboardUnchanged" : true,
+      "frameSource" : "sck-window+fixture-display",
+      "name" : "canvas-editor-close-cancels",
+      "overlay" : false,
+      "pass" : true,
+      "status" : "pass"
+    },
+    {
+      "busy" : false,
+      "clipboardUnchanged" : true,
+      "frameSource" : "sck-window+fixture-display",
+      "name" : "reentrancy-single-overlay",
+      "overlay" : false,
+      "pass" : true,
+      "status" : "pass",
+      "visibleOverlays" : 1
+    },
+    {
+      "frameSource" : "sck-window+fixture-display",
+      "frontmost" : 3911,
+      "name" : "previous-app-reactivated",
+      "pass" : true,
+      "pattern" : 3911,
+      "status" : "pass"
+    },
+    {
+      "changed" : true,
+      "corner" : "(r: 0.0, g: 0.0, b: 0.0, a: 1.0)",
+      "expected" : [
+        1030,
+        774
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "border-3pt",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        1030,
+        774
+      ],
+      "savedDPI" : 72,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-26.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        1030,
+        774
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "frameSource" : "sck-window+fixture-display",
+      "name" : "drop-shadow",
+      "pass" : true,
+      "size" : [
+        1088,
+        832
+      ],
+      "status" : "pass"
+    },
+    {
+      "frameSource" : "sck-window+fixture-display",
+      "name" : "save-naming-collision",
+      "new" : [
+        "ShareX_2026-11-03_04-21-26-3.png",
+        "ShareX_2026-11-03_04-21-26-4.png"
+      ],
+      "pass" : true,
+      "status" : "pass"
+    },
+    {
+      "frameSource" : "sck-window+fixture-display",
+      "name" : "save-off-clipboard-only",
+      "pass" : true,
+      "status" : "pass"
+    },
+    {
+      "changed" : true,
+      "expected" : [
+        600,
+        400
+      ],
+      "frameSource" : "sck-window+fixture-display",
+      "items" : 1,
+      "name" : "retina-2x-pipeline",
+      "nameOK" : true,
+      "pass" : true,
+      "pngSize" : [
+        600,
+        400
+      ],
+      "pointSize" : "(300.0, 200.0)",
+      "red" : true,
+      "savedDPI" : 144,
+      "savedEqualsClipboard" : true,
+      "savedNew" : [
+        "ShareX_2026-11-03_04-21-26-5.png"
+      ],
+      "sentinelGone" : true,
+      "status" : "pass",
+      "tiffEqualsPng" : true,
+      "tiffSize" : [
+        600,
+        400
+      ],
+      "types" : [
+        "public.png",
+        "public.tiff"
+      ]
+    },
+    {
+      "frameSource" : "sck-window+fixture-display",
+      "name" : "hotkey-ctrl-shift-1",
+      "note" : "synthetic CGEvent; a physical key press is not testable on a headless runner",
+      "pass" : true,
+      "status" : "pass"
+    },
+    {
+      "frameSource" : "sck-window+fixture-display",
+      "name" : "multi-display",
+      "pass" : false,
+      "screens" : 1,
+      "status" : "unverifiable"
+    }
+  ],
+  "screens" : [
+    {
+      "h" : 768,
+      "scale" : 1,
+      "w" : 1024
+    }
+  ]
+}
