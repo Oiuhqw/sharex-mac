@@ -112,6 +112,7 @@ enum E2E {
     static func finishRun() {
         let pass = results.allSatisfy { ($0["pass"] as? Bool) ?? false || ($0["status"] as? String) == "unverifiable" }
         let doc: [String: Any] = ["frameSource": source, "screens": NSScreen.screens.map { ["w": $0.frame.width, "h": $0.frame.height, "scale": $0.backingScaleFactor] },
+                                  "unverified": results.filter { ($0["status"] as? String) == "unverifiable" }.compactMap { $0["name"] as? String },
                                   "results": results, "pass": pass, "macOS": ProcessInfo.processInfo.operatingSystemVersionString]
         let d = try! JSONSerialization.data(withJSONObject: doc, options: [.prettyPrinted, .sortedKeys])
         try? d.write(to: out.appendingPathComponent("results.json"))
@@ -281,25 +282,42 @@ enum E2E {
         if !Permissions.hasScreenRecording {
             source = "fixture"
             ScreenCapture.e2eFixture = { checker($0, $1) }
+            record("capture-display-native", false, ["reason": "Screen Recording permission is unavailable", "fixtureFallback": true], status: "unverifiable")
         } else {
             // Granted in TCC.db but SCK may still refuse: probe once.
             do {
                 let f = try await ScreenCapture.freeze([screen], showCursor: false)
+                guard let img = f.first?.image else { throw CaptureError.noDisplays }
+                E2EOrientation.writePNG(img, "native-display-probe.png")
+                record("capture-display-native", img.width > 0 && img.height > 0,
+                       ["api": "ScreenCaptureKit", "width": img.width, "height": img.height, "fixtureFallback": false])
                 // The hosted runner's display frame shows only a black desktop (other apps' windows are not
                 // composited into it), so blur/pixelate/highlighter/spotlight would have nothing to change.
                 // Fall back to a synthetic display frame then; window captures stay real.
-                if let img = f.first?.image, uniform(img) {
+                if uniform(img) {
                     source = "sck-window+fixture-display"; ScreenCapture.e2eDisplayFixture = { checker($0, $1) }
+                    record("capture-display-textured-content", false,
+                           ["reason": "Native display pixels are uniform; editor tests use fixture pixels", "fixtureFallback": true], status: "unverifiable")
                     NSLog("E2E display frame is uniform; using display fixture. pattern=\(String(describing: patternWindow()?.frame))")
-                }
+                } else { record("capture-display-textured-content", true, ["fixtureFallback": false]) }
             }
-            catch { source = "fixture"; ScreenCapture.e2eFixture = { checker($0, $1) }; NSLog("E2E SCK refused: \(error)") }
+            catch {
+                source = "fixture"; ScreenCapture.e2eFixture = { checker($0, $1) }
+                let denied: Bool
+                if let captureError = error as? CaptureError, case .noPermission = captureError { denied = true } else { denied = false }
+                // Continue the editor/pasteboard tests, but never hide an unexpected native capture error.
+                record("capture-display-native", false, ["error": error.localizedDescription, "fixtureFallback": true],
+                       status: denied ? "unverifiable" : nil)
+                NSLog("E2E SCK refused: \(error)")
+            }
         }
         setOpts { s in s = AppSettings(); s.saveToFile = true; s.saveFolder = saved.path; s.playSound = false
                   s.options.showMagnifier = false }
 
         if args.contains("--perf") { await E2EPerf.run(); return }
+        await probeNativeWindow()
         await E2EExport.run()
+        E2EStylePersistence.run()
         await menuAndSettings()
 
         // Baseline region, no marks: crop size and Retina scale.
@@ -403,7 +421,9 @@ enum E2E {
 
         await combined()
         await E2EOrientation.run()
+        await E2EResize.run()
         await copyPaths()
+        await E2EEditing.run()
         await nonEditorModes()
         await editorModes()
         await cancelPaths()
@@ -492,6 +512,28 @@ enum E2E {
     static var full: (Int, Int) { (Int(screen.frame.width * scale), Int(screen.frame.height * scale)) }
 
     static func patternWindow() -> WindowInfo? { ScreenCapture.windows().first { $0.pid == patternPID } }
+
+    /// Keep a real, separate-process window probe distinct from fixture-backed editor scenarios.
+    static func probeNativeWindow() async {
+        guard ScreenCapture.e2eFixture == nil else {
+            record("capture-window-native-content", false,
+                   ["reason": "Native capture is unavailable; window fixtures are enabled"], status: "unverifiable")
+            return
+        }
+        guard let window = patternWindow() else {
+            record("capture-window-native-content", false, ["error": "Pattern helper window is missing"]); return
+        }
+        do {
+            let shot = try await ScreenCapture.captureWindow(window)
+            E2EOrientation.writePNG(shot.image, "native-window-probe.png")
+            let textured = !uniform(shot.image)
+            record("capture-window-native-content", textured,
+                   ["api": "ScreenCaptureKit", "helperPID": patternPID, "windowID": window.id,
+                    "width": shot.image.width, "height": shot.image.height, "textured": textured, "fixtureFallback": false])
+        } catch {
+            record("capture-window-native-content", false, ["error": error.localizedDescription, "fixtureFallback": false])
+        }
+    }
 
     /// Open editor OFF: every fixed-area style copies straight away.
     static func nonEditorModes() async {
@@ -763,3 +805,4 @@ enum E2E {
     }
 }
 #endif
+

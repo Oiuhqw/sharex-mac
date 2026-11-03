@@ -100,7 +100,11 @@ public struct EditorDocument: Sendable {
     /// Extends the mark being drawn.
     public mutating func extendShape(_ id: Int, to p: CGPoint, constrain: Bool = false) {
         update(id) { a in
-            if a.kind == .pen { a.points.append(p); a.end = p; return }
+            if a.kind == .pen {
+                if a.points.last != p { a.points.append(p) }
+                a.end = p
+                return
+            }
             if a.kind == .step || a.kind == .text { return }
             var q = p
             if constrain {
@@ -120,6 +124,14 @@ public struct EditorDocument: Sendable {
 
     public mutating func move(_ id: Int, by d: Offset) { update(id) { $0 = $0.moved(by: d) } }
     public mutating func resize(_ id: Int, handle: Handle, by d: Offset) { update(id) { $0 = $0.resized(handle, by: d) } }
+
+    /// Resizes from the immutable annotation captured by `beginDrag`, using the total pointer delta.
+    /// Reusing the previous normalized bounds swaps edges after a crossing and collapses pen points
+    /// irreversibly at zero width/height. Starting from the original keeps every event independent.
+    public mutating func resizeFromDragStart(_ id: Int, handle: Handle, by d: Offset) {
+        guard let original = dragOrigin?.annotations.first(where: { $0.id == id }) else { return }
+        update(id) { $0 = original.resized(handle, by: d) }
+    }
 
     /// Adds an empty text mark for typing into. Not undoable by itself; see `setText`.
     @discardableResult

@@ -36,6 +36,8 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
     #endif
     private var completion: ((EditorOutcome) -> Void)?
     private let onStyles: ([ShapeKind: ShapeStyle]) -> Void
+    /// Latest explicitly changed tool defaults across all surfaces. Untouched screens hold stale copies.
+    private var latestStyles: [ShapeKind: ShapeStyle]
     private var previousApp: NSRunningApplication?
 
     /// Full-screen overlays. `preset` (display id + display top-left points) skips selection and opens the editor.
@@ -43,6 +45,7 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
          onStyles: @escaping ([ShapeKind: ShapeStyle]) -> Void, completion: @escaping (EditorOutcome) -> Void) {
         self.completion = completion
         self.onStyles = onStyles
+        self.latestStyles = settings.toolStyles
         super.init()
         let windowInfos = mode == .pickWindow || mode == .rectangle ? ScreenCapture.windows() : []
         for f in frozen {
@@ -87,6 +90,7 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
          onStyles: @escaping ([ShapeKind: ShapeStyle]) -> Void, completion: @escaping (EditorOutcome) -> Void) {
         self.completion = completion
         self.onStyles = onStyles
+        self.latestStyles = settings.toolStyles
         super.init()
         // The minimum keeps the vertical toolbar (style row ≈ 650 pt) inside the window. The review suggested
         // 560 × 240; that still clips Done/Cancel, so the floor is larger.
@@ -154,8 +158,7 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
         guard let c = completion else { return }
         completion = nil
         // Styles are saved whether the capture finished or was cancelled; they are preferences, not edits.
-        let styles = surfaces.reduce(into: [ShapeKind: ShapeStyle]()) { all, s in all.merge(s.view.doc.styles) { $1 } }
-        if !surfaces.isEmpty { onStyles(styles) }
+        if !surfaces.isEmpty { onStyles(latestStyles) }
         let closing = surfaces
         surfaces.removeAll()
         for s in closing { s.window.delegate = nil; s.window.orderOut(nil) }
@@ -168,6 +171,15 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
     private func surface(of v: EditorView) -> Surface? { surfaces.first { $0.view === v } }
 
     // MARK: EditorViewDelegate
+
+    func editorDidChangeStyle(_ v: EditorView, kind: ShapeKind) {
+        guard surface(of: v) != nil else { return }
+        let style = v.doc.style(for: kind)
+        latestStyles[kind] = style
+        // Keep other surfaces' defaults current. Only preferences change, never existing marks or
+        // their undo stacks, so a later width-only edit cannot restore an older screen's color.
+        for s in surfaces where s.view !== v { s.view.rememberStyle(style, for: kind) }
+    }
 
     func editorDidActivate(_ v: EditorView) {
         for s in surfaces where s.view !== v { s.view.deactivate() }
@@ -199,3 +211,4 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
     // The canvas window's close button.
     func windowWillClose(_ notification: Notification) { close(.cancelled) }
 }
+

@@ -12,6 +12,8 @@ struct EditorResult {
 @MainActor
 protocol EditorViewDelegate: AnyObject {
     func editorDidActivate(_ v: EditorView)
+    /// Persist only this editor's actual style changes, not untouched copies on other displays.
+    func editorDidChangeStyle(_ v: EditorView, kind: ShapeKind)
     /// The view left selection and is now editing; other screens must stop taking input.
     func editorDidEnterEditing(_ v: EditorView)
     /// Right-click reset the view back to selection.
@@ -34,9 +36,9 @@ final class EditorView: NSView, NSTextFieldDelegate {
         case lasso
         case newShape(Int)
         case move(Int, last: CGPoint)
-        case resize(Int, Handle, last: CGPoint)
+        case resize(Int, Handle, start: CGPoint)
         case cropNew(start: CGPoint)
-        case cropResize(Handle, last: CGPoint)
+        case cropResize(Handle, original: CGRect, start: CGPoint)
     }
 
     weak var delegate: EditorViewDelegate?
@@ -144,7 +146,14 @@ final class EditorView: NSView, NSTextFieldDelegate {
     func changeStyle(_ change: (inout ShapeStyle) -> Void) {
         guard let k = styleTarget else { return }
         doc.applyStyle(change, to: k)
+        delegate?.editorDidChangeStyle(self, kind: k)
         refocus()
+    }
+
+    /// Keep tool defaults in sync across display overlays without changing existing annotations.
+    func rememberStyle(_ style: ShapeStyle, for kind: ShapeKind) {
+        doc.styles[kind] = style
+        toolbar.sync()
     }
 
     func finish() {
@@ -191,7 +200,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
     private func editingMouseDown(_ p: CGPoint) {
         commitText()
         if let s = doc.selected, let h = Handle.hit(p, on: s.bounds, tolerance: 6) {
-            doc.beginDrag(); drag = .resize(s.id, h, last: p)
+            doc.beginDrag(); drag = .resize(s.id, h, start: p)
             if s.kind.isEffect { renderer.liveEffectID = s.id }
             if LiveMarkView.supports(s.kind) { liveID = s.id }
             return
@@ -206,7 +215,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
             else { doc.selectedID = nil; drag = .none }
         case .crop:
             doc.beginDrag()
-            if let c = doc.state.crop, let h = Handle.hit(p, on: c, tolerance: 8) { drag = .cropResize(h, last: p) }
+            if let c = doc.state.crop, let h = Handle.hit(p, on: c, tolerance: 8) { drag = .cropResize(h, original: c, start: p) }
             else { drag = .cropNew(start: p) }
         case .shape(.text):
             if let a = doc.hitTest(p), a.kind == .text { beginTextEditing(a.id); return }
@@ -225,25 +234,34 @@ final class EditorView: NSView, NSTextFieldDelegate {
     override func mouseDragged(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
         mouse = p; dragMoved = true
-        let shift = e.modifierFlags.contains(.shift)
+        updateDrag(to: p, constrain: e.modifierFlags.contains(.shift))
+        refresh()
+    }
+
+    /// The release event can be newer than the last coalesced drag event. Apply both through the
+    /// same path so the exported mark/crop ends exactly where the pointer was released.
+    private func updateDrag(to p: CGPoint, constrain shift: Bool) {
         switch drag {
         case .region: break
-        case .lasso: lasso?.append(p)
+        case .lasso: if lasso?.last != p { lasso?.append(p) }
         case .newShape(let id): doc.extendShape(id, to: p, constrain: shift)
         case .move(let id, let last): doc.move(id, by: Offset(from: last, to: p)); drag = .move(id, last: p)
-        case .resize(let id, let h, let last): doc.resize(id, handle: h, by: Offset(from: last, to: p)); drag = .resize(id, h, last: p)
+        case .resize(let id, let h, let start): doc.resizeFromDragStart(id, handle: h, by: Offset(from: start, to: p))
         // A drag under 1 pt keeps the previous crop rather than clearing it (Enter would then do nothing).
         case .cropNew(let s): if let r = Geometry.cropDrag(from: s, to: p, in: bounds0) { doc.setCropLive(r) }
-        case .cropResize(let h, let last):
-            if let c = doc.state.crop, let r = Geometry.clamp(h.resize(c, by: Offset(from: last, to: p)), to: bounds0) { doc.setCropLive(r) }
-            drag = .cropResize(h, last: p)
+        case .cropResize(let h, let original, let start):
+            // Always resize the drag's original crop. Normalizing a crossed edge or clamping at the
+            // display boundary must not change which edge the pointer controls on the next event.
+            if let r = Geometry.clamp(h.resize(original, by: Offset(from: start, to: p)), to: bounds0) { doc.setCropLive(r) }
         case .none: break
         }
-        refresh()
     }
 
     override func mouseUp(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
+        // A click must keep its existing snap/step semantics and must not create a pen stroke.
+        if dragMoved { updateDrag(to: p, constrain: e.modifierFlags.contains(.shift)) }
+        mouse = p
         switch (phase, drag) {
         case (.selecting, .region(let s)):
             // A click without a drag snaps to the window under the cursor, like ShareX.

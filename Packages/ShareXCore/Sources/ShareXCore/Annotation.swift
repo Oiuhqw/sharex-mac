@@ -122,12 +122,38 @@ public struct Annotation: Identifiable, Codable, Equatable, Sendable {
     public func hit(_ p: CGPoint, tolerance t: CGFloat = 6) -> Bool {
         let slop = t + CGFloat(style.width) / 2
         switch kind {
-        case .line, .arrow:
+        case .line:
             return Geometry.distance(p, toSegment: start, end) <= slop
+        case .arrow:
+            if Geometry.distance(p, toSegment: start, end) <= slop { return true }
+            // The renderer paints a filled triangular head. Its wings extend beyond the shaft's
+            // hit tolerance for wider arrows, so include its interior and all three edges.
+            let (left, right) = Geometry.arrowHead(tail: start, tip: end, length: max(10, CGFloat(style.width) * 4))
+            func cross(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint) -> CGFloat {
+                (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+            }
+            let a = cross(end, left, p), b = cross(left, right, p), c = cross(right, end, p)
+            let inside = abs(cross(end, left, right)) > CGFloat.ulpOfOne
+                && ((a >= 0 && b >= 0 && c >= 0) || (a <= 0 && b <= 0 && c <= 0))
+            return inside || Geometry.distance(p, toSegment: end, left) <= t
+                || Geometry.distance(p, toSegment: left, right) <= t
+                || Geometry.distance(p, toSegment: right, end) <= t
         case .pen:
             if points.count == 1 { return hypot(p.x - points[0].x, p.y - points[0].y) <= slop }
             return zip(points, points.dropFirst()).contains { Geometry.distance(p, toSegment: $0, $1) <= slop }
-        case .rectangle where !style.filled, .ellipse where !style.filled:
+        case .ellipse:
+            // Match the painted ellipse, not its rectangular bounds: diagonal edges are selectable
+            // and empty corners remain clickable through to marks underneath.
+            func contains(_ r: CGRect) -> Bool {
+                guard r.width > 0, r.height > 0 else { return false }
+                let x = (p.x - r.midX) / (r.width / 2)
+                let y = (p.y - r.midY) / (r.height / 2)
+                return x * x + y * y <= 1
+            }
+            let tolerance = style.filled ? t : slop
+            guard contains(rect.insetBy(dx: -tolerance, dy: -tolerance)) else { return false }
+            return style.filled || !contains(rect.insetBy(dx: tolerance, dy: tolerance))
+        case .rectangle where !style.filled:
             // Outline only: the interior stays clickable through to what lies beneath.
             let outer = rect.insetBy(dx: -slop, dy: -slop), inner = rect.insetBy(dx: slop, dy: slop)
             return outer.contains(p) && !(inner.width > 0 && inner.height > 0 && inner.contains(p))
@@ -176,3 +202,4 @@ public struct Annotation: Identifiable, Codable, Equatable, Sendable {
         }
     }
 }
+
