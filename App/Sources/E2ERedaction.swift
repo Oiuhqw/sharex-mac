@@ -1,5 +1,6 @@
 #if SHAREX_E2E
 import AppKit
+@preconcurrency import ScreenCaptureKit
 import ShareXCore
 
 @MainActor
@@ -21,13 +22,43 @@ enum E2ERedaction {
     private static func snapshot(_ view: NSView, scale: CGFloat, name: String? = nil) -> E2E.Bitmap? {
         view.window?.displayIfNeeded()
         CATransaction.flush()
-        guard let layer = view.layer,
-              let ctx = Imaging.context(width: Int(size.width * scale), height: Int(size.height * scale), flipped: true) else { return nil }
+        guard let ctx = Imaging.context(width: Int(size.width * scale), height: Int(size.height * scale), flipped: true) else { return nil }
         ctx.scaleBy(x: scale, y: scale)
-        layer.render(in: ctx)
+        // NSView-backed layers can call draw into render(in:)'s destination. A transparent view's
+        // clear must affect only its own surface, as it does in WindowServer, not erase earlier siblings.
+        for child in view.subviews {
+            guard !child.isHidden else { continue }
+            guard let layer = child.layer,
+                  let isolated = Imaging.context(width: Int(size.width * scale), height: Int(size.height * scale), flipped: true) else { return nil }
+            isolated.scaleBy(x: scale, y: scale)
+            isolated.translateBy(x: child.frame.minX, y: child.frame.minY)
+            layer.render(in: isolated)
+            guard let image = isolated.makeImage() else { return nil }
+            Imaging.drawUpright(image, in: CGRect(origin: .zero, size: size), ctx: ctx)
+        }
         guard let image = ctx.makeImage() else { return nil }
         if let name { E2EOrientation.writePNG(image, name) }
         return E2E.bitmap(image)
+    }
+
+    private static func windowSnapshot(_ window: NSWindow, name: String) async -> E2E.Bitmap? {
+        window.displayIfNeeded(); CATransaction.flush()
+        await E2E.wait(40)
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            guard let target = content.windows.first(where: { $0.windowID == CGWindowID(window.windowNumber) }) else { return nil }
+            let config = SCStreamConfiguration()
+            config.width = Int(size.width * window.backingScaleFactor)
+            config.height = Int(size.height * window.backingScaleFactor)
+            config.showsCursor = false; config.ignoreShadowsSingleWindow = true
+            config.colorSpaceName = CGColorSpace.sRGB
+            let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: target), configuration: config)
+            E2EOrientation.writePNG(image, name)
+            return E2E.bitmap(image)
+        } catch {
+            NSLog("E2E redaction native window capture failed: %@", error.localizedDescription)
+            return nil
+        }
     }
 
     private static func effectRestored(_ image: E2E.Bitmap, baseline: E2E.Bitmap, area: PixelRect) -> Bool {
@@ -221,8 +252,10 @@ enum E2ERedaction {
             let live = LiveMarkView(frame: root.bounds)
             root.addSubview(live)
             let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
-            window.isReleasedWhenClosed = false; window.contentView = root; window.orderFrontRegardless()
+            window.isReleasedWhenClosed = false; window.sharingType = .readOnly; window.hasShadow = false
+            window.contentView = root; window.orderFrontRegardless()
             let baseline = snapshot(root, scale: scale, name: "redaction-move-\(name)-baseline.png")
+            let nativeBaseline = await windowSnapshot(window, name: "redaction-move-\(name)-native-baseline.png")
             committed.sync(doc, hide: nil)
             live.show(nil, renderer: renderer)
             _ = snapshot(root, scale: scale, name: "redaction-move-\(name)-committed.png")
@@ -246,6 +279,21 @@ enum E2ERedaction {
                         "settled": differences(movedSettled, expected: baseline, mask: area),
                         "failureRects": renderer.redactionFailureRects.map { [$0.minX, $0.minY, $0.width, $0.height] }])
 
+            let nativeMoved = await windowSnapshot(window, name: "redaction-move-\(name)-native-moved.png")
+            let nativeScale = window.backingScaleFactor
+            let nativeArea = doc.selected.flatMap {
+                Geometry.pixelRect($0.rect, scale: nativeScale).clamped(width: Int(size.width * nativeScale), height: Int(size.height * nativeScale))
+            }
+            let composedMoved = snapshot(root, scale: nativeScale, name: "redaction-move-\(name)-composed-native-scale.png")
+            let nativeMoveOK: Bool
+            if let nativeMoved, let nativeBaseline, let composedMoved, let nativeArea {
+                nativeMoveOK = matchesMask(nativeMoved, baseline: nativeBaseline, area: nativeArea)
+                    && nativeMoved.px == composedMoved.px
+            } else { nativeMoveOK = false }
+            E2E.record("redaction-native-move-equivalence-\(name)", nativeMoveOK,
+                       ["actualBackingScale": nativeScale, "nativeVsComposed": differences(nativeMoved, expected: composedMoved),
+                        "nativeMask": differences(nativeMoved, expected: nativeBaseline, mask: nativeArea)])
+
             renderer.e2eRejectEffectImage = false
             live.show(doc.selected, renderer: renderer)
             let recovered = snapshot(root, scale: scale, name: "redaction-move-\(name)-recovered-immediate.png")
@@ -263,6 +311,16 @@ enum E2ERedaction {
                        ["immediateVsExport": differences(recovered, expected: flat.map(E2E.bitmap)),
                         "settledVsExport": differences(recoveredSettled, expected: flat.map(E2E.bitmap)),
                         "failureRects": renderer.redactionFailureRects.map { [$0.minX, $0.minY, $0.width, $0.height] }])
+            let nativeRecovered = await windowSnapshot(window, name: "redaction-move-\(name)-native-recovered.png")
+            let composedRecovered = snapshot(root, scale: nativeScale, name: "redaction-move-\(name)-recovered-composed-native-scale.png")
+            let nativeRecoveryOK: Bool
+            if let nativeRecovered, let nativeBaseline, let composedRecovered, let nativeArea {
+                nativeRecoveryOK = renderer.redactionFailureRects.isEmpty
+                    && effectRestored(nativeRecovered, baseline: nativeBaseline, area: nativeArea)
+                    && nativeRecovered.px == composedRecovered.px
+            } else { nativeRecoveryOK = false }
+            E2E.record("redaction-native-recovery-equivalence-\(name)", nativeRecoveryOK,
+                       ["actualBackingScale": nativeScale, "nativeVsComposed": differences(nativeRecovered, expected: composedRecovered)])
             window.orderOut(nil); window.contentView = nil
         }
     }
