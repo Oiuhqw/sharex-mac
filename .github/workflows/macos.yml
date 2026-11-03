@@ -19,6 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
+      - name: CI script regression tests
+        run: python3 -m unittest discover -s scripts/tests -v
+
       - name: Toolchain
         run: |
           sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
@@ -110,3 +113,4 @@ jobs:
   package:
     needs: build-and-test
     uses: ./.github/workflows/dmg.yml
+

@@ -1,8 +1,10 @@
 #!/bin/bash
-# Runs the --e2e driver against the built app on a GitHub macOS runner. Writes reviews/e2e-out/.
+# Runs the Release performance driver on a GitHub macOS runner. Writes perf-out/.
 set -u
 APP="$PWD/build/Build/Products/Release/ShareX.app"; BIN="$APP/Contents/MacOS/ShareX"; OUT="$PWD/perf-out"
-mkdir -p "$OUT"
+mkdir -p "$OUT" || exit 1
+# A prior run must never make a crashed or incomplete driver look successful.
+rm -f "$OUT/perf.json" "$OUT/results.json" || exit 1
 codesign --force --deep -s - "$APP" || true
 # Grant Screen Recording (runner SIP is off). Insert by path and by bundle id into system + user TCC.db.
 grant() {
@@ -21,4 +23,17 @@ defaults delete com.sharexmac.ShareX 2>/dev/null || true
 RC=$?
 echo "perf exit $RC"
 cat "$OUT/perf.json" || grep "E2E" "$OUT/perf.log" | tail -20
-test -f "$OUT/perf.json"
+if [ "$RC" -ne 0 ]; then
+  exit "$RC"
+fi
+test -s "$OUT/perf.json" || exit 1
+python3 - "$OUT/perf.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    metrics = json.load(stream)
+if not isinstance(metrics, dict) or not metrics:
+    raise SystemExit("Performance output must be a nonempty JSON object")
+PY
+
