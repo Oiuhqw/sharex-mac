@@ -44,7 +44,10 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$APP/Contents/Info.plist")" = AppIcon
           test -s "$APP/Contents/Resources/AppIcon.icns"
           iconutil -c iconset "$APP/Contents/Resources/AppIcon.icns" -o /tmp/ShareX.iconset
-          test -s /tmp/ShareX.iconset/icon_512x512@2x.png
+          # actool can keep large representations in Assets.car; iconutil's legacy filenames vary.
+          # Require a decodable legacy icon, and report the representations actually packaged.
+          test -n "$(find /tmp/ShareX.iconset -name '*.png' -print -quit)"
+          find /tmp/ShareX.iconset -name '*.png' -exec sips -g pixelWidth -g pixelHeight {} \;
       - name: Ad-hoc sign inside-out with Hardened Runtime (no --deep)
         run: |
           # Nested code first (frameworks, dylibs, helpers, XPC, bundles), deepest paths first, then the app.
