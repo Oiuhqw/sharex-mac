@@ -296,6 +296,7 @@ enum E2E {
         setOpts { s in s = AppSettings(); s.saveToFile = true; s.saveFolder = saved.path; s.playSound = false
                   s.options.showMagnifier = false }
 
+        if args.contains("--perf") { await E2EPerf.run(); return }
         await menuAndSettings()
 
         // Baseline region, no marks: crop size and Retina scale.

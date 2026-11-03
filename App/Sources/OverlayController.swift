@@ -140,6 +140,9 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
         let key = surfaces.first { $0.window.frame.contains(mouse) } ?? surfaces.first
         key?.window.makeKeyAndOrderFront(nil)
         if let key { key.window.makeFirstResponder(key.view) }
+        // Perf: the first frame is on screen once the window has displayed and the transaction is committed.
+        key?.window.displayIfNeeded(); CATransaction.flush()
+        Perf.stamp("overlay-shown")
     }
 
     private func close(_ outcome: EditorOutcome) {

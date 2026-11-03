@@ -13,6 +13,7 @@ final class CaptureCoordinator {
     func capture(_ style: CaptureStyle) {
         guard !busy else { return }
         busy = true
+        Perf.stamp("capture-start")
         Task { @MainActor in
             defer { if overlay == nil { busy = false } }
             do { try await run(CaptureRequest(style: style, options: settings.value.options)) }
