@@ -16,6 +16,8 @@ Date: 2026-11-03. Commit verified: `HEAD` of `main`. Green run: https://github.c
   - all the tools
 - Run 41576827048, before the swap, ran those same paths on the **real black SCK frame**. Dimensions, clipboard and file checks all passed. Only the pixel-change checks on uniform black failed, as expected.
 
+- **Caveat (macOS Developer review):** because display captures are replaced by the fixture, the display *size* checks in the green run (41577460497) are circular: the fixture is generated at the expected size, so a size match there proves nothing about real display capture (`ScreenCapture.swift:75-80`). Real display sizing through SCK was proven separately in run [41576827048](https://github.com/Oiuhqw/sharex-mac/actions/runs/41576827048). Window captures in the green run are real SCK.
+
 ## Feature inventory (all exercised)
 | Area | Features |
 |---|---|
@@ -60,7 +62,7 @@ Every capture checks the following (`checkClipboard`):
 | Multi-display | – | – | runner has 1 screen | ⚠️ unverifiable |
 
 Notes:
-- **Pixelate**: only 25% of pixels change. The synthetic checkerboard's 16 px squares partly line up with the pixelate blocks, and an aligned block averages to its own colour. The threshold is 15%. The image (`tool-pixelate.png`) shows the expected blocky region.
+- **Pixelate (superseded, see Follow-ups)**: only 25% of pixels change. The synthetic checkerboard's 16 px squares partly line up with the pixelate blocks, and an aligned block averages to its own colour. The threshold is 15%. The image (`tool-pixelate.png`) shows the expected blocky region.
 - **Edit ▸ Copy**: on the runner the overlay was not the key window (`overlayWasKey: false`), because a headless runner does not reliably make ShareX active. The driver therefore sends `copy:` through the overlay window's own responder chain (`handled: true`). Routing through `NSApp`'s key window was not verified on the runner.
 - **Retina**: the runner is 1x. The 2x path was verified with a synthetic 2x frame, not a real Retina display.
 
@@ -94,6 +96,11 @@ Run with: `java -cp tla2tools.jar tlc2.TLC -deadlock -workers 4 -config <cfg> Ca
   - NeverStuckBusy (`busy ~> ~busy`, under fairness)
   - CancelReturnsIdle
 - **Mutation sanity check**: removing the `busy` guard in `capture()` makes TLC report an AtMostOneOverlay violation, so the model can find this kind of bug.
+
+### TLA+ weak spots (macOS Developer review)
+- `CancelReturnsIdle` is true by construction in the model (every cancel action sets the idle state directly), so it checks nothing beyond the action definitions.
+- The alert-focus fix is modelled by its outcome (focus restored) rather than by how the code does it (`frontmostApplication` check, `activate()` result, `NSApp.hide` fallback); a code bug in that mechanism would not show up in TLC.
+- Closing the overlay always counts focus as restored in the model; a terminated previous app was not modelled. The code now falls back to `NSApp.hide(nil)` for that case (see Follow-ups) and E2E covers it.
 
 ## Property tests (`Packages/ShareXCore/Tests/ShareXCoreTests/PropertyTests.swift` + existing `FuzzTests.swift`)
 - **Crop normalisation**: exhaustive 12⁴ grid of drags. The result is nil or inside the bounds and at least 1 pt; it is the same in both drag directions; clamp is idempotent.
@@ -130,3 +137,10 @@ Run with: `java -cp tla2tools.jar tlc2.TLC -deadlock -workers 4 -config <cfg> Ca
 | Doc commit | – |
 
 Sample screenshots: `reviews/e2e/combined-rect-blur-arrow-crop-undo.png`, `tool-blur.png`, `tool-spotlight.png`, `freehand-lasso.png`, `auto-windowPicker.png` (real SCK), `editor-fullscreen.png`, `retina-2x-pipeline.png`, `runner-desktop.png`.
+
+## Follow-ups after macOS Developer sign-off
+- **Focus fallback**: `Focus.restore` (`App/Sources/CaptureCoordinator.swift`) activates the previous app only if it exists, is not ShareX, is not terminated, and `activate()` returns true; otherwise `NSApp.hide(nil)`. Used by `CaptureCoordinator.report` and `OverlayController` close.
+- **Forced alert E2E**: `alert-windowGone-focus-restored` (seam `ScreenCapture.e2eForceWindowGone`, modal suppressed by `E2E.suppressAlerts`; `NSApp.activate()` and focus restore run as shipped) and `alert-no-previous-app-hides`.
+- **Pixelate**: percent-changed threshold replaced by: every full block (12 pt × scale) in the region is uniform, the source had textured blocks, the region differs from source, nothing outside changed, and with the fixture (which now has black "SECRET 0123456789 password hunter2" text rows) dark text pixels in the region drop by at least half.
+- **Lasso**: grid of ~1600 samples; every sample more than 3 pt from the triangle edge must be opaque inside and transparent outside (at least 100 of each).
+- The real NSAlert modal is still not driven on CI.

@@ -127,13 +127,13 @@ final class CaptureCoordinator {
         busy = false
     }
 
-    private func report(_ error: Error) {
+    func report(_ error: Error) {
         // The alerts below activate ShareX. Afterwards give focus back to the user's app (unless the alert sent
         // them elsewhere, e.g. System Settings), or ShareX stays frontmost with no window and Active Window beeps.
         let previous = NSWorkspace.shared.frontmostApplication
         defer {
             if NSWorkspace.shared.frontmostApplication == .current {
-                if let previous, previous != .current { previous.activate() } else { NSApp.hide(nil) }
+                Focus.restore(previous)
             }
         }
         switch error {
@@ -141,6 +141,7 @@ final class CaptureCoordinator {
         case CaptureError.windowGone:
             // Not a fault, but silent beeps leave the user guessing.
             NSApp.activate()
+            if E2E.suppressAlerts { E2E.alertsShown += 1; break }   // E2E seam: no modal on a headless runner
             let a = NSAlert()
             a.messageText = "Window not captured"
             a.informativeText = error.localizedDescription
@@ -170,5 +171,14 @@ final class CaptureCoordinator {
         ctx.interpolationQuality = .high
         for (f, r) in zip(frozen, layout.placements) { Imaging.drawUpright(f.image, in: r, ctx: ctx) }
         return ctx.makeImage()
+    }
+}
+
+/// Hand focus back to the app the user was in. If it is gone, terminated, or refuses activation, hide ShareX
+/// so it never stays frontmost with no window (Active Window would then capture nothing and beep).
+@MainActor enum Focus {
+    static func restore(_ previous: NSRunningApplication?) {
+        if let p = previous, p != .current, !p.isTerminated, p.activate() { return }
+        NSApp.hide(nil)
     }
 }

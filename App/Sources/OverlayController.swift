@@ -153,7 +153,7 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
         for s in closing { s.window.delegate = nil; s.window.orderOut(nil) }
         // We are inside the view's own mouse or key handler; release views on the next turn, not under it.
         Task { @MainActor in for s in closing { s.window.contentView = nil } }
-        if let p = previousApp { p.activate() } else { NSApp.hide(nil) }
+        Focus.restore(previousApp)
         c(outcome)
     }
 

@@ -58,6 +58,14 @@ enum E2E {
         for y in stride(from: 0, to: h, by: 16) { for x in stride(from: 0, to: w, by: 16) {
             ctx.setFillColor(cols[((x / 16) + 2 * (y / 16)) % 4]); ctx.fill(CGRect(x: x, y: y, width: 16, height: 16))
         } }
+        // Black text rows so pixelate has readable content to redact (the redaction check needs a text source).
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.boldSystemFont(ofSize: 22), .foregroundColor: NSColor.black]
+        for y in stride(from: 8, to: h, by: 64) {
+            ("SECRET 0123456789 password hunter2 " as NSString).draw(at: CGPoint(x: 6, y: y), withAttributes: attrs)
+        }
+        NSGraphicsContext.restoreGraphicsState()
         return ctx.makeImage()
     }
 
@@ -86,6 +94,7 @@ enum E2E {
     static var results: [[String: Any]] = []
     static var source = "sck"
     static var patternPID: pid_t = 0
+    static var suppressAlerts = false, alertsShown = 0
     static var lastChange = 0
 
     static func start(_ a: AppDelegate) {
@@ -329,7 +338,34 @@ enum E2E {
             case .highlighter:
                 if let base { let p = b.at((x0 + x1) / 2, (y0 + y1) / 2), q = base.at((x0 + x1) / 2, (y0 + y1) / 2)
                     feat = p.b < q.b - 0.1 && p.r >= q.r - 0.02; detail["mid"] = "\(p) vs \(q)" }
-            case .blur, .pixelate:
+            case .pixelate:
+                // Every full block in the region is a single colour, the region differs from the source, any text
+                // in the source is gone, and nothing outside changed.
+                if let base {
+                    let blk = Int(EffectMath.pixelateBlock(strength: 12, scale: scale).rounded())
+                    var blocks = 0, uniformBlocks = 0, texturedSrc = 0
+                    for by in stride(from: y0, to: y1 - blk + 1, by: blk) { for bx in stride(from: x0, to: x1 - blk + 1, by: blk) {
+                        blocks += 1
+                        let ref = b.at(bx, by), sref = base.at(bx, by)
+                        var uni = true, srcUni = true
+                        for yy in by..<(by + blk) { for xx in bx..<(bx + blk) {
+                            let p = b.at(xx, yy), q = base.at(xx, yy)
+                            if abs(p.r - ref.r) + abs(p.g - ref.g) + abs(p.b - ref.b) > 0.03 { uni = false }
+                            if abs(q.r - sref.r) + abs(q.g - sref.g) + abs(q.b - sref.b) > 0.03 { srcUni = false }
+                        } }
+                        if uni { uniformBlocks += 1 }
+                        if !srcUni { texturedSrc += 1 }
+                    } }
+                    let dark: ((r: Double, g: Double, b: Double, a: Double)) -> Bool = { $0.r + $0.g + $0.b < 0.25 }
+                    let textSrc = base.frac(box, dark), textOut = b.frac(box, dark)
+                    let changed = diffFrac(b, base, box), outside = diffFrac(b, base, CGRect(x: 0, y: 0, width: x0 - 2, height: y0 - 2))
+                    let textOK = source == "fixture" ? (textSrc > 0.02 && textOut < textSrc * 0.5) : true
+                    feat = blocks > 0 && uniformBlocks == blocks && texturedSrc > 0 && changed > 0 && outside == 0 && textOK
+                    detail = ["block": blk, "blocks": blocks, "uniformBlocks": uniformBlocks, "texturedSourceBlocks": texturedSrc,
+                              "darkTextFracSource": textSrc, "darkTextFracOutput": textOut, "changedInside": changed,
+                              "changedOutside": outside, "textFixture": source == "fixture"]
+                }
+            case .blur:
                 if let base {
                     let inner = box.insetBy(dx: CGFloat(px(4)), dy: CGFloat(px(4)))
                     let changed = diffFrac(b, base, inner), outside = diffFrac(b, base, CGRect(x: 0, y: 0, width: x0 - 2, height: y0 - 2))
@@ -481,8 +517,27 @@ enum E2E {
                 await wait(50); ret() }
             _ = await until({ !coord.busy })
             if let c = checkClipboard("freehand-lasso", since: m, w: cw, h: ch) {
-                let outside = c.png.at(3, ch - 3).a, inside = c.png.at(cw / 2, ch / 3).a
-                record("freehand-lasso", c.ok && outside == 0 && inside == 1, c.info.merging(["alphaOutside": outside, "alphaInside": inside]) { $1 })
+                // Sample a grid: points clearly inside the triangle must be opaque, points clearly outside transparent.
+                // Triangle in output px: (0,0)-(cw,0)-(cw/2,ch) (top-left origin). Skip a 3 pt band at the edge.
+                let tri = [CGPoint(x: 0, y: 0), CGPoint(x: cw, y: 0), CGPoint(x: cw / 2, y: ch)]
+                func edgeDist(_ p: CGPoint) -> (inside: Bool, d: CGFloat) {
+                    var pos = 0, neg = 0, d = CGFloat.greatestFiniteMagnitude
+                    for i in 0..<3 { let a = tri[i], b = tri[(i + 1) % 3]
+                        let cr = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+                        let sd = cr / hypot(b.x - a.x, b.y - a.y)
+                        if sd > 0 { pos += 1 } else { neg += 1 }; d = min(d, abs(sd)) }
+                    return (pos == 3 || neg == 3, d)
+                }
+                var nIn = 0, okIn = 0, nOut = 0, okOut = 0
+                let band = CGFloat(px(3)) + 2
+                for yy in stride(from: 1, to: ch - 1, by: max(1, ch / 40)) { for xx in stride(from: 1, to: cw - 1, by: max(1, cw / 40)) {
+                    let e = edgeDist(CGPoint(x: xx, y: yy)); guard e.d > band else { continue }
+                    let a = c.png.at(xx, yy).a
+                    if e.inside { nIn += 1; if a == 1 { okIn += 1 } } else { nOut += 1; if a == 0 { okOut += 1 } }
+                } }
+                let pass = c.ok && nIn > 100 && nOut > 100 && okIn == nIn && okOut == nOut
+                record("freehand-lasso", pass, c.info.merging(["insideSamples": nIn, "insideOpaque": okIn,
+                                                               "outsideSamples": nOut, "outsideTransparent": okOut]) { $1 })
             }
         }
         setOpts { $0.options.openEditor = true }
@@ -577,6 +632,40 @@ enum E2E {
             let front = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
             record("previous-app-reactivated", front == patternPID, ["frontmost": front, "pattern": patternPID])
         }
+        await alertFocus()
+    }
+
+    /// Error-alert path: force "window gone" on Active Window and check ShareX does not stay frontmost windowless.
+    /// The NSAlert modal is suppressed (headless runner), but NSApp.activate() and the focus restore run as shipped.
+    static func alertFocus() async {
+        suppressAlerts = true; defer { suppressAlerts = false }
+        setOpts { $0.options.openEditor = false; $0.options.delaySeconds = 0 }
+        // (1) A previous app exists: it must get focus back.
+        if patternPID != 0 {
+            let m = markClipboard(), shown = alertsShown
+            NSRunningApplication(processIdentifier: patternPID)?.activate(); await wait(600)
+            ScreenCapture.e2eForceWindowGone = true
+            coord.capture(.activeWindow); _ = await until(6000, { !coord.busy && alertsShown > shown }); await wait(800)
+            let front = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
+            let ok = alertsShown > shown && (front != ProcessInfo.processInfo.processIdentifier || NSApp.isHidden)
+            unchanged("alert-windowGone-focus-restored", m, extra: ["frontmost": front, "pattern": patternPID, "alertPath": alertsShown > shown,
+                                                                   "hidden": NSApp.isHidden], cond: ok)
+            ScreenCapture.e2eForceWindowGone = false
+        }
+        // (2) No usable previous app (ShareX itself frontmost): ShareX must hide, not sit frontmost windowless.
+        do {
+            let m = markClipboard(), shown = alertsShown
+            NSApp.unhide(nil); NSApp.activate(); await wait(600)
+            ScreenCapture.e2eForceWindowGone = true
+            coord.report(CaptureError.windowGone); await wait(800)
+            let front = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
+            let me = ProcessInfo.processInfo.processIdentifier
+            let ok = alertsShown > shown && (NSApp.isHidden || front != me)
+            unchanged("alert-no-previous-app-hides", m, extra: ["frontmost": front, "self": me, "hidden": NSApp.isHidden], cond: ok)
+            ScreenCapture.e2eForceWindowGone = false
+            NSApp.unhide(nil)
+        }
+        setOpts { $0.options.openEditor = true }
     }
 
     static func decorationAndNaming() async {

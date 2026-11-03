@@ -101,7 +101,10 @@ enum ScreenCapture {
     /// Captures one window by itself, including parts other windows cover, at exactly its frame in pixels.
     /// The system shadow is always dropped: how SCK sizes a kept shadow is unverified, so the app draws its own
     /// shadow (DecorationLayout) and the border wraps the window, not shadow padding. No cursor, as in ShareX.
+    /// E2E seam: the next window capture fails as if the window closed, to drive the error-alert path.
+    static var e2eForceWindowGone = false
     static func captureWindow(_ info: WindowInfo) async throws -> WindowShot {
+        if e2eForceWindowGone { e2eForceWindowGone = false; throw CaptureError.windowGone }
         if let fx = e2eFixture, let s = NSScreen.screens.first {
             let sc = s.backingScaleFactor
             guard let img = fx(Int((info.frame.width * sc).rounded()), Int((info.frame.height * sc).rounded())) else { throw CaptureError.noDisplays }
