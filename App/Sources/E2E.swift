@@ -107,7 +107,8 @@ enum E2E {
     static var scale: CGFloat { screen.backingScaleFactor }
 
     static func wait(_ ms: Int) async { try? await Task.sleep(for: .milliseconds(ms)) }
-    static func until(_ ms: Int = 4000, _ c: () -> Bool) async -> Bool {
+    static func until(_ c: () -> Bool) async -> Bool { await until(4000, c) }
+    static func until(_ ms: Int, _ c: () -> Bool) async -> Bool {
         for _ in 0..<(ms / 20) { if c() { return true }; await wait(20) }
         return c()
     }
@@ -442,7 +443,10 @@ enum E2E {
         do {
             let m = markClipboard(); coord.capture(.freehand)
             if await until({ surface() != nil }) { await wait(100)
-                drag([CGPoint(x: 100, y: 100)] + (1...10).map { CGPoint(x: 100 + CGFloat($0) * 40, y: 100) } + (1...10).map { CGPoint(x: 500 - CGFloat($0) * 20, y: 100 + CGFloat($0) * 30) })
+                var tri: [CGPoint] = [CGPoint(x: 100, y: 100)]
+                for i in 1...10 { tri.append(CGPoint(x: 100 + CGFloat(i) * 40, y: 100)) }
+                for i in 1...10 { tri.append(CGPoint(x: 500 - CGFloat(i) * 20, y: 100 + CGFloat(i) * 30)) }
+                drag(tri)
                 await wait(50); ret() }
             _ = await until({ !coord.busy })
             if let c = checkClipboard("freehand-lasso", since: m, w: cw, h: ch) {
