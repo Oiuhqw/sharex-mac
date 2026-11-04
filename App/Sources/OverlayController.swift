@@ -148,7 +148,6 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
     private func add(_ w: NSWindow, _ view: EditorView, displayID: CGDirectDisplayID, outputScale: CGFloat, pickWindows: [WindowInfo]) {
         view.delegate = self
         // Request the platform's window-sharing restriction. This does not guarantee exclusion from other recorders.
-        // Our own ScreenCaptureKit filter excludes this process independently.
         w.sharingType = .none
         w.hidesOnDeactivate = false
         w.isReleasedWhenClosed = false

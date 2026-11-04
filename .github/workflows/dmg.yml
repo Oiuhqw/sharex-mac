@@ -3,12 +3,22 @@
 name: DMG
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: macOS runner architecture
+        type: choice
+        options: [macos-15, macos-15-intel]
+        default: macos-15
   workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: macos-15
 permissions:
   contents: read
 jobs:
   dmg:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner || 'macos-15' }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1

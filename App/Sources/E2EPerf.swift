@@ -4,8 +4,6 @@ import AppKit
 @preconcurrency import ScreenCaptureKit
 import ShareXCore
 
-/// `--e2e <out> --perf`: validated timings and process resource measurements written to perf.json.
-/// A 3456 × 2234 px, 1728 × 1117 pt display is simulated with a synthetic 2x frame.
 /// Frame time = main-thread work per drag event: event handling + synchronous display (CPU raster) + CATransaction flush.
 /// GPU compositing in WindowServer is not included.
 @MainActor

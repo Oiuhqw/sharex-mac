@@ -95,7 +95,7 @@ def validate_resources(resources):
             number(session.get("cpuMS"), "session.cpuMS")
             number(session.get("wallMS"), "session.wallMS", minimum=0.001)
             for key in ("liveBytes", "liveLayerBytes"):
-                require(number(session.get(key), key, integer=True) <= 16 * 1024 * 1024, f"{key} exceeds the live image budget")
+                require(number(session.get(key), key, minimum=1, integer=True) <= 16 * 1024 * 1024, f"{key} exceeds the live image budget")
             cache = number(session.get("cacheBytes"), "session.cacheBytes", minimum=1, integer=True)
             entries = number(session.get("cacheEntries"), "session.cacheEntries", minimum=1, integer=True)
             require(cache <= CACHE_BYTES and entries <= 128, f"{name} exceeds the effect cache budget")

@@ -13,6 +13,7 @@ import CoreGraphics
 /// Point rects are `CGRect` (always display top-left unless a name says Cocoa). Pixel rects are
 /// `PixelRect`, a separate integer type, so passing points where pixels are expected does not compile.
 public enum Geometry {
+    private static let pixelRoundingTolerance: CGFloat = 1e-6
     /// The normalized rect spanned by two drag points.
     public static func rect(from a: CGPoint, to b: CGPoint) -> CGRect {
         CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
@@ -26,7 +27,7 @@ public enum Geometry {
     /// Scales a point rect to pixels and snaps outward to whole pixels so a selection never loses an edge.
     public static func pixelRect(_ r: CGRect, scale: CGFloat) -> PixelRect {
         // A tiny epsilon keeps rects that came from whole pixels (p / scale * scale) from growing by one.
-        let e: CGFloat = 1e-6
+        let e = pixelRoundingTolerance
         let x0 = Int((r.minX * scale + e).rounded(.down)), y0 = Int((r.minY * scale + e).rounded(.down))
         let x1 = Int((r.maxX * scale - e).rounded(.up)), y1 = Int((r.maxY * scale - e).rounded(.up))
         return PixelRect(x: x0, y: y0, w: x1 - x0, h: y1 - y0)
@@ -41,6 +42,17 @@ public enum Geometry {
         return pixelRect(clipped, scale: scale).clamped(width: width, height: height)
     }
 
+    public static func fullyCoveredPixels(_ r: CGRect, scale: CGFloat, width: Int, height: Int) -> PixelRect? {
+        guard let outer = capturePixels(r, scale: scale, width: width, height: height) else { return nil }
+        let clipped = r.intersection(CGRect(x: 0, y: 0, width: CGFloat(width) / scale, height: CGFloat(height) / scale))
+        let e = pixelRoundingTolerance
+        let x = max(outer.x, Int(ceil(clipped.minX * scale - e)))
+        let y = max(outer.y, Int(ceil(clipped.minY * scale - e)))
+        let right = min(outer.maxX, Int(floor(clipped.maxX * scale + e)))
+        let bottom = min(outer.maxY, Int(floor(clipped.maxY * scale + e)))
+        return right > x && bottom > y ? PixelRect(x: x, y: y, w: right - x, h: bottom - y) : nil
+    }
+
     /// Clamps `r` inside `bounds`. Returns nil when nothing remains.
     public static func clamp(_ r: CGRect, to bounds: CGRect) -> CGRect? {
         let i = r.intersection(bounds)
@@ -51,7 +63,9 @@ public enum Geometry {
     /// smaller than one image pixel. Callers keep the previous crop on nil instead of clearing it.
     public static func cropDrag(from a: CGPoint, to b: CGPoint, in bounds: CGRect, scale: CGFloat = 1) -> CGRect? {
         let r = rect(from: a, to: b).intersection(bounds)
-        guard scale.isFinite, scale > 0, !r.isNull, r.width * scale >= 1, r.height * scale >= 1 else { return nil }
+        guard scale.isFinite, scale > 0, !r.isNull,
+              r.width * scale >= 1 - pixelRoundingTolerance,
+              r.height * scale >= 1 - pixelRoundingTolerance else { return nil }
         return r
     }
 

@@ -173,14 +173,17 @@ enum E2ESettings {
         let sheetClosed = await E2E.until(1500) { window.attachedSheet == nil }
         E2E.record("settings-folder-chooser-cancel", chooser && sheetOpened && sheetClosed
                    && E2E.app.settings.value.saveFolder == folderBefore)
+        let selectedFolder = E2E.out.appendingPathComponent("settings-selected-folder", isDirectory: true)
+        do { try FileManager.default.createDirectory(at: selectedFolder, withIntermediateDirectories: true) }
+        catch { E2E.record("settings-folder-chooser-setup", false, ["error": error.localizedDescription]); return }
         let chooseAgain = press("settings.output.chooseFolder", in: window)
         let selectionOpened = await E2E.until(1500) { window.attachedSheet is NSOpenPanel }
-        if let panel = window.attachedSheet as? NSOpenPanel { panel.directoryURL = E2E.saved }
+        if let panel = window.attachedSheet as? NSOpenPanel { panel.directoryURL = selectedFolder }
         await E2E.wait(200)
         let acceptedFolder = dismissSheet("Choose Folder", in: window)
         let selectionClosed = await E2E.until(1500) { window.attachedSheet == nil }
         E2E.record("settings-folder-chooser-accept-persists", chooseAgain && selectionOpened && acceptedFolder && selectionClosed
-                   && SettingsStore().value.saveFolder == E2E.saved.path)
+                   && folderBefore != selectedFolder.path && SettingsStore().value.saveFolder == selectedFolder.path)
         if let panel = window.attachedSheet as? NSOpenPanel { panel.cancel(nil) }
         await E2E.wait(100)
         let defaultFolder = press("settings.output.defaultFolder", in: window)
@@ -279,6 +282,7 @@ enum E2ESettings {
 
         window.close()
         E2E.setOpts { $0.options.openEditor = true; $0.options.delaySeconds = 0 }
+        let canPostEvents = CGPreflightPostEventAccess()
         let source = CGEventSource(stateID: .hidSystemState)
         for down in [true, false] {
             let event = CGEvent(keyboardEventSource: source, virtualKey: 25, keyDown: down)
@@ -288,8 +292,9 @@ enum E2ESettings {
         let fired = await E2E.until(2000) { E2E.surface() != nil }
         if fired { E2E.esc(); _ = await E2E.until { !E2E.coord.busy } }
         E2E.record("settings-custom-shortcut-capture", persistedRecorded && fired,
-                   ["note": "Synthetic HID event after closing Settings; a physical key press needs a Mac."],
-                   status: !fired && persistedRecorded ? "unverifiable" : nil)
+                   ["eventPostingPermitted": canPostEvents,
+                    "note": "Synthetic HID event after closing Settings; a physical key press needs a Mac."],
+                   status: !canPostEvents && !fired && persistedRecorded ? "unverifiable" : nil)
     }
 }
 #endif

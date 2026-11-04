@@ -1,4 +1,3 @@
-"""A complete example of the native driver's JSON contract."""
 import copy
 
 
@@ -39,7 +38,7 @@ def good_metrics():
                       "outputCorrect": True, "budgetsPassed": True, "ownershipReleased": True} for index in range(5)],
     }
     metrics["resources"] = {
-        "schemaVersion": 1, "pid": 123, "rssSource": "mach_task_basic_info.resident_size",
+        "schemaVersion": 1, "pid": 123, "rssSource": "proc_pidinfo(PROC_PIDTASKINFO).pti_resident_size",
         "peakSource": "getrusage.ru_maxrss (macOS bytes, process lifetime)",
         "cpuSource": "getrusage user+system CPU; percent is relative to one core",
         "scope": "App process only; excludes WindowServer/GPU memory and CPU.",

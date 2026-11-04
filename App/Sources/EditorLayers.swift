@@ -208,7 +208,10 @@ final class LiveMarkView: PassThroughView {
     }
 
     #if SHAREX_E2E
-    var e2eRetainedPatchBytes: Int { (patch.contents as? CGImage).flatMap { Imaging.retainedBytes(of: $0) } ?? 0 }
+    var e2eRetainedPatchBytes: Int {
+        guard let contents = patch.contents else { return 0 }
+        return Imaging.retainedBytes(of: contents as! CGImage) ?? 0
+    }
     #endif
 
     private func showFailedMasks(_ rects: [CGRect]) {

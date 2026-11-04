@@ -478,7 +478,6 @@ final class EditorView: NSView, NSTextFieldDelegate {
             annotationsView?.isHidden = false; liveView?.isHidden = false
             let live = liveID.flatMap { id in doc.annotations.first { $0.id == id } }
             annotationsView?.sync(doc, hide: editingTextID, live: live?.id)
-            // Publish the committed bitmap before removing its temporary privacy guard.
             if live == nil { annotationsView?.displayIfNeeded() }
             liveView?.show(live, renderer: renderer)
         }

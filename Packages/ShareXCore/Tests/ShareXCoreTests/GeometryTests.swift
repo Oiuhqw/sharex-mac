@@ -26,6 +26,35 @@ final class GeometryTests: XCTestCase {
         XCTAssertNil(Geometry.cropDrag(from: CGPoint(x: 10, y: 20), to: CGPoint(x: 10.4, y: 20.5), in: bounds, scale: 2))
     }
 
+    func testOnePixelCropAtFractionalCanvasScale() {
+        let bounds = CGRect(x: 0, y: 0, width: 1400, height: 900)
+        let scale = CGFloat(2040) / 1400
+        let start = CGPoint(x: 650, y: 450)
+        XCTAssertNotNil(Geometry.cropDrag(from: start,
+            to: CGPoint(x: start.x + 1 / scale, y: start.y + 1 / scale), in: bounds, scale: scale))
+        XCTAssertNotNil(Geometry.cropDrag(from: CGPoint(x: start.x + 1 / scale, y: start.y + 1 / scale),
+            to: start, in: bounds, scale: scale))
+        XCTAssertNil(Geometry.cropDrag(from: start,
+            to: CGPoint(x: start.x + 0.999 / scale, y: start.y + 1 / scale), in: bounds, scale: scale))
+        let expected = PixelRect(x: 947, y: 655, w: 1, h: 1)
+        let points = expected.points(scale: scale)
+        let accepted = Geometry.cropDrag(from: points.origin,
+            to: CGPoint(x: points.maxX, y: points.maxY), in: bounds, scale: scale)
+        XCTAssertEqual(accepted.map { Geometry.pixelRect($0, scale: scale) }, expected)
+    }
+
+    func testFullyCoveredPixelsPreservePixelDerivedEdges() {
+        let area = PixelRect(x: 31, y: 29, w: 100, h: 80)
+        for scale in [CGFloat(1), CGFloat(2), CGFloat(2040) / 1400] {
+            XCTAssertEqual(Geometry.fullyCoveredPixels(area.points(scale: scale), scale: scale, width: 400, height: 300), area)
+        }
+        XCTAssertEqual(Geometry.fullyCoveredPixels(CGRect(x: 10.25, y: 7.75, width: 20.5, height: 10.5),
+                                                   scale: 2, width: 100, height: 80),
+                       PixelRect(x: 21, y: 16, w: 40, h: 20))
+        XCTAssertNil(Geometry.fullyCoveredPixels(CGRect(x: 0.1, y: 0.1, width: 0.5, height: 0.5),
+                                                 scale: 1, width: 100, height: 80))
+    }
+
     func testRectFromAnyDragDirection() {
         let r = CGRect(x: 10, y: 20, width: 30, height: 40)
         XCTAssertEqual(Geometry.rect(from: CGPoint(x: 40, y: 60), to: CGPoint(x: 10, y: 20)), r)

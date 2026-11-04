@@ -12,17 +12,13 @@ enum E2EResources {
         let wallMS: Double
 
         static func read() -> Snapshot? {
-            var info = mach_task_basic_info()
-            var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<integer_t>.size)
-            let result = withUnsafeMutablePointer(to: &info) { pointer in
-                pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                    task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
-                }
-            }
+            var info = proc_taskinfo()
+            let size = Int32(MemoryLayout<proc_taskinfo>.size)
+            let result = proc_pidinfo(getpid(), PROC_PIDTASKINFO, 0, &info, size)
             var usage = rusage()
-            guard result == KERN_SUCCESS, getrusage(RUSAGE_SELF, &usage) == 0, info.resident_size > 0, usage.ru_maxrss > 0 else { return nil }
+            guard result == size, getrusage(RUSAGE_SELF, &usage) == 0, info.pti_resident_size > 0, usage.ru_maxrss > 0 else { return nil }
             func milliseconds(_ time: timeval) -> Double { Double(time.tv_sec) * 1000 + Double(time.tv_usec) / 1000 }
-            return Snapshot(rss: info.resident_size, lifetimePeakRSS: UInt64(usage.ru_maxrss),
+            return Snapshot(rss: info.pti_resident_size, lifetimePeakRSS: UInt64(usage.ru_maxrss),
                             cpuMS: milliseconds(usage.ru_utime) + milliseconds(usage.ru_stime), wallMS: Perf.now())
         }
     }
@@ -51,7 +47,8 @@ enum E2EResources {
             defer { editor.releaseResources(); window.orderOut(nil); window.contentView = nil; window.close(); CATransaction.flush() }
             let ownership = Ownership(); ownership.renderer = renderer; ownership.editor = editor
             let start = CGPoint(x: bounds.width * 0.15, y: bounds.height * 0.2)
-            let end = CGPoint(x: bounds.width * 0.6, y: bounds.height * 0.65)
+            let end = CGPoint(x: start.x + min(bounds.width * 0.45, 1024 / scale),
+                              y: start.y + min(bounds.height * 0.45, 768 / scale))
             editor.setTool(.shape(.pixelate))
             E2EPerf.send(.leftMouseDown, start, editor, window)
             E2EPerf.send(.leftMouseDragged, end, editor, window)
@@ -87,7 +84,8 @@ enum E2EResources {
                 && E2E.isRed(pixels.at(Int(CGFloat(image.width) * 0.8), Int(CGFloat(image.height) * 0.3)))
             let budgetOK = renderer.e2eCacheBytes > 0 && renderer.e2eCacheBytes <= 64 * 1024 * 1024
                 && renderer.e2eCacheEntryCount > 0 && renderer.e2eCacheEntryCount <= 128
-                && liveBytes <= 16 * 1024 * 1024 && liveLayerBytes <= 16 * 1024 * 1024
+                && liveBytes > 0 && liveBytes <= 16 * 1024 * 1024
+                && liveLayerBytes > 0 && liveLayerBytes <= 16 * 1024 * 1024
                 && liveBytesAfterCommit == 0 && liveLayerBytesAfterCommit == 0 && pointerSyncs == 0
             if index == 0 { E2EOrientation.writePNG(flat, "resources-\(name).png") }
             return Session(ownership: ownership, metrics: [
@@ -165,7 +163,7 @@ enum E2EResources {
                                "lifetimePeakRSSBytes": end.lifetimePeakRSS, "sessions": sessions]
         }
         let report: [String: Any] = ["schemaVersion": 1, "pid": ProcessInfo.processInfo.processIdentifier,
-            "rssSource": "mach_task_basic_info.resident_size", "peakSource": "getrusage.ru_maxrss (macOS bytes, process lifetime)",
+            "rssSource": "proc_pidinfo(PROC_PIDTASKINFO).pti_resident_size", "peakSource": "getrusage.ru_maxrss (macOS bytes, process lifetime)",
             "cpuSource": "getrusage user+system CPU; percent is relative to one core",
             "scope": "App process including PNG validation and framework caches; excludes WindowServer/GPU memory and CPU. RSS is reported without a baseline-derived growth gate.",
             "scenarios": scenarios]

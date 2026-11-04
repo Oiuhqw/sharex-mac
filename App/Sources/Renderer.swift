@@ -25,6 +25,7 @@ final class Renderer {
     private static let effectPixels = 16 * 1024 * 1024
     private static let liveBytesLimit = 16 * 1024 * 1024
     private static let intersectionLimit = 64
+    private static let dependencyScanLimit = 1024
     private struct Protection {
         let id: Int
         let bounds: PixelRect
@@ -178,12 +179,8 @@ final class Renderer {
 
     private func protectionBounds(_ a: Annotation) -> PixelRect? {
         if a.kind == .blur || a.kind == .pixelate { return pixelArea(a.rect) }
-        guard a.kind == .rectangle, a.style.filled, a.style.color.a * a.style.opacity == 1,
-              let outer = pixelArea(a.rect) else { return nil }
-        let clipped = a.rect.intersection(CGRect(origin: .zero, size: pointSize))
-        let x = max(outer.x, Int(ceil(clipped.minX * scale))), y = max(outer.y, Int(ceil(clipped.minY * scale)))
-        let right = min(outer.maxX, Int(floor(clipped.maxX * scale))), bottom = min(outer.maxY, Int(floor(clipped.maxY * scale)))
-        return right > x && bottom > y ? PixelRect(x: x, y: y, w: right - x, h: bottom - y) : nil
+        guard a.kind == .rectangle, a.style.filled, a.style.color.a * a.style.opacity == 1 else { return nil }
+        return Geometry.fullyCoveredPixels(a.rect, scale: scale, width: frame.width, height: frame.height)
     }
 
     @discardableResult
@@ -195,7 +192,8 @@ final class Renderer {
             if a.kind == .blur || a.kind == .pixelate {
                 var intersections: [PixelRect] = []
                 var exceeded = false
-                for p in prior {
+                for (index, p) in prior.enumerated() {
+                    if index == Self.dependencyScanLimit { exceeded = true; break }
                     guard let overlap = area.intersection(p.bounds) else { continue }
                     if intersections.count == Self.intersectionLimit { exceeded = true; break }
                     intersections.append(overlap)
@@ -233,7 +231,6 @@ final class Renderer {
 
     private func clipPriorProtection(for id: Int, rect: CGRect, in ctx: CGContext) {
         ctx.setShouldAntialias(false)
-        // One hole per clip subtracts the union even when earlier protections overlap each other.
         for area in effectKeys[id]?.prior ?? [] {
             ctx.beginPath(); ctx.addRect(rect); ctx.addRect(area.points(scale: scale)); ctx.clip(using: .evenOdd)
         }
@@ -286,7 +283,6 @@ final class Renderer {
     }
 
     private func coverRedactionFailures(in ctx: CGContext, hide: Int?, skip: Int?) {
-        // Failed protection stays opaque above later marks. The live layer owns a skipped mark.
         for (id, rect) in failedRedactions where id != hide && id != skip { coverRedaction(rect, in: ctx) }
     }
 

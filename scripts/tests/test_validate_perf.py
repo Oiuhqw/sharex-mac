@@ -105,6 +105,13 @@ class ValidatePerfTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validator.validate(metrics)
 
+    def test_live_preview_must_exist_before_release(self):
+        for key in ("liveBytes", "liveLayerBytes"):
+            metrics = good_metrics()
+            metrics["resources"]["scenarios"]["synthetic2x"]["sessions"][0][key] = 0
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                validator.validate(metrics)
+
     def test_rss_recovery_and_zero_idle_cpu_are_valid(self):
         metrics = good_metrics()
         scenario = metrics["resources"]["scenarios"]["fullDisplay"]

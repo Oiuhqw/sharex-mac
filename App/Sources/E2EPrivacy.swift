@@ -53,16 +53,18 @@ enum E2EPrivacy {
         Export.flatten(renderer: renderer, doc: doc, crop: crop, lasso: nil).map(E2E.bitmap)
     }
 
-    private static func snapshot(_ root: NSView, scale: CGFloat) -> E2E.Bitmap? {
-        root.window?.displayIfNeeded(); CATransaction.flush()
-        guard let ctx = Imaging.context(width: Int(size.width * scale), height: Int(size.height * scale), flipped: true) else { return nil }
+    private static func snapshot(_ root: NSView, scale: CGFloat, display: Bool = true) -> E2E.Bitmap? {
+        if display { root.window?.displayIfNeeded() }
+        CATransaction.flush()
+        guard let ctx = Imaging.context(width: Int(root.bounds.width * scale), height: Int(root.bounds.height * scale), flipped: true) else { return nil }
         ctx.scaleBy(x: scale, y: scale)
         for child in root.subviews where !child.isHidden {
+            guard child is FrameView || child is AnnotationsView || child is LiveMarkView else { continue }
             guard let layer = child.layer,
                   let isolated = Imaging.context(width: ctx.width, height: ctx.height, flipped: true) else { return nil }
             isolated.scaleBy(x: scale, y: scale); layer.render(in: isolated)
             guard let image = isolated.makeImage() else { return nil }
-            Imaging.drawUpright(image, in: crop, ctx: ctx)
+            Imaging.drawUpright(image, in: root.bounds, ctx: ctx)
         }
         return ctx.makeImage().map(E2E.bitmap)
     }
@@ -77,6 +79,9 @@ enum E2EPrivacy {
             overlapBudget(scale: scale)
         }
         cacheEviction()
+        dependencyScanBudget()
+        fractionalOpaqueProtection()
+        editorCommit()
         allocationRefusal()
     }
 
@@ -227,6 +232,87 @@ enum E2EPrivacy {
                    ["retainedBytes": bounded.e2eCacheBytes, "entries": bounded.e2eCacheEntryCount])
         bounded.releaseTransientResources()
         E2E.record("privacy-cache-release", bounded.e2eCacheBytes == 0 && bounded.e2eCacheEntryCount == 0 && bounded.e2eLiveBytes == 0)
+    }
+
+    private static func dependencyScanBudget() {
+        guard let image = E2E.checker(256, 192) else {
+            E2E.record("privacy-dependency-scan-setup", false); return
+        }
+        for count in [1024, 1025] {
+            var doc = EditorDocument(styles: [.rectangle: ShapeStyle(color: .black, filled: true)])
+            doc.beginDrag()
+            for _ in 0..<count {
+                let id = doc.addShape(.rectangle, at: CGPoint(x: 4, y: 4))
+                doc.extendShape(id, to: CGPoint(x: 8, y: 8))
+            }
+            doc.endDrag()
+            let area = CGRect(x: 100, y: 100, width: 100, height: 70)
+            add(.pixelate, area, doc: &doc)
+            let renderer = Renderer(frame: image, scale: 1)
+            guard let output = flatten(renderer, doc) else {
+                E2E.record("privacy-dependency-scan-\(count)", false); continue
+            }
+            let opaqueBlack = output.frac(area) { $0.r == 0 && $0.g == 0 && $0.b == 0 && $0.a == 1 } == 1
+            E2E.record("privacy-dependency-scan-\(count)", opaqueBlack == (count > 1024))
+        }
+    }
+
+    private static func fractionalOpaqueProtection() {
+        let scale = CGFloat(2040) / 1400
+        let area = PixelRect(x: 31, y: 29, w: 100, h: 80)
+        let points = area.points(scale: scale)
+        var doc = EditorDocument()
+        add(.rectangle, points, doc: &doc)
+        let before = doc
+        add(.pixelate, PixelRect(x: 20, y: 60, w: 210, h: 120).points(scale: scale), doc: &doc)
+        guard let imageA = source(scale: scale, hidden: [points], changed: false),
+              let imageB = source(scale: scale, hidden: [points], changed: true),
+              let mask = Imaging.context(width: imageA.width, height: imageA.height, flipped: true) else {
+            E2E.record("privacy-fractional-opaque-setup", false); return
+        }
+        mask.scaleBy(x: scale, y: scale)
+        Renderer(frame: imageA, scale: scale).draw(before, in: mask)
+        guard let maskPixels = mask.makeImage().map(E2E.bitmap),
+              let prior = flatten(Renderer(frame: imageA, scale: scale), before),
+              let actual = flatten(Renderer(frame: imageA, scale: scale), doc),
+              let changed = flatten(Renderer(frame: imageB, scale: scale), doc) else {
+            E2E.record("privacy-fractional-opaque-materialize", false); return
+        }
+        let opaque = maskPixels.frac(area.cgRect) { $0.r == 0 && $0.g == 0 && $0.b == 0 && $0.a == 1 } == 1
+        E2E.record("privacy-fractional-opaque-coverage", opaque)
+        E2E.record("privacy-fractional-first-protection", equal(prior, actual) { inside($0, $1, [area]) })
+        E2E.record("privacy-fractional-source-noninterference", actual.px == changed.px)
+    }
+
+    private static func editorCommit() {
+        let bounds = CGRect(x: 0, y: 0, width: 800, height: 600)
+        guard let image = E2E.checker(800, 600) else { E2E.record("privacy-editor-setup", false); return }
+        let renderer = Renderer(frame: image, scale: 1)
+        let view = EditorView(frame: bounds, renderer: renderer, mode: .rectangle, initialCrop: bounds,
+                              styles: [.rectangle: ShapeStyle(color: .black, filled: true)],
+                              showMagnifier: false, pickRects: [], finishOnPick: false)
+        let window = OverlayWindow(contentRect: bounds, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = view; window.orderFrontRegardless()
+        defer { view.releaseResources(); window.orderOut(nil); window.contentView = nil }
+        let surface = (window: window as NSWindow, view: view)
+        view.setTool(.shape(.rectangle))
+        E2E.mouse(.leftMouseDown, CGPoint(x: 120, y: 120), in: surface)
+        E2E.mouse(.leftMouseDragged, CGPoint(x: 360, y: 320), in: surface)
+        E2E.mouse(.leftMouseUp, CGPoint(x: 360, y: 320), in: surface)
+        view.setTool(.shape(.pixelate))
+        E2E.mouse(.leftMouseDown, CGPoint(x: 280, y: 220), in: surface)
+        E2E.mouse(.leftMouseDragged, CGPoint(x: 580, y: 440), in: surface)
+        let preview = snapshot(view, scale: 1)
+        let liveArea = CGRect(x: 280, y: 220, width: 300, height: 220)
+        E2E.record("privacy-editor-drag-guard", preview.map {
+            $0.frac(liveArea) { $0.r == 0 && $0.g == 0 && $0.b == 0 && $0.a == 1 } == 1
+        } ?? false)
+        E2E.mouse(.leftMouseUp, CGPoint(x: 580, y: 440), in: surface)
+        let committed = snapshot(view, scale: 1, display: false)
+        let exported = Export.flatten(renderer: renderer, doc: view.doc, crop: bounds, lasso: nil).map(E2E.bitmap)
+        E2E.record("privacy-editor-commit-export", view.doc.annotations.count == 2
+                   && committed.flatMap { actual in exported.map { actual.px == $0.px } } == true
+                   && renderer.e2eLiveBytes == 0 && view.e2eLiveLayerBytes == 0)
     }
 
     private static func allocationRefusal() {
