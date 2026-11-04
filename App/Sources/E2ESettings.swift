@@ -189,23 +189,25 @@ enum E2ESettings {
         return true
     }
 
-    private static func prepareSheetDismissal(_ button: String, in window: NSWindow) -> Task<SettingsAXClient.ModalResult, Never> {
+    private static func prepareSheetDismissal(_ button: String, in window: NSWindow,
+                                              using input: SettingsAXClient.SheetInput = .accessibility) -> Task<SettingsAXClient.ModalResult, Never> {
         let client = accessibility
         let title = window.title
-        return Task.detached { await client.dismissSheet(button, in: title) }
+        return Task.detached { await client.dismissSheet(button, in: title, using: input) }
     }
 
     private static func restoreShortcuts(dismissing button: String, in window: NSWindow) async -> SettingsAXClient.ModalResult {
+        guard window.attachedSheet == nil else { return .init(shown: false, pressed: false) }
         guard let control = await element("settings.shortcuts.restoreAll", in: window) else {
             return .init(shown: false, pressed: false)
         }
-        let response = prepareSheetDismissal(button, in: window)
+        let deadline = SettingsModalDeadline(window: window)
+        let response = prepareSheetDismissal(button, in: window, using: .pointer)
         guard click(control, in: window) else {
             response.cancel()
-            _ = await response.value
-            return .init(shown: false, pressed: false)
+            return deadline.finish(await response.value)
         }
-        return await response.value
+        return deadline.finish(await response.value)
     }
 
     private static func search(_ text: String, in window: NSWindow) async -> Bool {
@@ -221,24 +223,52 @@ enum E2ESettings {
 
     private static func rowAction(_ id: String, restore: Bool, in window: NSWindow) async -> Bool {
         guard let options = await element("settings.shortcut.\(id).options", in: window) else { return false }
-        guard click(options, in: window) else { return false }
+        let identifier = "settings.shortcut.\(id).\(restore ? "restore" : "clear")"
+        let itemTitle = restore ? "Restore Default" : "Clear Shortcut"
+        let client = accessibility
+        let windowTitle = window.title
+        let (readiness, continuation) = AsyncStream<Void>.makeStream()
+        let deadline = SettingsModalDeadline(window: window)
         let selection = Task.detached {
-            try? await Task.sleep(for: .milliseconds(200))
-            let codes: [CGKeyCode] = restore ? [125, 125, 36] : [125, 36]
-            for code in codes {
-                for down in [true, false] {
-                    CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)?.post(tap: .cghidEventTap)
-                }
-                try? await Task.sleep(for: .milliseconds(60))
+            defer { continuation.finish() }
+            return await client.selectMenu(identifier, title: itemTitle, in: windowTitle) {
+                continuation.yield(())
+                continuation.finish()
             }
         }
-        await selection.value
-        await E2E.wait(180)
-        return true
+        var started = false
+        for await _ in readiness { started = true; break }
+        guard started, click(options, in: window) else {
+            selection.cancel()
+            _ = deadline.finish(await selection.value)
+            return false
+        }
+        let result = deadline.finish(await selection.value)
+        return result.shown && result.pressed && result.closed
     }
 
     private static func dismissSheet(_ title: String, in window: NSWindow) async -> Bool {
-        await accessibility.dismissSheet(title, in: window.title).pressed
+        let result = await accessibility.dismissSheet(title, in: window.title)
+        return result.shown && result.pressed && result.closed
+    }
+
+    private static func awaitShortcutFeedback(_ expected: String, after previous: String, in window: NSWindow,
+                                              state: () -> Bool) async -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        repeat {
+            let current = await feedback(in: window)
+            if state(), current != previous, current.contains(expected) { return true }
+            await E2E.wait(50)
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        return false
+    }
+
+    private static func canonicalPath(_ url: URL) -> String {
+        url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    private static func canonicalPath(_ path: String) -> String {
+        path.isEmpty ? "" : canonicalPath(URL(fileURLWithPath: path, isDirectory: true))
     }
 
     static func run() async {
@@ -307,19 +337,41 @@ enum E2ESettings {
         catch { E2E.record("settings-folder-chooser-setup", false, ["error": error.localizedDescription]); return }
         let chooseAgain = await press("settings.output.chooseFolder", in: window)
         let selectionOpened = await E2E.until(1500) { window.attachedSheet is NSOpenPanel }
-        if let panel = window.attachedSheet as? NSOpenPanel { panel.directoryURL = selectedFolder }
-        await E2E.wait(200)
+        let selectionPanel = window.attachedSheet as? NSOpenPanel
+        let initialDirectory = selectionPanel?.directoryURL?.path ?? ""
+        let initialURLs = selectionPanel?.urls.map(\.path) ?? []
+        selectionPanel?.directoryURL = selectedFolder
+        let expectedFolder = canonicalPath(selectedFolder)
+        let navigatedFolder = await E2E.until(2000) {
+            selectionPanel?.directoryURL.map(canonicalPath) == expectedFolder
+        }
+        let directoryBeforeAccept = selectionPanel?.directoryURL?.path ?? ""
+        let urlsBeforeAccept = selectionPanel?.urls.map(\.path) ?? []
         let acceptedFolder = await dismissSheet("Choose Folder", in: window)
         let selectionClosed = await E2E.until(1500) { window.attachedSheet == nil }
-        E2E.record("settings-folder-chooser-accept-persists", chooseAgain && selectionOpened && acceptedFolder && selectionClosed
-                   && folderBefore != selectedFolder.path && SettingsStore().value.saveFolder == selectedFolder.path)
+        let folderPersisted = await E2E.until(1500) {
+            canonicalPath(E2E.app.settings.value.saveFolder) == expectedFolder
+                && canonicalPath(SettingsStore().value.saveFolder) == expectedFolder
+        }
+        E2E.record("settings-folder-chooser-accept-persists", chooseAgain && selectionOpened && navigatedFolder
+                   && acceptedFolder && selectionClosed && canonicalPath(folderBefore) != expectedFolder && folderPersisted,
+                   ["opened": selectionOpened, "navigated": navigatedFolder, "accepted": acceptedFolder,
+                    "closed": selectionClosed, "persisted": folderPersisted, "before": folderBefore,
+                    "expected": expectedFolder, "initialDirectory": initialDirectory, "initialURLs": initialURLs,
+                    "directoryBeforeAccept": directoryBeforeAccept, "urlsBeforeAccept": urlsBeforeAccept,
+                    "directoryAfterAccept": selectionPanel?.directoryURL?.path ?? "",
+                    "urlsAfterAccept": selectionPanel?.urls.map(\.path) ?? [],
+                    "liveFolder": E2E.app.settings.value.saveFolder, "storedFolder": SettingsStore().value.saveFolder])
         if let panel = window.attachedSheet as? NSOpenPanel { panel.cancel(nil) }
-        await E2E.wait(100)
+        _ = await E2E.until(1500) { window.attachedSheet == nil }
+        let beforeDefaultFolder = E2E.app.settings.value.saveFolder
         let defaultFolder = await press("settings.output.defaultFolder", in: window)
-        await E2E.wait(100)
+        let defaultPersisted = await E2E.until(1500) {
+            E2E.app.settings.value.saveFolder.isEmpty && SettingsStore().value.saveFolder.isEmpty
+        }
         let folderVisible = await element("settings.output.folder", in: window) != nil
-        E2E.record("settings-folder-default-persists", defaultFolder && SettingsStore().value.saveFolder.isEmpty
-                   && folderVisible)
+        E2E.record("settings-folder-default-persists", !beforeDefaultFolder.isEmpty && defaultFolder && defaultPersisted
+                   && folderVisible, ["before": beforeDefaultFolder, "persisted": defaultPersisted])
         await screenshot("settings-output", window: window)
 
         _ = await navigate("capture", in: window)
@@ -360,14 +412,20 @@ enum E2ESettings {
         let conflict = conflictDeadline.finish(await conflictResponse.value)
         await E2E.wait(100)
         let conflictText = await feedback(in: window)
-        E2E.record("settings-shortcut-conflict", conflict.shown && conflict.pressed
+        E2E.record("settings-shortcut-conflict", conflict.shown && conflict.pressed && conflict.closed
                    && KeyboardShortcuts.getShortcut(for: .lastRegion) == previous
                    && KeyboardShortcuts.getShortcut(for: .region) == custom
                    && conflictText.contains("Region"), ["feedback": conflictText])
         key(53, "\u{1b}", in: window)
         await E2E.wait(80)
+        let beforeClearFeedback = await feedback(in: window)
+        let beforeClear = KeyboardShortcuts.getShortcut(for: .region)
         let cleared = await rowAction("region", restore: false, in: window)
-        E2E.record("settings-shortcut-clear", cleared && KeyboardShortcuts.getShortcut(for: .region) == nil)
+        let clearCompleted = await awaitShortcutFeedback("Region shortcut cleared.", after: beforeClearFeedback, in: window) {
+            KeyboardShortcuts.getShortcut(for: .region) == nil
+        }
+        E2E.record("settings-shortcut-clear", beforeClear == custom && cleared && clearCompleted
+                   && KeyboardShortcuts.getShortcut(for: .region) == nil)
         _ = await focusRecorder("lastRegion", in: window)
         key(18, "1", in: window, flags: [.control, .shift])
         let movedDefault = await E2E.until(1500) {
@@ -375,28 +433,54 @@ enum E2ESettings {
         }
         let beforeRestoreFeedback = await feedback(in: window)
         let blockedRestore = await rowAction("region", restore: true, in: window)
+        let blockedCompleted = await awaitShortcutFeedback("used by \(CaptureStyle.lastRegion.title)",
+                                                           after: beforeRestoreFeedback, in: window) {
+            KeyboardShortcuts.getShortcut(for: .region) == nil
+                && KeyboardShortcuts.getShortcut(for: .lastRegion) == KeyboardShortcuts.Name.region.initialShortcut
+        }
         let restoreFeedback = await feedback(in: window)
-        E2E.record("settings-shortcut-default-conflict", movedDefault && blockedRestore
+        E2E.record("settings-shortcut-default-conflict", movedDefault && blockedRestore && blockedCompleted
                    && KeyboardShortcuts.getShortcut(for: .region) == nil
                    && KeyboardShortcuts.getShortcut(for: .lastRegion) == KeyboardShortcuts.Name.region.initialShortcut
                    && restoreFeedback != beforeRestoreFeedback && restoreFeedback.contains("used by \(CaptureStyle.lastRegion.title)"),
                    ["feedback": restoreFeedback])
+        let beforeUnassigned = KeyboardShortcuts.getShortcut(for: .lastRegion)
         let noDefaultCleared = await rowAction("lastRegion", restore: true, in: window)
-        E2E.record("settings-shortcut-unassigned-default", noDefaultCleared && KeyboardShortcuts.getShortcut(for: .lastRegion) == nil)
+        let noDefaultCompleted = await awaitShortcutFeedback("\(CaptureStyle.lastRegion.title) default restored.",
+                                                             after: restoreFeedback, in: window) {
+            KeyboardShortcuts.getShortcut(for: .lastRegion) == nil
+        }
+        E2E.record("settings-shortcut-unassigned-default", beforeUnassigned != nil && noDefaultCleared && noDefaultCompleted
+                   && KeyboardShortcuts.getShortcut(for: .lastRegion) == nil)
+        let beforeDefaultFeedback = await feedback(in: window)
+        let beforeDefault = KeyboardShortcuts.getShortcut(for: .region)
         let restored = await rowAction("region", restore: true, in: window)
-        E2E.record("settings-shortcut-default", restored
+        let defaultCompleted = await awaitShortcutFeedback("Region default restored.", after: beforeDefaultFeedback, in: window) {
+            KeyboardShortcuts.getShortcut(for: .region) == KeyboardShortcuts.Name.region.initialShortcut
+        }
+        E2E.record("settings-shortcut-default", beforeDefault == nil && restored && defaultCompleted
                    && KeyboardShortcuts.getShortcut(for: .region) == KeyboardShortcuts.Name.region.initialShortcut)
 
         _ = await focusRecorder("region", in: window)
         key(28, "8", in: window, flags: [.control, .option, .shift])
-        _ = await E2E.until(1500) { KeyboardShortcuts.getShortcut(for: .region) == custom }
+        let resetFixture = await E2E.until(1500) { KeyboardShortcuts.getShortcut(for: .region) == custom }
+        let beforeCancel = shortcutState()
         let cancelled = await restoreShortcuts(dismissing: "Cancel", in: window)
-        await E2E.wait(100)
-        E2E.record("settings-shortcut-restore-confirmation", cancelled.shown && cancelled.pressed
+        let cancelClosed = await E2E.until(1500) { window.attachedSheet == nil }
+        E2E.record("settings-shortcut-restore-confirmation", resetFixture && cancelled.shown && cancelled.pressed
+                   && cancelled.closed && cancelClosed && shortcutState() == beforeCancel
                    && KeyboardShortcuts.getShortcut(for: .region) == custom)
+        let resetStillCustom = KeyboardShortcuts.getShortcut(for: .region) == custom
+        let beforeResetFeedback = await feedback(in: window)
         let restoreAll = await restoreShortcuts(dismissing: "Restore Defaults", in: window)
-        await E2E.wait(100)
-        E2E.record("settings-shortcut-restore-all", restoreAll.shown && restoreAll.pressed && Hotkeys.commands.allSatisfy {
+        let resetCompleted = await awaitShortcutFeedback("All eight shortcut defaults restored.",
+                                                         after: beforeResetFeedback, in: window) {
+            window.attachedSheet == nil && Hotkeys.commands.allSatisfy {
+                KeyboardShortcuts.getShortcut(for: $0.name) == $0.name.initialShortcut
+            }
+        }
+        E2E.record("settings-shortcut-restore-all", resetFixture && resetStillCustom && restoreAll.shown
+                   && restoreAll.pressed && restoreAll.closed && resetCompleted && Hotkeys.commands.allSatisfy {
             KeyboardShortcuts.getShortcut(for: $0.name) == $0.name.initialShortcut
         })
 
@@ -432,6 +516,7 @@ enum E2ESettings {
 private final class SettingsModalDeadline: NSObject {
     private weak var window: NSWindow?
     private var timer: Timer?
+    private weak var trackingMenu: NSMenu?
     private var expired = false
 
     init(window: NSWindow) {
@@ -439,17 +524,34 @@ private final class SettingsModalDeadline: NSObject {
         super.init()
         let timer = Timer(timeInterval: 6, target: self, selector: #selector(expire(_:)), userInfo: nil, repeats: false)
         self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
         RunLoop.main.add(timer, forMode: .modalPanel)
+        RunLoop.main.add(timer, forMode: .eventTracking)
+        NotificationCenter.default.addObserver(self, selector: #selector(menuBegan(_:)),
+                                               name: NSMenu.didBeginTrackingNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(menuEnded(_:)),
+                                               name: NSMenu.didEndTrackingNotification, object: nil)
     }
 
     func finish(_ result: SettingsAXClient.ModalResult) -> SettingsAXClient.ModalResult {
+        if !result.closed { expire(nil) }
         timer?.invalidate()
         timer = nil
-        return .init(shown: result.shown, pressed: result.pressed && !expired)
+        NotificationCenter.default.removeObserver(self)
+        return .init(shown: result.shown, pressed: result.pressed && !expired, closed: result.closed && !expired)
     }
 
-    @objc private func expire(_: Timer) {
+    @objc private func menuBegan(_ notification: Notification) {
+        trackingMenu = notification.object as? NSMenu
+    }
+
+    @objc private func menuEnded(_ notification: Notification) {
+        if notification.object as? NSMenu === trackingMenu { trackingMenu = nil }
+    }
+
+    @objc private func expire(_: Timer?) {
         expired = true
+        trackingMenu?.cancelTracking()
         guard let window, let sheet = window.attachedSheet else { return }
         if NSApp.modalWindow === sheet { NSApp.abortModal() }
         window.endSheet(sheet, returnCode: .abort)
@@ -484,10 +586,21 @@ private actor SettingsAXClient {
     struct ModalResult: Codable, Sendable {
         let shown: Bool
         let pressed: Bool
+        let closed: Bool
+
+        init(shown: Bool, pressed: Bool, closed: Bool = false) {
+            self.shown = shown
+            self.pressed = pressed
+            self.closed = closed
+        }
+    }
+
+    enum SheetInput: String, Codable, Sendable {
+        case accessibility, pointer
     }
 
     enum Operation: Codable, Sendable {
-        case find(String), snapshot, dismissSheet(String)
+        case find(String), snapshot, dismissSheet(String, SheetInput), selectMenu(identifier: String, title: String)
     }
 
     struct Request: Codable, Sendable {
@@ -528,8 +641,16 @@ private actor SettingsAXClient {
         return Snapshot(elements: [], trusted: false, error: reply.error ?? "Unexpected AX helper reply", issues: [])
     }
 
-    func dismissSheet(_ button: String, in title: String) async -> ModalResult {
-        let reply = await invoke(.dismissSheet(button), in: title)
+    func dismissSheet(_ button: String, in title: String, using input: SheetInput = .accessibility) async -> ModalResult {
+        let reply = await invoke(.dismissSheet(button, input), in: title)
+        if case .modal(let result) = reply { return result }
+        rejectUnexpected(reply)
+        return ModalResult(shown: false, pressed: false)
+    }
+
+    func selectMenu(_ identifier: String, title itemTitle: String, in title: String,
+                    started: @escaping @Sendable () -> Void) async -> ModalResult {
+        let reply = await invoke(.selectMenu(identifier: identifier, title: itemTitle), in: title, started: started)
         if case .modal(let result) = reply { return result }
         rejectUnexpected(reply)
         return ModalResult(shown: false, pressed: false)
@@ -539,9 +660,9 @@ private actor SettingsAXClient {
         if reply.error == nil { failures.append("Unexpected AX helper reply") }
     }
 
-    private func invoke(_ operation: Operation, in title: String) async -> Reply {
+    private func invoke(_ operation: Operation, in title: String, started: (@Sendable () -> Void)? = nil) async -> Reply {
         let reply: Reply
-        do { reply = try await exchange(Request(operation: operation, title: title)) }
+        do { reply = try await exchange(Request(operation: operation, title: title), started: started) }
         catch { reply = .failure(error.localizedDescription) }
         if let error = reply.error {
             let message = "\(operation): \(error)"
@@ -551,7 +672,7 @@ private actor SettingsAXClient {
         return reply
     }
 
-    private func exchange(_ request: Request) async throws -> Reply {
+    private func exchange(_ request: Request, started: (@Sendable () -> Void)?) async throws -> Reply {
         let requestData = try JSONEncoder().encode(request)
         guard requestData.count <= SettingsAXTransport.requestLimit else {
             throw SettingsAXTransport.Failure("AX helper request exceeds \(SettingsAXTransport.requestLimit) bytes")
@@ -571,6 +692,7 @@ private actor SettingsAXClient {
         process.standardError = FileHandle.nullDevice
         let deadline = ProcessInfo.processInfo.systemUptime + 5
         try process.run()
+        started?()
         while process.isRunning && !Task.isCancelled && ProcessInfo.processInfo.systemUptime < deadline {
             await pause()
         }
@@ -688,7 +810,14 @@ private final class SettingsAXWalker {
     private typealias ModalResult = SettingsAXClient.ModalResult
 
     private enum Match {
-        case identifier(String), button(String), all
+        case identifier(String), button(String), role(String), all
+    }
+
+    private struct PopupItem {
+        let menu: AXUIElement
+        let element: AXUIElement
+        let identifier: String
+        let title: String
     }
 
     private let parent: pid_t
@@ -705,8 +834,11 @@ private final class SettingsAXWalker {
             let element = find(identifier, in: request.title)
             return failure.map(SettingsAXClient.Reply.failure) ?? .element(element)
         case .snapshot: return .snapshot(snapshot(in: request.title))
-        case .dismissSheet(let button):
-            let result = dismissSheet(button, in: request.title)
+        case .dismissSheet(let button, let input):
+            let result = dismissSheet(button, in: request.title, using: input)
+            return failure.map(SettingsAXClient.Reply.failure) ?? .modal(result)
+        case .selectMenu(let identifier, let title):
+            let result = selectMenu(identifier, title: title, in: request.title)
             return failure.map(SettingsAXClient.Reply.failure) ?? .modal(result)
         }
     }
@@ -763,6 +895,7 @@ private final class SettingsAXWalker {
         case .button(let title):
             return text(kAXRoleAttribute, of: element) == kAXButtonRole
                 && (text(kAXTitleAttribute, of: element) == title || text(kAXDescriptionAttribute, of: element) == title)
+        case .role(let role): return text(kAXRoleAttribute, of: element) == role
         case .all: return true
         }
     }
@@ -832,20 +965,161 @@ private final class SettingsAXWalker {
         return Snapshot(elements: elements, trusted: trusted, error: failure, issues: issues)
     }
 
-    private func dismissSheet(_ button: String, in title: String) -> ModalResult {
+    private func dismissSheet(_ button: String, in title: String, using input: SettingsAXClient.SheetInput) -> ModalResult {
         repeat {
             if let element = walk(in: title, matching: .button(button), sheetOnly: true).found.first {
-                guard prepare(element) else { break }
-                let status = AXUIElementPerformAction(element, kAXPressAction as CFString)
-                checkDeadline()
-                if status != .success { failure = "AXPress failed with AXError \(status.rawValue)" }
-                return ModalResult(shown: true, pressed: status == .success && failure == nil)
+                switch input {
+                case .accessibility:
+                    guard prepare(element) else { return ModalResult(shown: true, pressed: false) }
+                    let status = AXUIElementPerformAction(element, kAXPressAction as CFString)
+                    checkDeadline()
+                    guard status == .success, failure == nil else {
+                        failure = failure ?? "AXPress failed with AXError \(status.rawValue)"
+                        return ModalResult(shown: true, pressed: false)
+                    }
+                case .pointer:
+                    guard pointerClick(element) else { return ModalResult(shown: true, pressed: false) }
+                }
+                repeat {
+                    let sheets = walk(in: title, matching: .role(kAXSheetRole), sheetOnly: true).found
+                    if failure == nil && sheets.isEmpty { return ModalResult(shown: true, pressed: true, closed: true) }
+                    pause()
+                } while failure == nil && ProcessInfo.processInfo.systemUptime < deadline
+                failure = failure ?? "AX sheet remained open after clicking \(button)"
+                return ModalResult(shown: true, pressed: true)
             }
             guard failure == nil else { break }
-            Thread.sleep(forTimeInterval: min(0.05, max(0, deadline - ProcessInfo.processInfo.systemUptime)))
+            pause()
         } while ProcessInfo.processInfo.systemUptime < deadline
         failure = failure ?? "AX sheet button did not appear within 3 seconds"
         return ModalResult(shown: false, pressed: false)
+    }
+
+    private func selectMenu(_ identifier: String, title itemTitle: String, in windowTitle: String) -> ModalResult {
+        guard !walk(in: windowTitle, matching: .role(kAXWindowRole)).found.isEmpty else {
+            return ModalResult(shown: false, pressed: false)
+        }
+        var diagnostic: [String] = []
+        repeat {
+            let contents = popups().items
+            diagnostic = contents.prefix(12).map { "\($0.identifier.prefix(120)) | \($0.title.prefix(120))" }
+            let identified = contents.filter { $0.identifier == identifier }
+            let matches = identified.isEmpty ? contents.filter { $0.title == itemTitle } : identified
+            if matches.count > 1 {
+                failure = "AX popup has multiple matches for \(identifier); items: \(diagnostic)"
+                break
+            }
+            if let item = matches.first {
+                guard pointerClick(item.element) else { return ModalResult(shown: true, pressed: false) }
+                repeat {
+                    let remains = popups().menus.contains { CFEqual($0, item.menu) }
+                    if failure == nil && !remains { return ModalResult(shown: true, pressed: true, closed: true) }
+                    pause()
+                } while failure == nil && ProcessInfo.processInfo.systemUptime < deadline
+                failure = failure ?? "AX popup remained open after clicking \(identifier)"
+                return ModalResult(shown: true, pressed: true)
+            }
+            pause()
+        } while failure == nil && ProcessInfo.processInfo.systemUptime < deadline
+        failure = "\(failure ?? "AX popup item absent within 3 seconds"); requested \(identifier) / \(itemTitle); items: \(diagnostic)"
+        return ModalResult(shown: false, pressed: false)
+    }
+
+    private func popups() -> (menus: [AXUIElement], items: [PopupItem]) {
+        let application = AXUIElementCreateApplication(parent)
+        var roots = value(kAXChildrenAttribute, of: application) as? [AXUIElement] ?? []
+        if let rawFocus = value(kAXFocusedUIElementAttribute, of: application), CFGetTypeID(rawFocus) == AXUIElementGetTypeID() {
+            var ancestor = rawFocus as! AXUIElement
+            for _ in 0..<16 {
+                let role = text(kAXRoleAttribute, of: ancestor)
+                if role == kAXMenuRole { roots.append(ancestor); break }
+                if role == kAXMenuBarRole || role == kAXMenuBarItemRole { break }
+                guard let rawParent = value(kAXParentAttribute, of: ancestor),
+                      CFGetTypeID(rawParent) == AXUIElementGetTypeID() else { break }
+                let next = rawParent as! AXUIElement
+                if CFEqual(next, ancestor) { break }
+                ancestor = next
+            }
+        }
+        var pending: [(AXUIElement, AXUIElement?)] = roots.map { ($0, nil) }
+        var visited: [AXUIElement] = []
+        var menus: [AXUIElement] = []
+        var items: [PopupItem] = []
+        while let (element, enclosingMenu) = pending.popLast(), failure == nil {
+            if visited.contains(where: { CFEqual($0, element) }) { continue }
+            guard visited.count < 512 else { failure = "AX popup traversal exceeded 512 elements"; break }
+            visited.append(element)
+            let role = text(kAXRoleAttribute, of: element)
+            if role == kAXMenuBarRole || role == kAXMenuBarItemRole { continue }
+            let menu = role == kAXMenuRole ? element : enclosingMenu
+            if role == kAXMenuRole { menus.append(element) }
+            if role == kAXMenuItemRole, let menu {
+                items.append(PopupItem(menu: menu, element: element, identifier: text(kAXIdentifierAttribute, of: element),
+                                       title: text(kAXTitleAttribute, of: element)))
+            }
+            let children = value(kAXChildrenAttribute, of: element) as? [AXUIElement] ?? []
+            pending += children.map { ($0, menu) }
+        }
+        checkDeadline()
+        return (menus, items)
+    }
+
+    private func pointerClick(_ element: AXUIElement) -> Bool {
+        let target = capture(element)
+        let point = CGPoint(x: target.frame.midX, y: target.frame.midY)
+        var owner: pid_t = 0
+        guard failure == nil, getppid() == parent, CGPreflightPostEventAccess(),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == parent,
+              AXUIElementGetPid(element, &owner) == .success, owner == parent,
+              (value(kAXEnabledAttribute, of: element) as? NSNumber)?.boolValue == true,
+              target.frame.width > 0, target.frame.height > 0,
+              [target.frame.minX, target.frame.minY, target.frame.width, target.frame.height].allSatisfy({ $0.isFinite }),
+              Float(point.x).isFinite, Float(point.y).isFinite else {
+            failure = failure ?? "AX pointer target is not enabled, finite, owned by the foreground parent, or event posting is unavailable"
+            return false
+        }
+        let system = AXUIElementCreateSystemWide()
+        guard prepare(system) else { return false }
+        var hit: AXUIElement?
+        let status = AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &hit)
+        checkDeadline()
+        guard failure == nil, status == .success, var ancestor = hit,
+              AXUIElementGetPid(ancestor, &owner) == .success, owner == parent else {
+            failure = failure ?? "AX pointer hit test failed or targeted another process, AXError \(status.rawValue)"
+            return false
+        }
+        var matched = false
+        for _ in 0..<16 {
+            if CFEqual(ancestor, element) { matched = true; break }
+            guard let rawParent = value(kAXParentAttribute, of: ancestor),
+                  CFGetTypeID(rawParent) == AXUIElementGetTypeID() else { break }
+            let next = rawParent as! AXUIElement
+            if CFEqual(next, ancestor) { break }
+            ancestor = next
+        }
+        guard matched, failure == nil else {
+            failure = failure ?? "AX pointer hit is not the selected \(target.role) or its descendant"
+            return false
+        }
+        let types: [CGEventType] = [.mouseMoved, .leftMouseDown, .leftMouseUp]
+        let events = types.compactMap {
+            CGEvent(mouseEventSource: nil, mouseType: $0, mouseCursorPosition: point, mouseButton: .left)
+        }
+        guard events.count == types.count, prepare(element), getppid() == parent,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == parent, CGPreflightPostEventAccess() else {
+            failure = failure ?? "Could not create guarded AX pointer events"
+            return false
+        }
+        for event in events {
+            event.flags = []
+            event.setIntegerValueField(.mouseEventClickState, value: 1)
+            event.post(tap: .cghidEventTap)
+        }
+        return true
+    }
+
+    private func pause() {
+        Thread.sleep(forTimeInterval: min(0.05, max(0, deadline - ProcessInfo.processInfo.systemUptime)))
     }
 }
 #endif
