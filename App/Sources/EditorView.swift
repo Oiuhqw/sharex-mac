@@ -84,6 +84,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
         layerContentsRedrawPolicy = .never
         addSubview(frameView)
         addSubview(chrome)
+        chrome.setMagnifierSource(renderer.frame)
         if phase == .editing { showToolbar() }
         refresh()
     }
@@ -94,11 +95,30 @@ final class EditorView: NSView, NSTextFieldDelegate {
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    private var moveArea: NSTrackingArea?
+    /// Hover must not depend on the overlay being the key window of an active app: macOS 14+ may decline
+    /// NSApp.activate() from a hotkey, and then only an .activeAlways tracking area delivers moves.
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeAlways, .inVisibleRect, .mouseEnteredAndExited],
-                                       owner: self))
+        if let a = moveArea { removeTrackingArea(a) }
+        let a = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeAlways, .inVisibleRect, .mouseEnteredAndExited], owner: self)
+        addTrackingArea(a); moveArea = a
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else { return }
+        updateTrackingAreas()
+        syncMouse()
+    }
+
+    /// Seeds the cursor position from the window server so the loupe is there on the first frame, before any move.
+    func syncMouse() {
+        guard let w = window else { return }
+        let p = convert(w.mouseLocationOutsideOfEventStream, from: nil)
+        mouse = bounds.contains(p) ? p : nil
+        if case .selecting = phase { hover = mouse.flatMap(pickTarget) }
+        refresh()
     }
 
     var styles: [ShapeKind: ShapeStyle] { doc.styles }
@@ -170,6 +190,8 @@ final class EditorView: NSView, NSTextFieldDelegate {
         if case .selecting = phase { hover = pickTarget(at: p) }
         refresh()
     }
+
+    override func mouseEntered(with e: NSEvent) { mouseMoved(with: e) }
 
     override func mouseExited(with event: NSEvent) { mouse = nil; hover = nil; refresh() }
 
@@ -426,7 +448,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
             if mode == .lasso { c.lasso = lasso }
             if showMagnifier, mode == .rectangle || mode == .lasso, let m = mouse {
                 c.crosshair = m
-                c.magnifier = (m, renderer.frame.cropping(to: ChromeView.source(m, scale: renderer.scale)), renderer.scale)
+                c.magnifier = (m, renderer.scale)
             }
         case .editing:
             if annotationsView == nil {

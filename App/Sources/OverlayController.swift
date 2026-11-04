@@ -149,6 +149,8 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
         let key = surfaces.first { $0.window.frame.contains(mouse) } ?? surfaces.first
         key?.window.makeKeyAndOrderFront(nil)
         if let key { key.window.makeFirstResponder(key.view) }
+        // Every overlay shows the loupe from its first frame, wherever the cursor already is.
+        for s in surfaces { s.view.syncMouse() }
         // Perf: the first frame is on screen once the window has displayed and the transaction is committed.
         key?.window.displayIfNeeded(); CATransaction.flush()
         Perf.stamp("overlay-shown")

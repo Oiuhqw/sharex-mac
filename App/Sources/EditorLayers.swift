@@ -203,7 +203,8 @@ final class ChromeView: PassThroughView {
     private let dim = CAShapeLayer(), outlineW = CAShapeLayer(), outlineB = CAShapeLayer()
     private let handles = CAShapeLayer(), selection = CAShapeLayer(), selHandles = CAShapeLayer()
     private let crosshair = CAShapeLayer(), lasso = CAShapeLayer()
-    private let sizeLabel = CATextLayer(), magnifier = CALayer(), magMid = CALayer(), magLabel = CATextLayer()
+    private let sizeLabel = CATextLayer(), magnifier = CALayer(), magImage = CALayer(), magMid = CALayer(), magLabel = CATextLayer()
+    private var magSize = CGSize.zero
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -222,14 +223,24 @@ final class ChromeView: PassThroughView {
         }
         sizeLabel.backgroundColor = CGColor(gray: 0, alpha: 0.6)
         magLabel.backgroundColor = CGColor(gray: 0, alpha: 0.7)
-        magnifier.magnificationFilter = .nearest; magnifier.backgroundColor = CGColor(gray: 0, alpha: 1)
-        magnifier.borderColor = .white; magnifier.borderWidth = 2
-        magnifier.contentsGravity = .resize
+        // Container (black where the source runs off the image, white border) holding the image layer and the
+        // centre-cell marker. The frozen frame is the image layer's contents once per session; a move changes only
+        // its contentsRect and frame, so hover never crops or allocates an image.
+        magnifier.backgroundColor = CGColor(gray: 0, alpha: 1); magnifier.masksToBounds = true
+        magImage.magnificationFilter = .nearest; magImage.minificationFilter = .nearest
+        magImage.contentsGravity = .resize
         magMid.borderColor = CGColor(srgbRed: 1, green: 0.2, blue: 0.2, alpha: 1); magMid.borderWidth = 1
-        magnifier.addSublayer(magMid)
+        let rim = CALayer(); rim.borderColor = .white; rim.borderWidth = 2
+        rim.frame = CGRect(x: 0, y: 0, width: Self.n * Self.zoom, height: Self.n * Self.zoom)
+        for l in [magImage, magMid, rim] {
+            l.actions = ["position": NSNull(), "bounds": NSNull(), "contentsRect": NSNull(), "frame": NSNull(), "contents": NSNull()]
+            magnifier.addSublayer(l)
+        }
+        // Above every other chrome layer.
+        magnifier.zPosition = 1000; magLabel.zPosition = 1000
         for l in [dim, outlineW, outlineB, handles, selection, selHandles, crosshair, lasso, sizeLabel, magnifier, magLabel] as [CALayer] {
             l.actions = ["position": NSNull(), "bounds": NSNull(), "path": NSNull(), "contents": NSNull(), "hidden": NSNull(),
-                         "string": NSNull(), "frame": NSNull()]
+                         "string": NSNull(), "frame": NSNull(), "contentsRect": NSNull()]
             l.isHidden = true
             layer!.addSublayer(l)
         }
@@ -242,6 +253,13 @@ final class ChromeView: PassThroughView {
         for t in [sizeLabel, magLabel] { t.contentsScale = s }
     }
 
+    /// The frozen frame the loupe samples; set once per overlay.
+    func setMagnifierSource(_ image: CGImage) {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        magImage.contents = image; magSize = CGSize(width: image.width, height: image.height)
+        CATransaction.commit()
+    }
+
     struct State {
         var dimHole: CGPath?          // nil: dim nothing; empty path: dim everything
         var outline: CGRect?
@@ -249,7 +267,7 @@ final class ChromeView: PassThroughView {
         var selection: CGRect?
         var lasso: [CGPoint]?
         var crosshair: CGPoint?
-        var magnifier: (point: CGPoint, image: CGImage?, scale: CGFloat)?
+        var magnifier: (point: CGPoint, scale: CGFloat)?
         var sizeLabel: (rect: CGRect, text: String)?
         var dimEverything = false
     }
@@ -293,34 +311,44 @@ final class ChromeView: PassThroughView {
             sizeLabel.isHidden = false
         } else { sizeLabel.isHidden = true }
 
-        if let m = s.magnifier { layoutMagnifier(m.point, m.image, m.scale) } else { magnifier.isHidden = true; magLabel.isHidden = true }
+        if let m = s.magnifier { layoutMagnifier(m.point, m.scale) } else { magnifier.isHidden = true; magLabel.isHidden = true }
     }
 
     static let n: CGFloat = 15, zoom: CGFloat = 8
 
     /// 15×15 source pixels at 8x, nearest neighbour, with the pixel position underneath.
-    private func layoutMagnifier(_ p: CGPoint, _ crop: CGImage?, _ s: CGFloat) {
-        let side = Self.n * Self.zoom, b = bounds
-        var origin = CGPoint(x: p.x + 20, y: p.y + 20)
-        if origin.x + side > b.width { origin.x = p.x - 20 - side }
-        if origin.y + side + 18 > b.height { origin.y = p.y - 20 - side - 18 }
-        magnifier.frame = CGRect(origin: origin, size: CGSize(width: side, height: side))
-        magnifier.contents = crop
-        // cropping(to:) clips at image edges; place what we got where it belongs.
+    private func layoutMagnifier(_ p: CGPoint, _ s: CGFloat) {
+        let side = Self.n * Self.zoom, b = bounds, gap: CGFloat = 20, label: CGFloat = 18
+        // Default below-right of the cursor; flip on whichever axis would overflow, then clamp to all four edges.
+        var o = CGPoint(x: p.x + gap, y: p.y + gap)
+        if o.x + side > b.width { o.x = p.x - gap - side }
+        if o.y + side + label > b.height { o.y = p.y - gap - side - label }
+        o.x = min(max(o.x, 0), max(0, b.width - side)); o.y = min(max(o.y, 0), max(0, b.height - side - label))
+        magnifier.frame = CGRect(origin: o, size: CGSize(width: side, height: side))
+        // Only the part of the source square inside the image is drawn; the rest stays black.
         let src = Self.source(p, scale: s)
-        if let crop {
-            let got = CGRect(x: (max(src.minX, 0) - src.minX) * Self.zoom, y: (max(src.minY, 0) - src.minY) * Self.zoom,
-                             width: CGFloat(crop.width) * Self.zoom, height: CGFloat(crop.height) * Self.zoom)
-            magnifier.contentsRect = CGRect(x: -got.minX / got.width, y: -got.minY / got.height,
-                                            width: side / got.width, height: side / got.height)
+        let vis = src.intersection(CGRect(origin: .zero, size: magSize))
+        if vis.isNull || vis.isEmpty || magSize.width == 0 { magImage.isHidden = true } else {
+            magImage.isHidden = false
+            magImage.frame = CGRect(x: (vis.minX - src.minX) * Self.zoom, y: (vis.minY - src.minY) * Self.zoom,
+                                    width: vis.width * Self.zoom, height: vis.height * Self.zoom)
+            magImage.contentsRect = Self.unitRect(vis, in: magSize)
         }
         magMid.frame = CGRect(x: (Self.n - 1) / 2 * Self.zoom, y: (Self.n - 1) / 2 * Self.zoom, width: Self.zoom, height: Self.zoom)
         magnifier.isHidden = false
         let text = " X: \(Int(p.x * s))  Y: \(Int(p.y * s)) "
-        magLabel.string = text
-        let size = Self.textSize(text)
-        magLabel.frame = CGRect(x: origin.x, y: origin.y + side + 2, width: size.width, height: size.height)
+        if (magLabel.string as? String) != text { magLabel.string = text; magLabelSize = Self.textSize(text) }
+        magLabel.frame = CGRect(x: o.x, y: o.y + side + 2, width: magLabelSize.width, height: magLabelSize.height)
         magLabel.isHidden = false
+    }
+    private var magLabelSize = CGSize.zero
+
+    /// `r` in y-down image pixels as a contentsRect. The layer tree is flipped (y-down), and CA maps contentsRect
+    /// in the layer's own geometry, so y stays top-down.
+    static var contentsRectFlipY = false
+    static func unitRect(_ r: CGRect, in size: CGSize) -> CGRect {
+        let y = contentsRectFlipY ? size.height - r.maxY : r.minY
+        return CGRect(x: r.minX / size.width, y: y / size.height, width: r.width / size.width, height: r.height / size.height)
     }
 
     static func source(_ p: CGPoint, scale s: CGFloat) -> CGRect {
