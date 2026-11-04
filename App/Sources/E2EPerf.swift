@@ -4,8 +4,8 @@ import AppKit
 @preconcurrency import ScreenCaptureKit
 import ShareXCore
 
-/// `--e2e <out> --perf`: timings only, written to perf.json. Retina 2x full display of a 16" M-series MacBook
-/// (3456 × 2234 px, 1728 × 1117 pt) is simulated with a synthetic 2x frame; the runner's own display is 1x.
+/// `--e2e <out> --perf`: validated timings and process resource measurements written to perf.json.
+/// A 3456 × 2234 px, 1728 × 1117 pt display is simulated with a synthetic 2x frame.
 /// Frame time = main-thread work per drag event: event handling + synchronous display (CPU raster) + CATransaction flush.
 /// GPU compositing in WindowServer is not included.
 @MainActor
@@ -13,6 +13,12 @@ enum E2EPerf {
     static let pxW = 3456, pxH = 2234, sc: CGFloat = 2
     static var ptSize: CGSize { CGSize(width: CGFloat(pxW) / sc, height: CGFloat(pxH) / sc) }
     static var out: [String: Any] = [:]
+    private static var errors = 0
+
+    private static func fail(_ operation: String) {
+        errors += 1
+        E2E.record("perf-\(operation)", false)
+    }
 
     static func stats(_ v: [Double]) -> [String: Double] {
         let s = v.sorted(); guard !s.isEmpty else { return [:] }
@@ -58,7 +64,8 @@ enum E2EPerf {
         let c1 = cpuNow(), t1 = Perf.now()
         let tick = await vs.next()
         samples.cpu.append(c1 - c0); samples.wall.append(t1 - t0)
-        if tick > 0 { samples.screen.append(tick - t0) }
+        if tick >= t0 { samples.screen.append(tick - t0) }
+        else { fail("display-link-tick") }
     }
     static func takeSamples(_ key: String) {
         out[key] = stats(samples.cpu)
@@ -72,7 +79,18 @@ enum E2EPerf {
     }
 
     static func run() async {
-        guard let img = E2E.checker(pxW, pxH) else { return }
+        errors = 0
+        out["schemaVersion"] = 1
+        defer {
+            out["errors"] = errors
+            out["frameSource"] = E2E.source
+            do {
+                let data = try JSONSerialization.data(withJSONObject: out, options: [.prettyPrinted, .sortedKeys])
+                try data.write(to: E2E.out.appendingPathComponent("perf.json"), options: .atomic)
+                NSLog("E2E PERF %@", String(decoding: data, as: UTF8.self))
+            } catch { E2E.record("perf-write", false, ["error": error.localizedDescription]) }
+        }
+        guard let img = E2E.checker(pxW, pxH) else { fail("fixture"); return }
         out["display"] = ["px": [pxW, pxH], "scale": sc, "runnerScale": NSScreen.screens.first?.backingScaleFactor ?? 0]
         E2ERenderer.benchmark(image: img, scale: sc)
 
@@ -95,6 +113,7 @@ enum E2EPerf {
                                initialCrop: nil, styles: [:], showMagnifier: true, pickRects: [], finishOnPick: false)
             let w = window(for: v); w.displayIfNeeded()
             let vs = Vsync(w)
+            defer { vs.stop() }
             for p in path(60, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 1500, y: 900)) { await timed(.mouseMoved, p, v, w, vs) }
             takeSamples("hoverMove2x_ms")
             _ = frame(.leftMouseDown, CGPoint(x: 200, y: 150), v, w)
@@ -128,16 +147,20 @@ enum E2EPerf {
             shape(.rectangle, CGPoint(x: 1100, y: 600), CGPoint(x: 1500, y: 900))
             shape(.arrow, CGPoint(x: 1200, y: 950), CGPoint(x: 1600, y: 650))
             shape(.pen, CGPoint(x: 150, y: 950), CGPoint(x: 900, y: 1000))
+            guard v.doc.annotations.count == 8 else { fail("annotation-corpus"); w.orderOut(nil); w.contentView = nil; return }
             let movingBlurID = v.doc.annotations.first(where: { $0.kind == .blur })?.id
 
             let vs = Vsync(w)
+            defer { vs.stop() }
             var ups: [Double] = []
             func timedShape(_ k: ShapeKind, _ key: String, _ a: CGPoint, _ b: CGPoint) async {
+                let count = v.doc.annotations.count
                 v.setTool(.shape(k))
                 _ = frame(.leftMouseDown, a, v, w)
                 for p in path(120, from: a, to: b) { await timed(.leftMouseDragged, p, v, w, vs) }
                 takeSamples(key)
                 ups.append(frame(.leftMouseUp, b, v, w))   // commit into the annotation bitmap
+                if v.doc.annotations.count != count + 1 || v.doc.annotations.last?.kind != k { fail("\(key)-commit") }
             }
             await timedShape(.rectangle, "annotRectDrag2x_ms", CGPoint(x: 300, y: 300), CGPoint(x: 1300, y: 1000))
             await timedShape(.pen, "annotPenDrag2x_ms", CGPoint(x: 300, y: 300), CGPoint(x: 1500, y: 1000))
@@ -149,10 +172,12 @@ enum E2EPerf {
             let blurStart = CGPoint(x: 150, y: 350), blurEnd = CGPoint(x: 850, y: 700)
             _ = frame(.leftMouseDown, blurStart, v, w)
             let selectedBlur = v.doc.selected?.kind == .blur && v.doc.selectedID == movingBlurID
+            let blurBefore = v.doc.selected?.bounds
             E2E.record("perf-move-target-is-blur", selectedBlur,
                        ["expectedID": movingBlurID ?? -1, "selectedID": v.doc.selectedID ?? -1,
                         "selectedKind": v.doc.selected?.kind.rawValue ?? "none"])
             guard selectedBlur else {
+                fail("move-blur-selection")
                 _ = frame(.leftMouseUp, blurStart, v, w)
                 w.orderOut(nil); w.contentView = nil
                 return
@@ -160,40 +185,57 @@ enum E2EPerf {
             for p in path(120, from: blurStart, to: blurEnd) { await timed(.leftMouseDragged, p, v, w, vs) }
             takeSamples("annotMoveBlur2x_ms")
             ups.append(frame(.leftMouseUp, blurEnd, v, w))
+            if v.doc.annotations.first(where: { $0.id == movingBlurID })?.bounds == blurBefore { fail("move-blur-unchanged") }
             out["annotCommitOnMouseUp2x_wall_ms"] = stats(ups)
 
             // 4. Commit -> clipboard ready (flatten + decorate + PNG/TIFF on the pasteboard), full 2x display crop.
             var clip: [Double] = [], save: [Double] = []
             var opts = CaptureOptions(); opts.shadow = true; opts.borderWidth = 2
+            var clipboardOK = 0, saveOK = 0, pipelineOK = 0
             for _ in 0..<5 {
                 let before = NSPasteboard.general.changeCount
                 let t0 = Perf.now()
-                guard let flat = Export.flatten(renderer: v.renderer, doc: v.doc, crop: CGRect(origin: .zero, size: ptSize), lasso: nil) else { break }
-                let img = Export.decorate(flat, options: opts, scale: sc)
-                _ = Export.copyToClipboard(img, scale: sc)
-                await waitClipboard(after: before)
-                clip.append(Perf.now() - t0)
+                guard let flat = Export.flatten(renderer: v.renderer, doc: v.doc, crop: CGRect(origin: .zero, size: ptSize), lasso: nil),
+                      let decorated = Export.decorate(flat, options: opts, scale: sc) else { fail("clipboard-flatten"); continue }
+                guard Export.copyToClipboard(decorated, scale: sc), await waitClipboard(after: before) else {
+                    fail("clipboard-write"); continue
+                }
+                let clipTime = Perf.now() - t0
+                guard clipboardMatches(decorated) else { fail("clipboard-pixels"); continue }
+                clip.append(clipTime); clipboardOK += 1
                 let t1 = Perf.now()
-                _ = Export.savePNG(img, scale: sc, folder: NSTemporaryDirectory() + "perf")
-                save.append(Perf.now() - t1)
+                let saved = Export.savePNG(decorated, scale: sc, folder: E2E.out.appendingPathComponent("perf-saved").path)
+                let saveTime = Perf.now() - t1
+                guard let saved, let data = try? Data(contentsOf: saved), let savedImage = E2E.decode(data),
+                      savedImage.width == decorated.width, savedImage.height == decorated.height,
+                      E2E.bitmap(savedImage).px == E2E.bitmap(decorated).px else {
+                    fail("save-png"); continue
+                }
+                save.append(saveTime); saveOK += 1
             }
             out["commitToClipboard2x_ms"] = stats(clip)
             // What the shipped path keeps on the main thread: flatten + pasteboard write. Decorate + encode run detached.
             var mainOnly: [Double] = [], pipeline: [Double] = []
             for _ in 0..<5 {
                 let t0 = Perf.now()
-                guard let flat = Export.flatten(renderer: v.renderer, doc: v.doc, crop: CGRect(origin: .zero, size: ptSize), lasso: nil) else { break }
+                guard let flat = Export.flatten(renderer: v.renderer, doc: v.doc, crop: CGRect(origin: .zero, size: ptSize), lasso: nil) else {
+                    fail("pipeline-flatten"); continue
+                }
                 let tFlat = Perf.now() - t0
                 let box = ImageBox(image: flat), o = opts, k = sc
                 let enc = await Task.detached { Export.encode(Export.decorateOffMain(box.image, options: o, scale: k), scale: k) }.value
                 let t1 = Perf.now()
-                if let enc { _ = Export.write(enc) }
-                mainOnly.append(tFlat + Perf.now() - t1)
-                pipeline.append(Perf.now() - t0)
+                guard let enc, Export.write(enc) else { fail("pipeline-write"); continue }
+                let mainTime = tFlat + Perf.now() - t1, pipelineTime = Perf.now() - t0
+                guard let expected = Export.decorate(flat, options: o, scale: k), clipboardMatches(expected),
+                      NSPasteboard.general.data(forType: .png) == enc.png,
+                      NSPasteboard.general.data(forType: .tiff) == enc.tiff else { fail("pipeline-output"); continue }
+                mainOnly.append(mainTime); pipeline.append(pipelineTime); pipelineOK += 1
             }
             out["commitMainThreadOnly2x_ms"] = stats(mainOnly)
             out["commitPipelineAsync2x_ms"] = stats(pipeline)
             out["savePNG2x_ms"] = stats(save)
+            out["outputCorrectness"] = ["clipboard": clipboardOK, "savePNG": saveOK, "asyncPipeline": pipelineOK, "attemptsPerOperation": 5]
             w.orderOut(nil); w.contentView = nil
         }
 
@@ -204,16 +246,13 @@ enum E2EPerf {
             let t0 = Perf.now()
             E2E.coord.capture(.region)
             let ok = await E2E.until(4000, { Perf.stamps["overlay-shown"] != nil })
-            if ok, let t = Perf.stamps["overlay-shown"] { lat.append(t - t0) }
-            E2E.esc(); _ = await E2E.until({ !E2E.coord.busy })
+            if ok, let t = Perf.stamps["overlay-shown"], E2E.surface() != nil { lat.append(t - t0) }
+            else { fail("capture-overlay") }
+            E2E.esc()
+            if !(await E2E.until({ !E2E.coord.busy && E2E.coord.overlay == nil })) { fail("capture-cleanup") }
             await E2E.wait(150)
         }
         out["captureToOverlayShown_runner_ms"] = stats(lat)
-        out["frameSource"] = E2E.source
-        if let d = try? JSONSerialization.data(withJSONObject: out, options: [.prettyPrinted, .sortedKeys]) {
-            try? d.write(to: E2E.out.appendingPathComponent("perf.json"))
-            NSLog("E2E PERF %@", String(decoding: d, as: UTF8.self))
-        }
     }
 
     /// Resolves at the window's next display-link tick (or -1 after 100 ms when the runner never ticks).
@@ -227,6 +266,7 @@ enum E2EPerf {
             link?.isPaused = true
             link?.add(to: .main, forMode: .common)
         }
+        func stop() { link?.invalidate(); resume(-1) }
         @objc func tick(_ l: CADisplayLink) { resume(Perf.now()) }
         private func resume(_ v: Double) { link?.isPaused = true; let c = cont; cont = nil; c?.resume(returning: v) }
         func next() async -> Double {
@@ -238,8 +278,19 @@ enum E2EPerf {
         }
     }
 
-    static func waitClipboard(after c: Int) async {
+    static func waitClipboard(after c: Int) async -> Bool {
         for _ in 0..<500 where NSPasteboard.general.changeCount == c { await Task.yield(); try? await Task.sleep(for: .milliseconds(1)) }
+        return NSPasteboard.general.changeCount != c
+    }
+
+    private static func clipboardMatches(_ image: CGImage) -> Bool {
+        let pasteboard = NSPasteboard.general
+        guard pasteboard.pasteboardItems?.count == 1,
+              let pngData = pasteboard.data(forType: .png), let tiffData = pasteboard.data(forType: .tiff),
+              let png = E2E.decode(pngData), let tiff = E2E.decode(tiffData),
+              png.width == image.width, png.height == image.height, tiff.width == image.width, tiff.height == image.height else { return false }
+        let expected = E2E.bitmap(image).px
+        return E2E.bitmap(png).px == expected && E2E.bitmap(tiff).px == expected
     }
 }
 #endif

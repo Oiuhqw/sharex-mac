@@ -24,7 +24,8 @@ jobs:
 
       - name: Toolchain
         run: |
-          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+          test -d /Applications/Xcode_26.3.app
+          sudo xcode-select -s /Applications/Xcode_26.3.app
 
           sw_vers
           xcodebuild -version
@@ -36,9 +37,23 @@ jobs:
       - name: Generate project (pinned XcodeGen + Package.resolved)
         run: scripts/ci-setup.sh
 
-      - name: Core tests (seeded fuzz harness included)
+      - name: Core tests (deterministic property tests included)
         working-directory: Packages/ShareXCore
-        run: swift test --parallel
+        env:
+          FUZZ_SEED: '1525137630'
+          FUZZ_SCALE: '1'
+        run: |
+          set -o pipefail
+          swift test --parallel 2>&1 | tee ../../core-tests.log
+
+      - name: Core tests with AddressSanitizer
+        working-directory: Packages/ShareXCore
+        env:
+          FUZZ_SEED: '3405691582'
+          FUZZ_SCALE: '1'
+        run: |
+          set -o pipefail
+          swift test --sanitize=address --parallel 2>&1 | tee ../../core-asan.log
 
       - name: Build app (unsigned)
         run: |
@@ -78,10 +93,11 @@ jobs:
           xcodebuild build -project ShareXMac.xcodeproj -scheme ShareX -configuration Release \
             -destination 'platform=macOS' -derivedDataPath build -disableAutomaticPackageResolution \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) SHAREX_E2E' | tail -5
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) SHAREX_E2E' 2>&1 | tee xcodebuild-release.log | tail -5
 
-      - name: Perf scenario (Release, 2x synthetic display)
+      - name: Perf and resource scenarios (Release, synthetic 2x and runner display)
         if: always()
+        timeout-minutes: 8
         run: scripts/perf.sh
 
       - name: Upload perf
@@ -107,6 +123,9 @@ jobs:
           name: logs
           path: |
             xcodebuild.log
+            xcodebuild-release.log
+            core-tests.log
+            core-asan.log
             smoke.log
           if-no-files-found: ignore
 
