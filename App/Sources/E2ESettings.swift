@@ -325,6 +325,10 @@ enum E2ESettings {
                     "after": SettingsStore().value.saveToFile])
         _ = await press("settings.output.saveToFile", in: window)
         let folderBefore = E2E.app.settings.value.saveFolder
+        let selectedFolder = URL(fileURLWithPath: folderBefore, isDirectory: true)
+            .appendingPathComponent("000-selected-folder-\(UUID().uuidString)", isDirectory: true)
+        do { try FileManager.default.createDirectory(at: selectedFolder, withIntermediateDirectories: true) }
+        catch { E2E.record("settings-folder-chooser-setup", false, ["error": error.localizedDescription]); return }
         let chooser = await press("settings.output.chooseFolder", in: window)
         let sheetOpened = await E2E.until(1500) { window.attachedSheet != nil }
         if let panel = window.attachedSheet as? NSOpenPanel { panel.cancel(nil) }
@@ -332,30 +336,33 @@ enum E2ESettings {
         let sheetClosed = await E2E.until(1500) { window.attachedSheet == nil }
         E2E.record("settings-folder-chooser-cancel", chooser && sheetOpened && sheetClosed
                    && E2E.app.settings.value.saveFolder == folderBefore)
-        let selectedFolder = E2E.out.appendingPathComponent("settings-selected-folder", isDirectory: true)
-        do { try FileManager.default.createDirectory(at: selectedFolder, withIntermediateDirectories: true) }
-        catch { E2E.record("settings-folder-chooser-setup", false, ["error": error.localizedDescription]); return }
         let chooseAgain = await press("settings.output.chooseFolder", in: window)
         let selectionOpened = await E2E.until(1500) { window.attachedSheet is NSOpenPanel }
         let selectionPanel = window.attachedSheet as? NSOpenPanel
         let initialDirectory = selectionPanel?.directoryURL?.path ?? ""
         let initialURLs = selectionPanel?.urls.map(\.path) ?? []
-        selectionPanel?.directoryURL = selectedFolder
         let expectedFolder = canonicalPath(selectedFolder)
-        let navigatedFolder = await E2E.until(2000) {
-            selectionPanel?.directoryURL.map(canonicalPath) == expectedFolder
+        let folderSelection = await accessibility.selectFolder(selectedFolder.lastPathComponent, in: window.title)
+        let selectedURL = await E2E.until(1500) {
+            selectionPanel?.urls.map(canonicalPath) == [expectedFolder]
         }
         let directoryBeforeAccept = selectionPanel?.directoryURL?.path ?? ""
         let urlsBeforeAccept = selectionPanel?.urls.map(\.path) ?? []
-        let acceptedFolder = await dismissSheet("Choose Folder", in: window)
+        let acceptedFolder: Bool
+        if folderSelection.selected && selectedURL { acceptedFolder = await dismissSheet("Choose Folder", in: window) }
+        else { acceptedFolder = false }
         let selectionClosed = await E2E.until(1500) { window.attachedSheet == nil }
+        let returnedFolder = selectionPanel?.urls.map(canonicalPath) == [expectedFolder]
         let folderPersisted = await E2E.until(1500) {
             canonicalPath(E2E.app.settings.value.saveFolder) == expectedFolder
                 && canonicalPath(SettingsStore().value.saveFolder) == expectedFolder
         }
-        E2E.record("settings-folder-chooser-accept-persists", chooseAgain && selectionOpened && navigatedFolder
-                   && acceptedFolder && selectionClosed && canonicalPath(folderBefore) != expectedFolder && folderPersisted,
-                   ["opened": selectionOpened, "navigated": navigatedFolder, "accepted": acceptedFolder,
+        E2E.record("settings-folder-chooser-accept-persists", chooseAgain && selectionOpened && folderSelection.selected
+                   && selectedURL && acceptedFolder && selectionClosed && returnedFolder
+                   && canonicalPath(folderBefore) != expectedFolder && folderPersisted,
+                   ["opened": selectionOpened, "selected": folderSelection.selected, "selectedURL": selectedURL,
+                    "selectionError": folderSelection.error ?? "", "selectionNodes": folderSelection.nodes.map(\.diagnostic),
+                    "accepted": acceptedFolder, "returnedFolder": returnedFolder,
                     "closed": selectionClosed, "persisted": folderPersisted, "before": folderBefore,
                     "expected": expectedFolder, "initialDirectory": initialDirectory, "initialURLs": initialURLs,
                     "directoryBeforeAccept": directoryBeforeAccept, "urlsBeforeAccept": urlsBeforeAccept,
@@ -595,12 +602,31 @@ private actor SettingsAXClient {
         }
     }
 
+    struct FolderNode: Codable, Sendable {
+        let role: String
+        let names: [String]
+        let attributes: [String]
+        let path: [Int]
+        var writable: [String] = []
+
+        var diagnostic: [String: Any] {
+            ["role": role, "names": names, "attributes": attributes, "path": path, "writable": writable]
+        }
+    }
+
+    struct FolderSelection: Codable, Sendable {
+        let selected: Bool
+        let nodes: [FolderNode]
+        let error: String?
+    }
+
     enum SheetInput: String, Codable, Sendable {
         case accessibility, pointer
     }
 
     enum Operation: Codable, Sendable {
         case find(String), snapshot, dismissSheet(String, SheetInput), selectMenu(identifier: String, title: String)
+        case selectFolder(String)
     }
 
     struct Request: Codable, Sendable {
@@ -610,11 +636,13 @@ private actor SettingsAXClient {
 
     enum Reply: Codable, Sendable {
         case element(Element?), snapshot(Snapshot), modal(ModalResult), failure(String)
+        case folder(FolderSelection)
 
         var error: String? {
             switch self {
             case .failure(let message): return message
             case .snapshot(let snapshot): return snapshot.error
+            case .folder(let selection): return selection.error
             default: return nil
             }
         }
@@ -646,6 +674,13 @@ private actor SettingsAXClient {
         if case .modal(let result) = reply { return result }
         rejectUnexpected(reply)
         return ModalResult(shown: false, pressed: false)
+    }
+
+    func selectFolder(_ name: String, in title: String) async -> FolderSelection {
+        let reply = await invoke(.selectFolder(name), in: title)
+        if case .folder(let selection) = reply { return selection }
+        rejectUnexpected(reply)
+        return FolderSelection(selected: false, nodes: [], error: reply.error ?? "Unexpected AX helper reply")
     }
 
     func selectMenu(_ identifier: String, title itemTitle: String, in title: String,
@@ -825,12 +860,14 @@ private final class SettingsAXWalker {
     private let trusted = AXIsProcessTrusted()
     private var failure: String?
     private var issues: [AttributeIssue] = []
+    private var canRetryAttribute = false
 
     init(parent: pid_t) { self.parent = parent }
 
     func run(_ request: SettingsAXClient.Request) -> SettingsAXClient.Reply {
         switch request.operation {
         case .find(let identifier):
+            canRetryAttribute = true
             let element = find(identifier, in: request.title)
             return failure.map(SettingsAXClient.Reply.failure) ?? .element(element)
         case .snapshot: return .snapshot(snapshot(in: request.title))
@@ -840,6 +877,7 @@ private final class SettingsAXWalker {
         case .selectMenu(let identifier, let title):
             let result = selectMenu(identifier, title: title, in: request.title)
             return failure.map(SettingsAXClient.Reply.failure) ?? .modal(result)
+        case .selectFolder(let name): return .folder(selectFolder(name, in: request.title))
         }
     }
 
@@ -862,6 +900,11 @@ private final class SettingsAXWalker {
         var result: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(element, attribute as CFString, &result)
         checkDeadline()
+        if status == .cannotComplete, canRetryAttribute, failure == nil {
+            canRetryAttribute = false
+            Thread.sleep(forTimeInterval: min(0.025, max(0, deadline - ProcessInfo.processInfo.systemUptime)))
+            return self.attribute(attribute, of: element)
+        }
         return (status, result)
     }
 
@@ -965,6 +1008,122 @@ private final class SettingsAXWalker {
         return Snapshot(elements: elements, trusted: trusted, error: failure, issues: issues)
     }
 
+    private func selectFolder(_ name: String, in title: String) -> SettingsAXClient.FolderSelection {
+        struct Node {
+            let element: AXUIElement
+            var diagnostic: SettingsAXClient.FolderNode
+        }
+        var nodes: [Node] = []
+        func result(_ selected: Bool) -> SettingsAXClient.FolderSelection {
+            .init(selected: selected, nodes: nodes.map(\.diagnostic), error: failure)
+        }
+        let nameRoles = [kAXRowRole, kAXCellRole, kAXStaticTextRole, kAXBrowserRole]
+        var candidates: [Int] = []
+        repeat {
+            nodes.removeAll()
+            candidates.removeAll()
+            guard let sheet = walk(in: title, matching: .role(kAXSheetRole), sheetOnly: true).found.first else {
+                guard failure == nil else { return result(false) }
+                pause()
+                continue
+            }
+            var pending: [(AXUIElement, [Int])] = [(sheet, [])]
+            while let (element, ancestors) = pending.popLast(), failure == nil {
+                if nodes.contains(where: { CFEqual($0.element, element) }) { continue }
+                guard nodes.count < 512 else { failure = "AX folder traversal exceeded 512 elements"; break }
+                guard prepare(element) else { break }
+                var rawAttributes: CFArray?
+                let status = AXUIElementCopyAttributeNames(element, &rawAttributes)
+                checkDeadline()
+                guard status == .success, let attributes = rawAttributes as? [String], failure == nil else {
+                    failure = failure ?? "Folder AX attribute names failed with AXError \(status.rawValue)"
+                    break
+                }
+                let role = text(kAXRoleAttribute, of: element)
+                let names = [kAXTitleAttribute, kAXValueAttribute, kAXDescriptionAttribute]
+                    .filter { attributes.contains($0) }.map { text($0, of: element) }.filter { !$0.isEmpty }
+                let index = nodes.count
+                let path = ancestors + [index]
+                nodes.append(Node(element: element,
+                                  diagnostic: .init(role: role, names: names, attributes: attributes, path: path)))
+                if nameRoles.contains(role), names.contains(name) {
+                    let candidate = path.last(where: { nodes[$0].diagnostic.role == kAXRowRole })
+                        ?? path.last(where: { nodes[$0].diagnostic.role == kAXCellRole }) ?? index
+                    if !candidates.contains(candidate) { candidates.append(candidate) }
+                }
+                let children = value(kAXChildrenAttribute, of: element) as? [AXUIElement] ?? []
+                pending += children.map { ($0, path) }
+            }
+            if !candidates.isEmpty || failure != nil { break }
+            pause()
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        guard failure == nil else { return result(false) }
+        guard candidates.count == 1, let candidate = candidates.first else {
+            failure = nodes.isEmpty ? "Folder chooser AX sheet did not appear within 3 seconds"
+                : "Folder \(name) matched \(candidates.count) AX selection rows"
+            return result(false)
+        }
+        let path = nodes[candidate].diagnostic.path
+        for index in path.reversed() {
+            let owner = nodes[index].element
+            let choices = index == candidate ? [kAXSelectedAttribute] : [kAXSelectedRowsAttribute, kAXSelectedChildrenAttribute]
+            for attribute in choices where nodes[index].diagnostic.attributes.contains(attribute) {
+                guard prepare(owner) else { return result(false) }
+                var settable = DarwinBoolean(false)
+                let status = AXUIElementIsAttributeSettable(owner, attribute as CFString, &settable)
+                checkDeadline()
+                guard status == .success, failure == nil else {
+                    failure = failure ?? "Folder \(attribute) writability failed with AXError \(status.rawValue)"
+                    return result(false)
+                }
+                guard settable.boolValue else { continue }
+                nodes[index].diagnostic.writable.append(attribute)
+                let target: AXUIElement
+                let selection: CFTypeRef
+                if attribute == kAXSelectedAttribute {
+                    target = nodes[candidate].element
+                    selection = kCFBooleanTrue
+                } else {
+                    let membersAttribute = attribute == kAXSelectedRowsAttribute ? kAXRowsAttribute : kAXChildrenAttribute
+                    let (readStatus, rawMembers) = self.attribute(membersAttribute, of: owner)
+                    guard readStatus == .success, let members = rawMembers as? [AXUIElement], failure == nil else {
+                        failure = failure ?? "Folder \(membersAttribute) members unavailable, AXError \(readStatus.rawValue)"
+                        return result(false)
+                    }
+                    guard let member = path.reversed().first(where: { member in
+                        nameRoles.contains(nodes[member].diagnostic.role)
+                            && members.contains(where: { CFEqual($0, nodes[member].element) })
+                    }) else { continue }
+                    target = nodes[member].element
+                    selection = [target] as CFArray
+                }
+                guard prepare(owner) else { return result(false) }
+                let writeStatus = AXUIElementSetAttributeValue(owner, attribute as CFString, selection)
+                checkDeadline()
+                guard writeStatus == .success, failure == nil else {
+                    failure = failure ?? "Folder \(attribute) selection failed with AXError \(writeStatus.rawValue)"
+                    return result(false)
+                }
+                repeat {
+                    let (readStatus, selected) = self.attribute(attribute, of: owner)
+                    guard readStatus == .success, failure == nil else {
+                        failure = failure ?? "Folder \(attribute) readback failed with AXError \(readStatus.rawValue)"
+                        return result(false)
+                    }
+                    if attribute == kAXSelectedAttribute {
+                        if (selected as? NSNumber)?.boolValue == true { return result(true) }
+                    } else if let selection = selected as? [AXUIElement], selection.count == 1,
+                              CFEqual(selection[0], target) { return result(true) }
+                    pause()
+                } while ProcessInfo.processInfo.systemUptime < deadline
+                failure = "Folder \(attribute) selection readback did not match within 3 seconds"
+                return result(false)
+            }
+        }
+        failure = failure ?? "Folder row has no advertised writable AX selection"
+        return result(false)
+    }
+
     private func dismissSheet(_ button: String, in title: String, using input: SettingsAXClient.SheetInput) -> ModalResult {
         repeat {
             if let element = walk(in: title, matching: .button(button), sheetOnly: true).found.first {
@@ -1065,40 +1224,58 @@ private final class SettingsAXWalker {
     }
 
     private func pointerClick(_ element: AXUIElement) -> Bool {
-        let target = capture(element)
-        let point = CGPoint(x: target.frame.midX, y: target.frame.midY)
-        var owner: pid_t = 0
-        guard failure == nil, getppid() == parent, CGPreflightPostEventAccess(),
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == parent,
-              AXUIElementGetPid(element, &owner) == .success, owner == parent,
-              (value(kAXEnabledAttribute, of: element) as? NSNumber)?.boolValue == true,
-              target.frame.width > 0, target.frame.height > 0,
-              [target.frame.minX, target.frame.minY, target.frame.width, target.frame.height].allSatisfy({ $0.isFinite }),
-              Float(point.x).isFinite, Float(point.y).isFinite else {
-            failure = failure ?? "AX pointer target is not enabled, finite, owned by the foreground parent, or event posting is unavailable"
-            return false
-        }
         let system = AXUIElementCreateSystemWide()
-        guard prepare(system) else { return false }
-        var hit: AXUIElement?
-        let status = AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &hit)
-        checkDeadline()
-        guard failure == nil, status == .success, var ancestor = hit,
-              AXUIElementGetPid(ancestor, &owner) == .success, owner == parent else {
-            failure = failure ?? "AX pointer hit test failed or targeted another process, AXError \(status.rawValue)"
-            return false
-        }
-        var matched = false
-        for _ in 0..<16 {
-            if CFEqual(ancestor, element) { matched = true; break }
-            guard let rawParent = value(kAXParentAttribute, of: ancestor),
-                  CFGetTypeID(rawParent) == AXUIElementGetTypeID() else { break }
-            let next = rawParent as! AXUIElement
-            if CFEqual(next, ancestor) { break }
-            ancestor = next
-        }
-        guard matched, failure == nil else {
-            failure = failure ?? "AX pointer hit is not the selected \(target.role) or its descendant"
+        var previousFrame: CGRect?
+        var settledPoint: CGPoint?
+        var diagnostic = ""
+        repeat {
+            let target = capture(element)
+            let point = CGPoint(x: target.frame.midX, y: target.frame.midY)
+            var owner: pid_t = 0
+            guard failure == nil, getppid() == parent, CGPreflightPostEventAccess(),
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == parent,
+                  AXUIElementGetPid(element, &owner) == .success, owner == parent,
+                  (value(kAXEnabledAttribute, of: element) as? NSNumber)?.boolValue == true,
+                  target.frame.width > 0, target.frame.height > 0,
+                  [target.frame.minX, target.frame.minY, target.frame.width, target.frame.height].allSatisfy({ $0.isFinite }),
+                  Float(point.x).isFinite, Float(point.y).isFinite else {
+                failure = failure ?? "AX pointer target is not enabled, finite, owned by the foreground parent, or event posting is unavailable; owner \(owner), role \(target.role), frame \(target.frame)"
+                return false
+            }
+            guard prepare(system) else { return false }
+            var hit: AXUIElement?
+            let status = AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &hit)
+            checkDeadline()
+            guard failure == nil, status == .success, var ancestor = hit,
+                  AXUIElementGetPid(ancestor, &owner) == .success, owner == parent else {
+                failure = failure ?? "AX pointer hit test failed or targeted another process, AXError \(status.rawValue); owner \(owner), target \(target.role), frame \(target.frame)"
+                return false
+            }
+            diagnostic = "owner \(owner), target \(target.role), frame \(target.frame)"
+                + ", identifier \(target.identifier.prefix(120)), title \(target.title.prefix(120)), label \(target.label.prefix(120))"
+                + ", hit \(text(kAXRoleAttribute, of: ancestor).prefix(120)), hitTitle \(text(kAXTitleAttribute, of: ancestor).prefix(120))"
+                + ", hitDescription \(text(kAXDescriptionAttribute, of: ancestor).prefix(120))"
+            var matched = false
+            for _ in 0..<16 {
+                if CFEqual(ancestor, element) { matched = true; break }
+                let (parentStatus, rawParent) = attribute(kAXParentAttribute, of: ancestor)
+                if parentStatus == .attributeUnsupported || parentStatus == .noValue { break }
+                guard parentStatus == .success, let rawParent,
+                      CFGetTypeID(rawParent) == AXUIElementGetTypeID(), failure == nil else {
+                    failure = failure ?? "AX pointer ancestor unavailable, AXError \(parentStatus.rawValue); \(diagnostic)"
+                    return false
+                }
+                let next = rawParent as! AXUIElement
+                if CFEqual(next, ancestor) { break }
+                ancestor = next
+            }
+            guard failure == nil else { return false }
+            if matched, previousFrame == target.frame { settledPoint = point; break }
+            previousFrame = matched ? target.frame : nil
+            pause()
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        guard let point = settledPoint, failure == nil else {
+            failure = failure ?? "AX pointer target did not settle with a matching hit within 3 seconds; \(diagnostic)"
             return false
         }
         let types: [CGEventType] = [.mouseMoved, .leftMouseDown, .leftMouseUp]
