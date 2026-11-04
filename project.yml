@@ -9,7 +9,7 @@ packages:
     path: Packages/ShareXCore
   KeyboardShortcuts:
     url: https://github.com/sindresorhus/KeyboardShortcuts
-    exactVersion: 2.3.0  # swift-tools 5.11, works on Xcode 16.0+ (2.4.0 needs Xcode 16.3+)
+    exactVersion: 3.1.0
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -23,8 +23,8 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: ShareX
-        CFBundleShortVersionString: "0.1.1"
-        CFBundleVersion: "2"
+        CFBundleShortVersionString: "0.1.2"
+        CFBundleVersion: "3"
         CFBundleIconName: AppIcon
         LSUIElement: true
         LSMinimumSystemVersion: "14.0"

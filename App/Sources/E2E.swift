@@ -80,8 +80,10 @@ enum E2E {
         r["lastRegionPresent"] = s.lastRegion != nil
         r["delaySeconds"] = s.options.delaySeconds
         r["borderWidth"] = s.options.borderWidth
+        let shortcutPersistence = E2ESettings.verifyPersistence(out)
+        r["shortcutPersistence"] = shortcutPersistence
         let pass = (r["rectangleColorBlue"] as? Bool == true) && (r["rectangleWidth8"] as? Bool == true) && s.saveToFile && s.lastRegion != nil
-            && s.options.borderWidth == 0 && s.options.delaySeconds == 0
+            && s.options.borderWidth == 0 && s.options.delaySeconds == 0 && shortcutPersistence
         r["pass"] = pass
         let d = try! JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys])
         try? d.write(to: URL(fileURLWithPath: out).appendingPathComponent("verify-settings.json"))
@@ -314,10 +316,16 @@ enum E2E {
         setOpts { s in s = AppSettings(); s.saveToFile = true; s.saveFolder = saved.path; s.playSound = false
                   s.options.showMagnifier = false }
 
-        if args.contains("--perf") { await E2EPerf.run(); return }
+        if args.contains("--perf") {
+            await E2EResources.run()
+            await E2EPerf.run()
+            return
+        }
         await probeNativeWindow()
         await E2EExport.run()
         E2ERenderer.run()
+        E2EPrivacy.run()
+        E2EPrecision.run()
         await E2ERedaction.run()
         E2EStylePersistence.run()
         await menuAndSettings()
@@ -436,6 +444,7 @@ enum E2E {
         await hotkey()
         await E2EKeyboard.run()
         await E2EClipboardOrder.run()
+        await E2ESettings.run()
         record("multi-display", NSScreen.screens.count > 1, ["screens": NSScreen.screens.count],
                status: NSScreen.screens.count > 1 ? nil : "unverifiable")
         // Leave settings in a known state for the relaunch check.
@@ -770,7 +779,9 @@ enum E2E {
         let bid = d.addShape(.blur, at: CGPoint(x: 260, y: 120)); d.extendShape(bid, to: CGPoint(x: 380, y: 280))
         guard let flat = Export.flatten(renderer: r, doc: d, crop: CGRect(x: 100, y: 100, width: 300, height: 200), lasso: nil) else {
             record("retina-2x-pipeline", false, ["error": "flatten"]); return }
-        let img = Export.decorate(flat, options: CaptureOptions(), scale: 2)
+        guard let img = Export.decorate(flat, options: CaptureOptions(), scale: 2) else {
+            record("retina-2x-pipeline", false, ["error": "decorate"]); return
+        }
         let m = markClipboard()
         let copied = Export.copyToClipboard(img, scale: 2)
         let url = Export.savePNG(img, scale: 2, folder: saved.path)

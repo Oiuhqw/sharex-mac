@@ -97,6 +97,12 @@ enum E2ESettings {
             .first { $0.accessibilityIdentifier() == "settings.shortcut.\(id).recorder" }
     }
 
+    private static func feedback(in window: NSWindow) -> String {
+        element("settings.shortcuts.feedback", in: window).map {
+            ($0.accessibilityLabel() ?? "") + ($0.accessibilityValue() as? String ?? "")
+        } ?? ""
+    }
+
     private static func search(_ text: String, in window: NSWindow) async -> Bool {
         guard let field = element("settings.shortcuts.search", in: window) else { return false }
         click(field, in: window)
@@ -167,7 +173,15 @@ enum E2ESettings {
         let sheetClosed = await E2E.until(1500) { window.attachedSheet == nil }
         E2E.record("settings-folder-chooser-cancel", chooser && sheetOpened && sheetClosed
                    && E2E.app.settings.value.saveFolder == folderBefore)
-        E2E.app.settings.update { $0.saveFolder = E2E.saved.path }
+        let chooseAgain = press("settings.output.chooseFolder", in: window)
+        let selectionOpened = await E2E.until(1500) { window.attachedSheet is NSOpenPanel }
+        if let panel = window.attachedSheet as? NSOpenPanel { panel.directoryURL = E2E.saved }
+        await E2E.wait(200)
+        let acceptedFolder = dismissSheet("Choose Folder", in: window)
+        let selectionClosed = await E2E.until(1500) { window.attachedSheet == nil }
+        E2E.record("settings-folder-chooser-accept-persists", chooseAgain && selectionOpened && acceptedFolder && selectionClosed
+                   && SettingsStore().value.saveFolder == E2E.saved.path)
+        if let panel = window.attachedSheet as? NSOpenPanel { panel.cancel(nil) }
         await E2E.wait(100)
         let defaultFolder = press("settings.output.defaultFolder", in: window)
         await E2E.wait(100)
@@ -206,9 +220,7 @@ enum E2ESettings {
         window.makeFirstResponder(lastRegion)
         key(28, "8", in: window, flags: [.control, .option, .shift])
         let conflictAlert = await E2E.until(1500) { window.attachedSheet != nil }
-        let conflictText = element("settings.shortcuts.feedback", in: window).map {
-            ($0.accessibilityLabel() ?? "") + ($0.accessibilityValue() as? String ?? "")
-        } ?? ""
+        let conflictText = feedback(in: window)
         let dismissed = dismissSheet("OK", in: window)
         await E2E.wait(100)
         E2E.record("settings-shortcut-conflict", conflictAlert && dismissed
@@ -224,10 +236,14 @@ enum E2ESettings {
         let movedDefault = await E2E.until(1500) {
             KeyboardShortcuts.getShortcut(for: .lastRegion) == KeyboardShortcuts.Name.region.initialShortcut
         }
+        let beforeRestoreFeedback = feedback(in: window)
         let blockedRestore = await rowAction("region", restore: true, in: window)
+        let restoreFeedback = feedback(in: window)
         E2E.record("settings-shortcut-default-conflict", movedDefault && blockedRestore
                    && KeyboardShortcuts.getShortcut(for: .region) == nil
-                   && KeyboardShortcuts.getShortcut(for: .lastRegion) == KeyboardShortcuts.Name.region.initialShortcut)
+                   && KeyboardShortcuts.getShortcut(for: .lastRegion) == KeyboardShortcuts.Name.region.initialShortcut
+                   && restoreFeedback != beforeRestoreFeedback && restoreFeedback.contains("used by \(CaptureStyle.lastRegion.title)"),
+                   ["feedback": restoreFeedback])
         let noDefaultCleared = await rowAction("lastRegion", restore: true, in: window)
         E2E.record("settings-shortcut-unassigned-default", noDefaultCleared && KeyboardShortcuts.getShortcut(for: .lastRegion) == nil)
         let restored = await rowAction("region", restore: true, in: window)
@@ -260,6 +276,20 @@ enum E2ESettings {
             keepPersistenceFixture = persistedRecorded
             E2E.record("settings-shortcut-persistence-fixture", persistedRecorded && verifyPersistence(E2E.out.path))
         } catch { E2E.record("settings-shortcut-persistence-fixture", false, ["error": error.localizedDescription]) }
+
+        window.close()
+        E2E.setOpts { $0.options.openEditor = true; $0.options.delaySeconds = 0 }
+        let source = CGEventSource(stateID: .hidSystemState)
+        for down in [true, false] {
+            let event = CGEvent(keyboardEventSource: source, virtualKey: 25, keyDown: down)
+            event?.flags = [.maskControl, .maskAlternate, .maskShift]
+            event?.post(tap: .cghidEventTap)
+        }
+        let fired = await E2E.until(2000) { E2E.surface() != nil }
+        if fired { E2E.esc(); _ = await E2E.until { !E2E.coord.busy } }
+        E2E.record("settings-custom-shortcut-capture", persistedRecorded && fired,
+                   ["note": "Synthetic HID event after closing Settings; a physical key press needs a Mac."],
+                   status: !fired && persistedRecorded ? "unverifiable" : nil)
     }
 }
 #endif

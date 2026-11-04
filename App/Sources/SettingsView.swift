@@ -109,7 +109,6 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 18) {
             SettingsSection("Before capture") {
                 Picker("Capture delay", selection: binding(\.options.delaySeconds)) {
-                    // Keep a stored delay visible even when it is not one of the menu presets.
                     ForEach(Array(Set(CaptureOptions.delayChoices + [store.value.options.delaySeconds])).sorted(), id: \.self) {
                         Text($0 == 0 ? "No delay" : "\($0) seconds").tag($0)
                     }

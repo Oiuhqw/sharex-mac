@@ -14,7 +14,6 @@ public struct LastRegion: Codable, Equatable, Sendable {
     var isValid: Bool {
         let values = [rect.origin.x, rect.origin.y, rect.size.width, rect.size.height,
                       rect.origin.x + rect.size.width, rect.origin.y + rect.size.height]
-        // Stored screen coordinates cannot approach the integer conversion limits used during capture.
         return values.allSatisfy { $0.isFinite && abs($0) <= CGFloat(Int32.max) }
             && rect.size.width > 0 && rect.size.height > 0
     }
