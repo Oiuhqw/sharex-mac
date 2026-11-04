@@ -138,7 +138,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if settingsWindow == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(store: settings)))
             w.title = "ShareX Settings"
-            w.styleMask = [.titled, .closable]
+            w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            w.setContentSize(NSSize(width: 760, height: 560))
+            w.contentMinSize = NSSize(width: 700, height: 520)
+            w.setFrameAutosaveName("ShareXSettings")
             w.isReleasedWhenClosed = false
             settingsWindow = w
         }
