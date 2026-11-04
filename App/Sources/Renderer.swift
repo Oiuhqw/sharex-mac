@@ -47,6 +47,7 @@ final class Renderer {
     var e2eCacheBytes: Int { cacheBytes }
     var e2eCacheEntryCount: Int { effectCache.count }
     var e2eLiveBytes: Int { liveCache.flatMap { Imaging.retainedBytes(of: $0.image) } ?? 0 }
+    static func e2eClearContextCaches() { sharedCI.clearCaches() }
     #endif
 
     init(frame: CGImage, scale: CGFloat) { (self.frame, self.scale) = (frame, scale) }

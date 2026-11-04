@@ -281,6 +281,11 @@ enum E2E {
 
     static func runAll() async {
         await wait(800)
+        if args.contains("--memory-diagnosis") {
+            source = "synthetic-memory-diagnosis"
+            await E2EResources.diagnose()
+            return
+        }
         if !Permissions.hasScreenRecording {
             source = "fixture"
             ScreenCapture.e2eFixture = { checker($0, $1) }

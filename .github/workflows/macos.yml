@@ -114,6 +114,13 @@ jobs:
         timeout-minutes: 8
         run: scripts/perf.sh
 
+      - name: Memory ownership diagnosis (separate Release process)
+        if: always()
+        run: |
+          python3 scripts/run-bounded.py --timeout 120 --log perf-out/memory-diagnosis/driver.log -- \
+            build/Build/Products/Release/ShareX.app/Contents/MacOS/ShareX \
+            --e2e "$PWD/perf-out/memory-diagnosis" --memory-diagnosis
+
       - name: Upload perf
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
