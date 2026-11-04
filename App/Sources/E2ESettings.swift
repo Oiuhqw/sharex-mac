@@ -368,6 +368,13 @@ private actor SettingsAXClient {
         let elements: [Element]
         let trusted: Bool
         let error: String?
+        let issues: [AttributeIssue]
+    }
+
+    struct AttributeIssue: Codable, Sendable {
+        let role: String
+        let attribute: String
+        let code: Int32
     }
 
     struct ModalResult: Sendable {
@@ -381,6 +388,7 @@ private actor SettingsAXClient {
 
     private var deadline: TimeInterval = 0
     private var failure: String?
+    private var issues: [AttributeIssue] = []
 
     private func value(_ attribute: String, of element: AXUIElement) -> CFTypeRef? {
         guard failure == nil else { return nil }
@@ -392,7 +400,16 @@ private actor SettingsAXClient {
         var result: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(element, attribute as CFString, &result)
         if status == .success { return result }
-        if status != .attributeUnsupported && status != .noValue {
+        switch status {
+        case .attributeUnsupported, .noValue:
+            break
+        case .failure, .invalidUIElement:
+            var role: CFTypeRef?
+            if attribute != kAXRoleAttribute, ProcessInfo.processInfo.systemUptime < deadline {
+                AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
+            }
+            issues.append(AttributeIssue(role: role as? String ?? "unknown", attribute: attribute, code: status.rawValue))
+        default:
             failure = "\(attribute) failed with AXError \(status.rawValue)"
         }
         return nil
@@ -413,14 +430,22 @@ private actor SettingsAXClient {
         }
     }
 
-    private func walk(in title: String, matching match: Match, sheetOnly: Bool = false) -> [AXUIElement] {
+    private func walk(in title: String, matching match: Match, sheetOnly: Bool = false) -> (found: [AXUIElement], captured: [Element]) {
         failure = nil
+        issues = []
         deadline = ProcessInfo.processInfo.systemUptime + 3
+        guard AXIsProcessTrusted() else {
+            failure = "AX client is not trusted"
+            return ([], [])
+        }
         let application = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
-        let windows = value(kAXWindowsAttribute, of: application) as? [AXUIElement] ?? []
+        guard let windows = value(kAXWindowsAttribute, of: application) as? [AXUIElement] else {
+            failure = failure ?? "AXWindows unavailable" + (issues.last.map { " with AXError \($0.code)" } ?? "")
+            return ([], [])
+        }
         guard let window = windows.first(where: { text(kAXTitleAttribute, of: $0) == title }) else {
             failure = failure ?? "Settings AX window absent"
-            return []
+            return ([], [])
         }
         var pending = [window]
         if sheetOnly {
@@ -429,17 +454,18 @@ private actor SettingsAXClient {
         }
         var visited: [AXUIElement] = []
         var found: [AXUIElement] = []
+        var captured: [Element] = []
         while let element = pending.popLast(), failure == nil {
             if visited.contains(where: { CFEqual($0, element) }) { continue }
             guard visited.count < 512 else { failure = "AX traversal exceeded 512 elements"; break }
             visited.append(element)
             if matches(element, match) {
                 found.append(element)
-                if case .all = match {} else { break }
+                if case .all = match { captured.append(capture(element)) } else { break }
             }
             pending += value(kAXChildrenAttribute, of: element) as? [AXUIElement] ?? []
         }
-        return found
+        return (found, captured)
     }
 
     private func capture(_ element: AXUIElement) -> Element {
@@ -457,21 +483,25 @@ private actor SettingsAXClient {
     }
 
     func find(_ identifier: String, in title: String) -> Element? {
-        let element = walk(in: title, matching: .identifier(identifier)).first.map(capture)
+        let element = walk(in: title, matching: .identifier(identifier)).found.first.map(capture)
         if let failure { NSLog("E2E AX lookup %@ failed: %@", identifier, failure) }
-        return element
+        if element == nil, let issue = issues.first {
+            NSLog("E2E AX lookup %@ missing after %ld node issues; first %@ %@ AXError %d",
+                  identifier, issues.count, issue.role, issue.attribute, issue.code)
+        }
+        return failure == nil ? element : nil
     }
 
     func snapshot(in title: String) -> Snapshot {
-        let elements = walk(in: title, matching: .all).map(capture)
-        return Snapshot(elements: elements, trusted: AXIsProcessTrusted(), error: failure)
+        let elements = walk(in: title, matching: .all).captured
+        return Snapshot(elements: elements, trusted: AXIsProcessTrusted(), error: failure, issues: issues)
     }
 
     func dismissSheet(_ button: String, in title: String) async -> ModalResult {
         let end = ProcessInfo.processInfo.systemUptime + 3
         repeat {
             guard !Task.isCancelled else { return ModalResult(shown: false, pressed: false) }
-            if let element = walk(in: title, matching: .button(button), sheetOnly: true).first {
+            if let element = walk(in: title, matching: .button(button), sheetOnly: true).found.first {
                 let pressed = AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
                 return ModalResult(shown: true, pressed: pressed)
             }
