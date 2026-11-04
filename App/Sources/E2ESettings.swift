@@ -25,6 +25,61 @@ enum E2ESettings {
 
     private static let accessibility = SettingsAXClient()
 
+    private static func activate(_ window: NSWindow) async -> Bool {
+        var activated = false
+        var info: [String: Any] = ["appActiveBefore": NSApp.isActive, "windowKeyBefore": window.isKeyWindow,
+                                   "frontmostPIDBefore": NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1]
+        defer {
+            info["appActive"] = NSApp.isActive
+            info["windowKey"] = window.isKeyWindow
+            info["frontmostPID"] = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
+            E2E.record("settings-activation", activated, info)
+        }
+        window.orderFrontRegardless()
+        await E2E.wait(100)
+        let frame = window.frame
+        let content = window.contentRect(forFrameRect: frame)
+        let titlebar = NSRect(x: frame.minX + 100, y: content.maxY + 2,
+                              width: frame.width - 200, height: frame.maxY - content.maxY - 4)
+        let point = NSPoint(x: titlebar.midX, y: titlebar.midY)
+        guard window.isVisible, !window.isMiniaturized, window.styleMask.contains(.titled),
+              titlebar.width > 0, titlebar.height > 0,
+              [point.x, point.y, titlebar.width, titlebar.height].allSatisfy({ $0.isFinite }),
+              frame.contains(point), !content.contains(point),
+              window.screen?.visibleFrame.contains(point) == true,
+              let screenTop = NSScreen.screens.first?.frame.maxY, screenTop.isFinite else {
+            info["error"] = "Settings has no safe visible titlebar point"
+            return false
+        }
+        let pointer = CGPoint(x: point.x, y: screenTop - point.y)
+        let hitWindow = NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: 0)
+        let canPost = CGPreflightPostEventAccess()
+        info["titlebarPoint"] = NSStringFromPoint(point)
+        info["pointerPoint"] = NSStringFromPoint(pointer)
+        info["hitWindow"] = hitWindow
+        info["settingsWindow"] = window.windowNumber
+        info["canPostEvents"] = canPost
+        guard pointer.x.isFinite, pointer.y.isFinite, hitWindow == window.windowNumber, canPost else {
+            info["error"] = "Settings titlebar is not the pointer target or HID posting is unavailable"
+            return false
+        }
+        let types: [CGEventType] = [.mouseMoved, .leftMouseDown, .leftMouseUp]
+        let events = types.compactMap {
+            CGEvent(mouseEventSource: nil, mouseType: $0, mouseCursorPosition: pointer, mouseButton: .left)
+        }
+        guard events.count == types.count else {
+            info["error"] = "Could not create Settings activation events"
+            return false
+        }
+        for event in events {
+            event.flags = []
+            event.setIntegerValueField(.mouseEventClickState, value: 1)
+            event.post(tap: .cghidEventTap)
+        }
+        activated = await E2E.until(2000) { NSApp.isActive && window.isKeyWindow }
+        return activated
+    }
+
     private static func recorders(in window: NSWindow) -> [KeyboardShortcuts.RecorderCocoa] {
         var result: [KeyboardShortcuts.RecorderCocoa] = []
         func visit(_ view: NSView) {
@@ -209,9 +264,19 @@ enum E2ESettings {
         window.setContentSize(NSSize(width: 760, height: 560))
         await E2E.wait(250)
         E2E.record("settings-resizable", window.styleMask.contains(.resizable) && window.contentMinSize.width >= 700)
+        guard await activate(window) else { return }
 
+        let focusBefore: [String: Any] = ["appActive": NSApp.isActive, "windowKey": window.isKeyWindow,
+                                          "frontmostPID": NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1]
+        NSLog("E2E Settings focus before first AX request: %@", "\(focusBefore)")
         let capture = await element("settings.capture.cursor", in: window) != nil
+        let focusAfter: [String: Any] = ["appActive": NSApp.isActive, "windowKey": window.isKeyWindow,
+                                         "frontmostPID": NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1]
+        NSLog("E2E Settings focus after first AX request: %@", "\(focusAfter)")
+        let retainedFocus = NSApp.isActive && window.isKeyWindow
+        E2E.record("settings-focus-after-accessibility", retainedFocus, ["before": focusBefore, "after": focusAfter])
         E2E.record("settings-initial-capture-page", capture)
+        guard retainedFocus else { return }
         let cursor = E2E.app.settings.value.options.showCursor
         let toggledCursor = await press("settings.capture.cursor", in: window)
         await E2E.wait(100)
