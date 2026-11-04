@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 
-from perf_fixture import good_metrics
+from perf_fixture import good_metrics, measured_stats
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "validate-perf.py"
@@ -17,6 +17,30 @@ SPEC.loader.exec_module(validator)
 
 
 class ValidatePerfTests(unittest.TestCase):
+    def test_release_hover_cpu_budget(self):
+        for cpu, accepted in ((1.999, True), (2.0, False), (2.001, False)):
+            metrics = good_metrics()
+            metrics["hoverMove2x_ms"] = measured_stats(60, cpu)
+            with self.subTest(cpu=cpu):
+                if accepted:
+                    validator.validate(metrics)
+                else:
+                    with self.assertRaisesRegex(ValueError, "hoverMove2x_ms.p95.*2 ms.*CPU"):
+                        validator.validate(metrics)
+
+    def test_wall_and_display_callback_costs_are_diagnostics(self):
+        metrics = good_metrics()
+        metrics["hoverMove2x_wall_ms"] = measured_stats(60, 8)
+        metrics["hoverMove2x_onScreen_ms"] = measured_stats(60, 40)
+        validator.validate(metrics)
+
+    def test_hover_event_delivery_is_required(self):
+        for value in (False, None, 1, "true"):
+            metrics = good_metrics()
+            metrics["hoverVerified"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "hover events"):
+                validator.validate(metrics)
+
     def test_complete_native_shaped_metrics_pass(self):
         validator.validate(good_metrics())
 

@@ -125,7 +125,11 @@ enum E2EPerf {
             defer { close(v, w) }
             let vs = Vsync(w)
             defer { vs.stop() }
-            for p in path(60, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 1500, y: 900)) { await timed(.mouseMoved, p, v, w, vs) }
+            let hoverPath = path(60, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 1500, y: 900))
+            for p in hoverPath { await timed(.mouseMoved, p, v, w, vs) }
+            let hoverVerified = hoverPath.last.map { E2ELoupe.loupeState(v, cursor: $0, scale: sc).ok } ?? false
+            out["hoverVerified"] = hoverVerified
+            if !hoverVerified { fail("hover-event-delivery") }
             takeSamples("hoverMove2x_ms")
             _ = frame(.leftMouseDown, CGPoint(x: 200, y: 150), v, w)
             for p in path(120, from: CGPoint(x: 210, y: 160), to: CGPoint(x: 1400, y: 950)) { await timed(.leftMouseDragged, p, v, w, vs) }

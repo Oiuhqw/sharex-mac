@@ -7,7 +7,7 @@ def measured_stats(count, value=1.25):
 
 def good_metrics():
     metrics = {
-        "schemaVersion": 1, "errors": 0, "frameSource": "sck-window+fixture-display",
+        "schemaVersion": 1, "errors": 0, "frameSource": "sck-window+fixture-display", "hoverVerified": True,
         "display": {"px": [3456, 2234], "scale": 2, "runnerScale": 1},
         "outputCorrectness": {"attemptsPerOperation": 5, "clipboard": 5, "savePNG": 5, "asyncPipeline": 5},
     }

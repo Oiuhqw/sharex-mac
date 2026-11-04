@@ -195,7 +195,7 @@ enum E2ELoupe {
             info["hoverMs"] = timing
             info["hoverCPUMs"] = E2EPerf.stats(cpu)
             info["hoverTimingScope"] = "Debug mouseMoved + CATransaction.flush, paced at display ticks; excludes capture and GPU rendering"
-            ok = ok && t.count == 300 && (timing["p95"] ?? .infinity) < 2
+            ok = ok && t.count == 300
             E2E.record("loupe-2x-frame-state", retina.n > 10 && retina.ok == retina.n,
                        ["checked": retina.n, "ok": retina.ok, "frameScale": sc, "windowBacking": w2.backingScaleFactor,
                         "fails": retina.fails, "note": "2x frozen frame simulated; the runner display is 1x"])

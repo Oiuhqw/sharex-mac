@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate measured work and resource ownership, without hardware timing guesses."""
+"""Validate measured work, resource ownership, and the Release hover CPU budget."""
 import argparse
 import json
 import math
@@ -119,6 +119,9 @@ def validate(metrics):
     number(display.get("runnerScale"), "display.runnerScale", minimum=1)
     for key, minimum in REQUIRED_STATS.items():
         stats(metrics.get(key), key, minimum)
+    require(metrics.get("hoverVerified") is True, "Release hover events did not reach the editor")
+    require(metrics["hoverMove2x_ms"]["p95"] < 2,
+            "Release hoverMove2x_ms.p95 must be below 2 ms of main-thread CPU")
     correctness = object_at(metrics, "outputCorrectness")
     attempts = number(correctness.get("attemptsPerOperation"), "attemptsPerOperation", minimum=5, integer=True)
     for key, metric in (("clipboard", "commitToClipboard2x_ms"), ("savePNG", "savePNG2x_ms"),
