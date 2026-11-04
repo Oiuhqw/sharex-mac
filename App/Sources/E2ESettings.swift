@@ -197,7 +197,8 @@ enum E2ESettings {
         await E2E.wait(250)
         E2E.record("settings-resizable", window.styleMask.contains(.resizable) && window.contentMinSize.width >= 700)
 
-        let capture = await navigate("capture", in: window)
+        let capture = element("settings.capture.cursor", in: window) != nil
+        E2E.record("settings-initial-capture-page", capture)
         let cursor = E2E.app.settings.value.options.showCursor
         let toggledCursor = press("settings.capture.cursor", in: window)
         await E2E.wait(100)
@@ -242,9 +243,10 @@ enum E2ESettings {
                    && element("settings.output.folder", in: window) != nil)
         screenshot("settings-output", window: window)
 
+        _ = await navigate("capture", in: window)
         let shortcutsPage = await navigate("shortcuts", in: window)
         let recorders = elements(in: window).compactMap { $0.object as? KeyboardShortcuts.RecorderCocoa }
-        E2E.record("settings-eight-accessible-recorders", shortcutsPage && recorders.count == 8
+        E2E.record("settings-eight-labeled-native-recorders", shortcutsPage && recorders.count == 8
                    && recorders.allSatisfy { !($0.accessibilityLabel() ?? "").isEmpty }, ["count": recorders.count])
         screenshot("settings-shortcuts", window: window)
         window.setContentSize(NSSize(width: 900, height: 850))

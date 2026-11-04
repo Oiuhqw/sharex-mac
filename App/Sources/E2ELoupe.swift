@@ -165,7 +165,7 @@ enum E2ELoupe {
         }
         send(.leftMouseUp, CGPoint(x: 250, y: 200))
         v.releaseResources(); w.orderOut(nil); w.contentView = nil; w.close()
-        // Pace commits at display ticks so WindowServer queue backpressure does not dominate hover cost.
+        // Pace hover commits at display ticks, matching the Release performance probe.
         do {
             let v2 = EditorView(frame: CGRect(origin: .zero, size: size), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
                                 initialCrop: nil, styles: [:], showMagnifier: true, pickRects: [], finishOnPick: false)

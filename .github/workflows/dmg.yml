@@ -78,7 +78,17 @@ jobs:
           "$APP/Contents/MacOS/ShareX" & PID=$!
           sleep 8
           kill -0 $PID || { echo "::error::app exited under Hardened Runtime"; exit 1; }
-          echo "still running after 8s"; kill $PID || true
+          echo "still running after 8s"
+          echo 'Shipped app, warm idle before any capture. RSS is KiB; CPU is a decaying average over up to one minute.' > package-resources.log
+          for sample in 1 2 3 4 5; do
+            kill -0 "$PID"
+            ps -p "$PID" -o pid=,rss=,pcpu=,time= >> package-resources.log
+            sleep 1
+          done
+          du -sk "$APP" >> package-resources.log
+          stat -f 'Executable bytes: %z' "$APP/Contents/MacOS/ShareX" >> package-resources.log
+          cat package-resources.log
+          kill "$PID" || true
       - name: Make DMG
         run: |
           mkdir dmgroot
@@ -95,6 +105,7 @@ jobs:
             ShareX.dmg
             ShareX.dmg.sha256
             INSTALL.txt
+            package-resources.log
       - name: Quarantine-simulated install + launch (what a downloaded DMG gets)
         timeout-minutes: 4
         run: |
