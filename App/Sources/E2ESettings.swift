@@ -1,6 +1,7 @@
 #if SHAREX_E2E
 import AppKit
 import ApplicationServices
+import Darwin
 import KeyboardShortcuts
 import ShareXCore
 
@@ -64,12 +65,13 @@ enum E2ESettings {
     }
 
     private static func key(_ code: UInt16, _ characters: String, in window: NSWindow,
-                            flags: NSEvent.ModifierFlags = []) {
+                            flags: NSEvent.ModifierFlags = [], synchronously: Bool = false) {
         for type: NSEvent.EventType in [.keyDown, .keyUp] {
             if let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags,
                 timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
                 characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code) {
-                NSApp.postEvent(event, atStart: false)
+                if synchronously { NSApp.sendEvent(event) }
+                else { NSApp.postEvent(event, atStart: false) }
             }
         }
     }
@@ -145,6 +147,7 @@ enum E2ESettings {
         let response = prepareSheetDismissal(button, in: window)
         guard click(control, in: window) else {
             response.cancel()
+            _ = await response.value
             return .init(shown: false, pressed: false)
         }
         return await response.value
@@ -184,6 +187,12 @@ enum E2ESettings {
     }
 
     static func run() async {
+        await runScenario()
+        let failures = await accessibility.takeFailures()
+        E2E.record("settings-accessibility-helper-health", failures.isEmpty, ["errors": failures])
+    }
+
+    private static func runScenario() async {
         let settings = E2E.app.settings.value
         let oldShortcuts = Hotkeys.commands.map { ($0.name, KeyboardShortcuts.getShortcut(for: $0.name)) }
         var keepPersistenceFixture = false
@@ -280,9 +289,10 @@ enum E2ESettings {
         }
         let previous = KeyboardShortcuts.getShortcut(for: .lastRegion)
         _ = await focusRecorder("lastRegion", in: window)
+        let conflictDeadline = SettingsModalDeadline(window: window)
         let conflictResponse = prepareSheetDismissal("OK", in: window)
-        key(28, "8", in: window, flags: [.control, .option, .shift])
-        let conflict = await conflictResponse.value
+        key(28, "8", in: window, flags: [.control, .option, .shift], synchronously: true)
+        let conflict = conflictDeadline.finish(await conflictResponse.value)
         await E2E.wait(100)
         let conflictText = await feedback(in: window)
         E2E.record("settings-shortcut-conflict", conflict.shown && conflict.pressed
@@ -353,6 +363,35 @@ enum E2ESettings {
     }
 }
 
+@MainActor
+private final class SettingsModalDeadline: NSObject {
+    private weak var window: NSWindow?
+    private var timer: Timer?
+    private var expired = false
+
+    init(window: NSWindow) {
+        self.window = window
+        super.init()
+        let timer = Timer(timeInterval: 6, target: self, selector: #selector(expire(_:)), userInfo: nil, repeats: false)
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .modalPanel)
+    }
+
+    func finish(_ result: SettingsAXClient.ModalResult) -> SettingsAXClient.ModalResult {
+        timer?.invalidate()
+        timer = nil
+        return .init(shown: result.shown, pressed: result.pressed && !expired)
+    }
+
+    @objc private func expire(_: Timer) {
+        expired = true
+        guard let window, let sheet = window.attachedSheet else { return }
+        if NSApp.modalWindow === sheet { NSApp.abortModal() }
+        window.endSheet(sheet, returnCode: .abort)
+        sheet.orderOut(nil)
+    }
+}
+
 private actor SettingsAXClient {
     struct Element: Codable, Sendable {
         let identifier: String
@@ -377,36 +416,269 @@ private actor SettingsAXClient {
         let code: Int32
     }
 
-    struct ModalResult: Sendable {
+    struct ModalResult: Codable, Sendable {
         let shown: Bool
         let pressed: Bool
     }
+
+    enum Operation: Codable, Sendable {
+        case find(String), snapshot, dismissSheet(String)
+    }
+
+    struct Request: Codable, Sendable {
+        let operation: Operation
+        let title: String
+    }
+
+    enum Reply: Codable, Sendable {
+        case element(Element?), snapshot(Snapshot), modal(ModalResult), failure(String)
+
+        var error: String? {
+            switch self {
+            case .failure(let message): return message
+            case .snapshot(let snapshot): return snapshot.error
+            default: return nil
+            }
+        }
+    }
+
+    private var failures: [String] = []
+
+    func takeFailures() -> [String] {
+        defer { failures.removeAll() }
+        return failures
+    }
+
+    func find(_ identifier: String, in title: String) async -> Element? {
+        let reply = await invoke(.find(identifier), in: title)
+        if case .element(let element) = reply { return element }
+        rejectUnexpected(reply)
+        return nil
+    }
+
+    func snapshot(in title: String) async -> Snapshot {
+        let reply = await invoke(.snapshot, in: title)
+        if case .snapshot(let snapshot) = reply { return snapshot }
+        rejectUnexpected(reply)
+        return Snapshot(elements: [], trusted: false, error: reply.error ?? "Unexpected AX helper reply", issues: [])
+    }
+
+    func dismissSheet(_ button: String, in title: String) async -> ModalResult {
+        let reply = await invoke(.dismissSheet(button), in: title)
+        if case .modal(let result) = reply { return result }
+        rejectUnexpected(reply)
+        return ModalResult(shown: false, pressed: false)
+    }
+
+    private func rejectUnexpected(_ reply: Reply) {
+        if reply.error == nil { failures.append("Unexpected AX helper reply") }
+    }
+
+    private func invoke(_ operation: Operation, in title: String) async -> Reply {
+        let reply: Reply
+        do { reply = try await exchange(Request(operation: operation, title: title)) }
+        catch { reply = .failure(error.localizedDescription) }
+        if let error = reply.error {
+            let message = "\(operation): \(error)"
+            failures.append(message)
+            NSLog("E2E AX helper failed: %@", message)
+        }
+        return reply
+    }
+
+    private func exchange(_ request: Request) async throws -> Reply {
+        let requestData = try JSONEncoder().encode(request)
+        guard requestData.count <= SettingsAXTransport.requestLimit else {
+            throw SettingsAXTransport.Failure("AX helper request exceeds \(SettingsAXTransport.requestLimit) bytes")
+        }
+        guard let executable = Bundle.main.executableURL else { throw SettingsAXTransport.Failure("App executable unavailable") }
+        guard !Task.isCancelled else { throw SettingsAXTransport.Failure("AX helper request cancelled") }
+        let response = try SettingsAXTransport.responseFile()
+        let process = Process()
+        defer {
+            do { try response.close() }
+            catch { failures.append("AX helper file close failed: \(error.localizedDescription)") }
+        }
+        process.executableURL = executable
+        process.arguments = [SettingsAXTransport.mode, requestData.base64EncodedString()]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = response
+        process.standardError = FileHandle.nullDevice
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        try process.run()
+        while process.isRunning && !Task.isCancelled && ProcessInfo.processInfo.systemUptime < deadline {
+            await pause()
+        }
+        if process.isRunning {
+            let reason = Task.isCancelled ? "AX helper request cancelled" : "AX helper exceeded 5 seconds"
+            process.terminate()
+            let grace = ProcessInfo.processInfo.systemUptime + 0.2
+            while process.isRunning && ProcessInfo.processInfo.systemUptime < grace { await pause() }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            let exitDeadline = ProcessInfo.processInfo.systemUptime + 1
+            while process.isRunning && ProcessInfo.processInfo.systemUptime < exitDeadline { await pause() }
+            guard !process.isRunning else {
+                throw SettingsAXTransport.Failure("\(reason); exit not observed after SIGKILL")
+            }
+            throw SettingsAXTransport.Failure(reason)
+        }
+        guard !Task.isCancelled else { throw SettingsAXTransport.Failure("AX helper request cancelled") }
+        guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+            throw SettingsAXTransport.Failure("AX helper exited with status \(process.terminationStatus), reason \(process.terminationReason.rawValue)")
+        }
+        try response.seek(toOffset: 0)
+        let data = try SettingsAXTransport.read(response)
+        return try JSONDecoder().decode(Reply.self, from: data)
+    }
+
+    private func pause() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.025) { continuation.resume() }
+        }
+    }
+}
+
+private enum SettingsAXTransport {
+    static let mode = "--e2e-ax"
+    static let requestLimit = 8 * 1024
+    static let replyLimit = 1024 * 1024
+
+    struct Failure: LocalizedError {
+        let message: String
+        init(_ message: String) { self.message = message }
+        var errorDescription: String? { message }
+    }
+
+    static func responseFile() throws -> FileHandle {
+        var path = Array(FileManager.default.temporaryDirectory.appendingPathComponent("sharex-e2e-ax-XXXXXX").path.utf8CString)
+        let descriptor = mkstemp(&path)
+        guard descriptor >= 0 else { throw Failure("Could not create AX response file, errno \(errno)") }
+        do {
+            guard unlink(path) == 0 else { throw Failure("Could not unlink AX response file, errno \(errno)") }
+            guard fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0 else {
+                throw Failure("Could not protect AX response descriptor, errno \(errno)")
+            }
+            return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        } catch {
+            Darwin.close(descriptor)
+            throw error
+        }
+    }
+
+    static func read(_ handle: FileHandle) throws -> Data {
+        var data = Data()
+        while let chunk = try handle.read(upToCount: replyLimit + 1 - data.count), !chunk.isEmpty {
+            data.append(chunk)
+            guard data.count <= replyLimit else { throw Failure("AX helper reply exceeds \(replyLimit) bytes") }
+        }
+        return data
+    }
+
+    static func write(_ data: Data) throws {
+        guard data.count <= replyLimit else { throw Failure("AX helper reply exceeds \(replyLimit) bytes") }
+        try FileHandle.standardOutput.write(contentsOf: data)
+    }
+}
+
+@MainActor
+enum SettingsAXHelper {
+    static func handlesHelperMode() -> Bool {
+        let args = CommandLine.arguments
+        guard args.contains(SettingsAXTransport.mode) else { return false }
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 5) { _exit(124) }
+        let parent = getppid()
+        guard parent > 1, args.count == 3, args[1] == SettingsAXTransport.mode else { _exit(64) }
+        let reply: SettingsAXClient.Reply
+        do {
+            guard args[2].utf8.count <= 4 * ((SettingsAXTransport.requestLimit + 2) / 3),
+                  let data = Data(base64Encoded: args[2]), data.count <= SettingsAXTransport.requestLimit else {
+                throw SettingsAXTransport.Failure("Invalid or oversized AX helper request")
+            }
+            let request = try JSONDecoder().decode(SettingsAXClient.Request.self, from: data)
+            reply = SettingsAXWalker(parent: parent).run(request)
+        } catch { reply = .failure(error.localizedDescription) }
+        do {
+            let encoded: Data
+            do {
+                encoded = try JSONEncoder().encode(reply)
+                guard encoded.count <= SettingsAXTransport.replyLimit else {
+                    throw SettingsAXTransport.Failure("AX helper reply exceeds \(SettingsAXTransport.replyLimit) bytes")
+                }
+            } catch {
+                let failure = SettingsAXClient.Reply.failure(error.localizedDescription)
+                try SettingsAXTransport.write(JSONEncoder().encode(failure))
+                _exit(0)
+            }
+            try SettingsAXTransport.write(encoded)
+            _exit(0)
+        } catch { _exit(74) }
+    }
+}
+
+@MainActor
+private final class SettingsAXWalker {
+    private typealias Element = SettingsAXClient.Element
+    private typealias Snapshot = SettingsAXClient.Snapshot
+    private typealias AttributeIssue = SettingsAXClient.AttributeIssue
+    private typealias ModalResult = SettingsAXClient.ModalResult
 
     private enum Match {
         case identifier(String), button(String), all
     }
 
-    private var deadline: TimeInterval = 0
+    private let parent: pid_t
+    private let deadline = ProcessInfo.processInfo.systemUptime + 3
+    private let trusted = AXIsProcessTrusted()
     private var failure: String?
     private var issues: [AttributeIssue] = []
 
-    private func value(_ attribute: String, of element: AXUIElement) -> CFTypeRef? {
-        guard failure == nil else { return nil }
-        guard ProcessInfo.processInfo.systemUptime < deadline else {
-            failure = "AX traversal exceeded 3 seconds"
-            return nil
+    init(parent: pid_t) { self.parent = parent }
+
+    func run(_ request: SettingsAXClient.Request) -> SettingsAXClient.Reply {
+        switch request.operation {
+        case .find(let identifier):
+            let element = find(identifier, in: request.title)
+            return failure.map(SettingsAXClient.Reply.failure) ?? .element(element)
+        case .snapshot: return .snapshot(snapshot(in: request.title))
+        case .dismissSheet(let button):
+            let result = dismissSheet(button, in: request.title)
+            return failure.map(SettingsAXClient.Reply.failure) ?? .modal(result)
         }
-        AXUIElementSetMessagingTimeout(element, 0.25)
+    }
+
+    private func prepare(_ element: AXUIElement) -> Bool {
+        guard failure == nil else { return false }
+        guard getppid() == parent else { failure = "AX helper parent exited"; return false }
+        let remaining = deadline - ProcessInfo.processInfo.systemUptime
+        guard remaining > 0 else { failure = "AX operation exceeded 3 seconds"; return false }
+        let status = AXUIElementSetMessagingTimeout(element, Float(min(0.25, remaining)))
+        guard status == .success else { failure = "AX timeout setup failed with AXError \(status.rawValue)"; return false }
+        return true
+    }
+
+    private func checkDeadline() {
+        if ProcessInfo.processInfo.systemUptime >= deadline { failure = "AX operation exceeded 3 seconds" }
+    }
+
+    private func attribute(_ attribute: String, of element: AXUIElement) -> (AXError, CFTypeRef?) {
+        guard prepare(element) else { return (.failure, nil) }
         var result: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(element, attribute as CFString, &result)
+        checkDeadline()
+        return (status, result)
+    }
+
+    private func value(_ attribute: String, of element: AXUIElement) -> CFTypeRef? {
+        let (status, result) = self.attribute(attribute, of: element)
+        guard failure == nil else { return nil }
         if status == .success { return result }
         switch status {
         case .attributeUnsupported, .noValue:
             break
         case .failure, .invalidUIElement:
             var role: CFTypeRef?
-            if attribute != kAXRoleAttribute, ProcessInfo.processInfo.systemUptime < deadline {
-                AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
+            if attribute != kAXRoleAttribute {
+                role = value(kAXRoleAttribute, of: element)
             }
             issues.append(AttributeIssue(role: role as? String ?? "unknown", attribute: attribute, code: status.rawValue))
         default:
@@ -431,14 +703,11 @@ private actor SettingsAXClient {
     }
 
     private func walk(in title: String, matching match: Match, sheetOnly: Bool = false) -> (found: [AXUIElement], captured: [Element]) {
-        failure = nil
-        issues = []
-        deadline = ProcessInfo.processInfo.systemUptime + 3
-        guard AXIsProcessTrusted() else {
+        guard trusted else {
             failure = "AX client is not trusted"
             return ([], [])
         }
-        let application = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+        let application = AXUIElementCreateApplication(parent)
         guard let windows = value(kAXWindowsAttribute, of: application) as? [AXUIElement] else {
             failure = failure ?? "AXWindows unavailable" + (issues.last.map { " with AXError \($0.code)" } ?? "")
             return ([], [])
@@ -465,6 +734,7 @@ private actor SettingsAXClient {
             }
             pending += value(kAXChildrenAttribute, of: element) as? [AXUIElement] ?? []
         }
+        checkDeadline()
         return (found, captured)
     }
 
@@ -482,7 +752,7 @@ private actor SettingsAXClient {
                        value: text(kAXValueAttribute, of: element), frame: CGRect(origin: point, size: size))
     }
 
-    func find(_ identifier: String, in title: String) -> Element? {
+    private func find(_ identifier: String, in title: String) -> Element? {
         let element = walk(in: title, matching: .identifier(identifier)).found.first.map(capture)
         if let failure { NSLog("E2E AX lookup %@ failed: %@", identifier, failure) }
         if element == nil, let issue = issues.first {
@@ -492,21 +762,24 @@ private actor SettingsAXClient {
         return failure == nil ? element : nil
     }
 
-    func snapshot(in title: String) -> Snapshot {
+    private func snapshot(in title: String) -> Snapshot {
         let elements = walk(in: title, matching: .all).captured
-        return Snapshot(elements: elements, trusted: AXIsProcessTrusted(), error: failure, issues: issues)
+        return Snapshot(elements: elements, trusted: trusted, error: failure, issues: issues)
     }
 
-    func dismissSheet(_ button: String, in title: String) async -> ModalResult {
-        let end = ProcessInfo.processInfo.systemUptime + 3
+    private func dismissSheet(_ button: String, in title: String) -> ModalResult {
         repeat {
-            guard !Task.isCancelled else { return ModalResult(shown: false, pressed: false) }
             if let element = walk(in: title, matching: .button(button), sheetOnly: true).found.first {
-                let pressed = AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
-                return ModalResult(shown: true, pressed: pressed)
+                guard prepare(element) else { break }
+                let status = AXUIElementPerformAction(element, kAXPressAction as CFString)
+                checkDeadline()
+                if status != .success { failure = "AXPress failed with AXError \(status.rawValue)" }
+                return ModalResult(shown: true, pressed: status == .success && failure == nil)
             }
-            try? await Task.sleep(for: .milliseconds(50))
-        } while ProcessInfo.processInfo.systemUptime < end
+            guard failure == nil else { break }
+            Thread.sleep(forTimeInterval: min(0.05, max(0, deadline - ProcessInfo.processInfo.systemUptime)))
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        failure = failure ?? "AX sheet button did not appear within 3 seconds"
         return ModalResult(shown: false, pressed: false)
     }
 }

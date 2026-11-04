@@ -6,6 +6,9 @@ import SwiftUI
 @MainActor
 enum Main {
     static func main() {
+        #if SHAREX_E2E
+        if SettingsAXHelper.handlesHelperMode() { return }
+        #endif
         let app = NSApplication.shared
         #if SHAREX_E2E
         if E2E.handlesHelperMode() { return }
