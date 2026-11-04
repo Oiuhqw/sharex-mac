@@ -121,6 +121,10 @@ final class EditorView: NSView, NSTextFieldDelegate {
         refresh()
     }
 
+    #if SHAREX_E2E
+    var e2eLoupe: (visible: Bool, frame: CGRect, label: String, contentsRect: CGRect, source: CGSize) { chrome.e2eLoupe }
+    #endif
+
     var styles: [ShapeKind: ShapeStyle] { doc.styles }
     var tool: Tool { doc.tool }
     var bounds0: CGRect { CGRect(origin: .zero, size: bounds.size) }

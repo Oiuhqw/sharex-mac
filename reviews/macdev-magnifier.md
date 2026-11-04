@@ -1,3 +1,5 @@
+> **Superseded by macdev-magnifier-signoff.md.**
+
 # Mac dev review: selection magnifier (loupe) on macOS 27 / M5 Pro / 120 Hz
 
 Reviewed: `origin/codex/fix-export-release` @ 9cabccb, in a detached worktree at `/tmp/wtmag`. I did not edit, commit or switch branches in the main clone. That clone is on `fix/magnifier`, where another agent is working.

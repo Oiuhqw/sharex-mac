@@ -179,17 +179,22 @@ public struct StitchLayout: Equatable, Sendable {
 /// The numbers behind blur and pixelate. The pixels themselves are made by CoreImage in the app;
 /// these are the parts that decide how strong the redaction is and where the grid sits.
 public enum EffectMath {
-    /// Gaussian sigma in pixels. Three box passes of radius r approximate σ = r; the floor of 4 px keeps
-    /// even the weakest setting from leaving small text readable.
+    /// Weakest redaction strength in points (security review N1: 2 px left small text readable).
+    public static let minStrength: Double = 8
+
+    /// Gaussian sigma in pixels. Three box passes of radius r approximate σ = r; strength is floored at
+    /// `minStrength` points so even the weakest setting does not leave small text readable.
     public static func blurSigma(strength: Double, scale: CGFloat) -> Double {
-        let v = strength * Double(scale)
-        return v.isFinite ? max(4, v) : 4
+        let sc = Double(scale).isFinite && scale > 0 ? Double(scale) : 1
+        let v = max(minStrength, strength) * sc
+        return v.isFinite ? max(minStrength, v) : minStrength
     }
 
-    /// Pixelate block size in pixels; at least 2 so every block really merges pixels.
+    /// Pixelate block size in pixels; floored at `minStrength` points like blur.
     public static func pixelateBlock(strength: Double, scale: CGFloat) -> Double {
-        let v = strength * Double(scale)
-        return v.isFinite ? max(2, v) : 2
+        let sc = Double(scale).isFinite && scale > 0 ? Double(scale) : 1
+        let v = max(minStrength, strength) * sc
+        return v.isFinite ? max(minStrength, v) : minStrength
     }
 
     /// CIPixellate centre for a region given in y-up pixels. Blocks are laid out from this point, so using

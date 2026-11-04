@@ -1,10 +1,20 @@
 import AppKit
 import ShareXCore
 
-/// A borderless window over one screen that can take key focus (borderless windows refuse it by default).
-final class OverlayWindow: NSWindow {
+/// The overlay/editor window. A non-activating panel: it takes key focus (Esc, Enter, tool hotkeys, typed
+/// text) without ShareX becoming the active app, because macOS 14+ may decline NSApp.activate() when the
+/// hotkey fires while another app is in front. Without this, keys went to the other app.
+final class OverlayWindow: NSPanel {
+    override init(contentRect: NSRect, styleMask style: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool) {
+        super.init(contentRect: contentRect, styleMask: style.union(.nonactivatingPanel), backing: backing, defer: flag)
+        becomesKeyOnlyIfNeeded = false
+        isFloatingPanel = true
+        hidesOnDeactivate = false
+        worksWhenModal = true
+    }
     override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    // A non-activating panel must not become main; that would require activating the app.
+    override var canBecomeMain: Bool { false }
 }
 
 /// How an editor session ended.
@@ -143,11 +153,12 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
         // Remember who had focus so it gets it back afterwards (and Active Window keeps working next time).
         let front = NSWorkspace.shared.frontmostApplication
         previousApp = front == .current ? nil : front
+        // Best effort only; key focus no longer depends on it (OverlayWindow is a non-activating panel).
         NSApp.activate()
         let mouse = NSEvent.mouseLocation
         for s in surfaces { s.window.orderFrontRegardless() }
         let key = surfaces.first { $0.window.frame.contains(mouse) } ?? surfaces.first
-        key?.window.makeKeyAndOrderFront(nil)
+        key?.window.makeKey()
         if let key { key.window.makeFirstResponder(key.view) }
         // Every overlay shows the loupe from its first frame, wherever the cursor already is.
         for s in surfaces { s.view.syncMouse() }

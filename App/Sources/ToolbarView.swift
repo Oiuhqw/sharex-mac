@@ -101,6 +101,8 @@ final class ToolbarView: NSVisualEffectView {
             width.minValue = usesFont ? 8 : 1; width.maxValue = usesFont ? 96 : 40
             width.doubleValue = usesFont ? s.fontSize : s.width
             opacity.doubleValue = s.opacity
+            // Security N1: blur/pixelate never below EffectMath.minStrength; spotlight dim keeps its full range.
+            strength.minValue = k == .blur || k == .pixelate ? EffectMath.minStrength : 2
             strength.doubleValue = s.strength
             strength.isEnabled = k.isEffect
             fill.state = s.filled ? .on : .off

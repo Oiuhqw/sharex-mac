@@ -342,10 +342,16 @@ final class ChromeView: PassThroughView {
         magLabel.isHidden = false
     }
     private var magLabelSize = CGSize.zero
+    #if SHAREX_E2E
+    /// E2E seam: what the loupe shows (visible, frame in view points, label, sampled unit rect, source size).
+    var e2eLoupe: (visible: Bool, frame: CGRect, label: String, contentsRect: CGRect, source: CGSize) {
+        (!magnifier.isHidden, magnifier.frame, (magLabel.string as? String) ?? "", magImage.contentsRect, magSize)
+    }
+    #endif
 
     /// `r` in y-down image pixels as a contentsRect. The layer tree is flipped (y-down), and CA maps contentsRect
     /// in the layer's own geometry, so y stays top-down.
-    static var contentsRectFlipY = false
+    static let contentsRectFlipY = false
     static func unitRect(_ r: CGRect, in size: CGSize) -> CGRect {
         let y = contentsRectFlipY ? size.height - r.maxY : r.minY
         return CGRect(x: r.minX / size.width, y: y / size.height, width: r.width / size.width, height: r.height / size.height)

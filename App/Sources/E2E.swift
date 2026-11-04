@@ -434,6 +434,8 @@ enum E2E {
         await decorationAndNaming()
         await retina2x()
         await hotkey()
+        await E2EKeyboard.run()
+        await E2EClipboardOrder.run()
         record("multi-display", NSScreen.screens.count > 1, ["screens": NSScreen.screens.count],
                status: NSScreen.screens.count > 1 ? nil : "unverifiable")
         // Leave settings in a known state for the relaunch check.

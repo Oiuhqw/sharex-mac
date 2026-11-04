@@ -232,9 +232,32 @@ final class Renderer {
         }
         let key = EffectKey(kind: a.kind, rect: px, strength: a.style.strength)
         if let c = liveCache, c.key == key { setRedactionFailure(a.id, rect: nil); return (c.image, px.points(scale: scale)) }
+        // Perf (Skeptic c): while dragging, a blur is previewed at reduced resolution; the layer scales it back
+        // up. The committed mark and every export use effectPatch at full resolution.
+        if a.kind == .blur, let p = blurPreview(a, px) { setRedactionFailure(a.id, rect: nil); liveCache = (key, p.image); return p }
         guard let p = effectPatch(a) else { return nil }
         liveCache = (key, p.image)
         return p
+    }
+
+    /// Downsample by f (sigma/f stays >= 4 px), blur at sigma/f, render the small patch. ~f² fewer pixels.
+    private func blurPreview(_ a: Annotation, _ px: PixelRect) -> (image: CGImage, rect: CGRect)? {
+        let sigma = EffectMath.blurSigma(strength: a.style.strength, scale: scale)
+        let f = min(4, floor(sigma / 4))
+        guard f >= 2 else { return nil }
+        #if SHAREX_E2E
+        if e2eRejectEffectImage || e2eRejectedEffectIDs.contains(a.id) { return nil }
+        #endif
+        let ciRect = px.flippedY(height: frame.height).cgRect
+        let k = 1 / f
+        let small = ciFrame.cropped(to: ciRect).clampedToExtent()
+            .transformed(by: CGAffineTransform(scaleX: k, y: k))
+            .applyingGaussianBlur(sigma: sigma / f)
+        let sr = CGRect(x: ciRect.minX * k, y: ciRect.minY * k, width: ciRect.width * k, height: ciRect.height * k).integral
+        guard sr.width >= 1, sr.height >= 1,
+              let cg = ciContext.createCGImage(small.cropped(to: sr), from: sr, format: .RGBA8,
+                                               colorSpace: frame.colorSpace ?? Imaging.colorSpace) else { return nil }
+        return (cg, px.points(scale: scale))
     }
 
     private struct EffectKey: Hashable {

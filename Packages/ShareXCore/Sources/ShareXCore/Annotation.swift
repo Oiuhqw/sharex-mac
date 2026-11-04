@@ -65,6 +65,13 @@ public struct ShapeStyle: Codable, Hashable, Sendable {
                           fontSize: c(fontSize, 8, 96, 24), strength: c(strength, 0, 100, 12))
     }
 
+    /// `sanitized()` plus per-tool floors: blur and pixelate never go below `EffectMath.minStrength`.
+    public func sanitized(for kind: ShapeKind) -> ShapeStyle {
+        var s = sanitized()
+        if kind == .blur || kind == .pixelate { s.strength = max(EffectMath.minStrength, s.strength) }
+        return s
+    }
+
     /// ShareX-like defaults per tool.
     public static func defaults(for k: ShapeKind) -> ShapeStyle {
         switch k {

@@ -48,7 +48,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         let def = AppSettings()
         options = ((try? c.decodeIfPresent(CaptureOptions.self, forKey: .options)) ?? def.options).sanitized()
         toolStyles = ((try? c.decodeIfPresent([ShapeKind: ShapeStyle].self, forKey: .toolStyles)) ?? def.toolStyles)
-            .mapValues { $0.sanitized() }
+        toolStyles = Dictionary(uniqueKeysWithValues: toolStyles.map { ($0.key, $0.value.sanitized(for: $0.key)) })
         lastRegion = try? c.decodeIfPresent(LastRegion.self, forKey: .lastRegion)
         saveToFile = (try? c.decodeIfPresent(Bool.self, forKey: .saveToFile)) ?? def.saveToFile
         saveFolder = (try? c.decodeIfPresent(String.self, forKey: .saveFolder)) ?? def.saveFolder

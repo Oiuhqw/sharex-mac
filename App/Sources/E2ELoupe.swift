@@ -77,31 +77,41 @@ enum E2ELoupe {
         return img
     }
 
-    /// Opens a fresh overlay 20 times with the cursor already parked over it and no event sent: the loupe must be on
-    /// the first frame every time, whether or not the app is active (the CI app is a background app, never key).
-    static func reopen(_ img: CGImage) async {
-        var shown = 0, fails: [[String: Any]] = []
-        let screen = E2E.screen.frame
+    /// What the loupe must show for cursor `p` (view points) on a frame of `scale` px/pt: visible, the
+    /// "X: Y:" label naming the pixel under the cursor, and the sampled square centred on that pixel.
+    static func loupeState(_ v: EditorView, cursor p: CGPoint, scale s: CGFloat) -> (ok: Bool, info: [String: Any]) {
+        let l = v.e2eLoupe
+        let want = " X: \(Int(p.x * s))  Y: \(Int(p.y * s)) "
+        // Centre of the visible source square, in source pixels (only exact away from the image edge).
+        let cx = (l.contentsRect.midX * l.source.width), cy = (l.contentsRect.midY * l.source.height)
+        let centreOK = abs(cx - (floor(p.x * s) + 0.5)) <= 1 && abs(cy - (floor(p.y * s) + 0.5)) <= 1
+        let ok = l.visible && l.label == want && centreOK && v.bounds.contains(l.frame)
+        return (ok, ["visible": l.visible, "label": l.label, "want": want, "centre": [cx, cy], "centreOK": centreOK,
+                     "frame": "\(l.frame)", "scale": s])
+    }
+
+    /// Skeptic: reopen through the real path (coordinator -> OverlayController.show -> syncMouse), no
+    /// test-side syncMouse, 100 times, with another app frontmost and the cursor parked before the hotkey.
+    static func reopen() async {
+        var shown = 0, fails: [[String: Any]] = [], activeAny = false
         let primaryH = NSScreen.screens.first?.frame.height ?? 0
-        for k in 0..<20 {
-            let p = CGPoint(x: 40 + Double(k * 11 % 220), y: 30 + Double(k * 17 % 180))
-            let frame = CGRect(x: screen.minX + 120, y: screen.maxY - 120 - size.height, width: size.width, height: size.height)
-            CGWarpMouseCursorPosition(CGPoint(x: frame.minX + p.x, y: primaryH - (frame.maxY - p.y)))
-            await E2E.wait(150)
-            let v = EditorView(frame: CGRect(origin: .zero, size: size), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
-                               initialCrop: nil, styles: [:], showMagnifier: true, pickRects: [], finishOnPick: false)
-            let w = OverlayWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
-            w.isReleasedWhenClosed = false; w.level = .screenSaver; w.sharingType = .readOnly; w.acceptsMouseMovedEvents = true
-            w.contentView = v; w.orderFrontRegardless(); v.syncMouse()
-            w.displayIfNeeded(); CATransaction.flush()
-            await E2E.wait(250)
-            if let shot = await capture(w, v, k == 0 ? "loupe-reopen.png" : "loupe-reopen-last.png") {
-                let r = check(E2E.bitmap(shot), cursor: p)
-                if r.ok { shown += 1 } else { fails.append(r.info) }
-            }
-            w.orderOut(nil); w.contentView = nil
+        if E2E.patternPID != 0 { NSRunningApplication(processIdentifier: E2E.patternPID)?.activate(); await E2E.wait(500) }
+        let n = 100
+        for k in 0..<n {
+            let sf = E2E.screen.frame
+            // Away from the edges so the centre cell is a full interior sample.
+            let p = CGPoint(x: 60 + Double(k * 37 % Int(sf.width - 120)), y: 60 + Double(k * 53 % Int(sf.height - 120)))
+            CGWarpMouseCursorPosition(CGPoint(x: sf.minX + p.x, y: primaryH - (sf.maxY - p.y)))
+            await E2E.wait(40)
+            E2E.coord.capture(.region)
+            guard await E2E.until(3000, { E2E.surface() != nil }), let s = E2E.surface() else { fails.append(["k": k, "error": "no overlay"]); continue }
+            activeAny = activeAny || NSApp.isActive
+            // First frame only: no event is sent, nothing calls syncMouse but the app.
+            let r = loupeState(s.view, cursor: p, scale: s.view.renderer.scale)
+            if r.ok { shown += 1 } else if fails.count < 3 { fails.append(r.info.merging(["k": k]) { $1 }) }
+            E2E.esc(); _ = await E2E.until({ !E2E.coord.busy })
         }
-        E2E.record("loupe-reopen-20x", shown == 20, ["shown": shown, "of": 20, "appActive": NSApp.isActive, "fails": fails.prefix(3).map { $0 }])
+        E2E.record("loupe-reopen-100x-real-path", shown == n, ["shown": shown, "of": n, "appEverActive": activeAny, "fails": fails])
     }
 
     static func run() async {
@@ -159,6 +169,7 @@ enum E2ELoupe {
             let w2 = OverlayWindow(contentRect: w.frame, styleMask: .borderless, backing: .buffered, defer: false)
             w2.isReleasedWhenClosed = false; w2.contentView = v2; w2.orderFrontRegardless()
             var t: [Double] = []
+            var retina = (n: 0, ok: 0, fails: [[String: Any]]())
             for k in 0..<300 {
                 let p = CGPoint(x: 5 + Double(k % 290), y: 5 + Double((k * 7) % 230))
                 guard let e = NSEvent.mouseEvent(with: .mouseMoved, location: v2.convert(p, to: nil), modifierFlags: [],
@@ -167,15 +178,23 @@ enum E2ELoupe {
                 let t0 = DispatchTime.now().uptimeNanoseconds
                 v2.mouseMoved(with: e); CATransaction.flush()
                 t.append(Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6)
+                // Skeptic (b): the runner is 1x, so check the 2x frozen frame by state: pixel label and sampled centre.
+                if p.x > 10, p.x < size.width - 10, p.y > 10, p.y < size.height - 10, k % 10 == 0 {
+                    let r = loupeState(v2, cursor: p, scale: sc)
+                    retina.n += 1; if r.ok { retina.ok += 1 } else if retina.fails.count < 3 { retina.fails.append(r.info) }
+                }
             }
             t.sort()
             let p50 = t[t.count / 2], p95 = t[Int(Double(t.count) * 0.95)]
             info["hoverMs"] = ["p50": p50, "p95": p95, "max": t.last ?? 0, "n": t.count]
             ok = ok && p95 < 2
+            E2E.record("loupe-2x-frame-state", retina.n > 10 && retina.ok == retina.n,
+                       ["checked": retina.n, "ok": retina.ok, "frameScale": sc, "windowBacking": w2.backingScaleFactor,
+                        "fails": retina.fails, "note": "2x frozen frame simulated; the runner display is 1x"])
             w2.orderOut(nil); w2.contentView = nil
         }
         E2E.record("loupe", ok, info)
-        await reopen(img)
+        await reopen()
     }
 }
 #endif
