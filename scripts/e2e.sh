@@ -20,10 +20,10 @@ defaults delete com.sharexmac.ShareX 2>/dev/null || true
 "$BIN" --e2e-pattern > "$OUT/pattern.log" 2>&1 &
 PAT=$!
 sleep 4
-"$BIN" --e2e "$OUT" --pattern-pid "$PAT" > "$OUT/e2e.log" 2>&1
+python3 scripts/run-bounded.py --timeout 330 --log "$OUT/e2e.log" -- "$BIN" --e2e "$OUT" --pattern-pid "$PAT"
 RC=$?
 echo "e2e exit $RC"
-"$BIN" --e2e-verify "$OUT" > "$OUT/verify.log" 2>&1
+python3 scripts/run-bounded.py --timeout 30 --log "$OUT/verify.log" -- "$BIN" --e2e-verify "$OUT"
 VRC=$?
 echo "verify exit $VRC"
 kill $PAT 2>/dev/null
