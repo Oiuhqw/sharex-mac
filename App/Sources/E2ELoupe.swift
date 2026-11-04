@@ -81,12 +81,25 @@ enum E2ELoupe {
         let w = OverlayWindow(contentRect: CGRect(x: screen.minX + 120, y: screen.maxY - 120 - size.height, width: size.width, height: size.height),
                               styleMask: .borderless, backing: .buffered, defer: false)
         w.isReleasedWhenClosed = false; w.level = .screenSaver; w.sharingType = .readOnly
-        w.contentView = v; w.orderFrontRegardless()
+        // As OverlayController.add/show do for the real overlay.
+        w.acceptsMouseMovedEvents = true
+        w.contentView = v; NSApp.activate(); w.orderFrontRegardless(); w.makeKeyAndOrderFront(nil); w.makeFirstResponder(v)
+        await E2E.wait(300)
+        var info: [String: Any] = ["isKey": w.isKeyWindow, "appActive": NSApp.isActive, "trackingAreas": v.trackingAreas.count]
+        // Real HID moves first: the path the user's mouse takes (needs the PostEvent grant; recorded either way).
+        for (name, p) in [("hid", CGPoint(x: 60, y: 50)), ("hid2", CGPoint(x: 101, y: 80))] {
+            let sp = w.convertPoint(toScreen: v.convert(p, to: nil))
+            let primaryH = NSScreen.screens.first?.frame.height ?? 0
+            CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: CGPoint(x: sp.x, y: primaryH - sp.y),
+                    mouseButton: .left)?.post(tap: .cghidEventTap)
+            await E2E.wait(400)
+            if let shot = await capture(w, v, "loupe-\(name).png") { info[name] = check(E2E.bitmap(shot), cursor: p).info }
+        }
         func send(_ t: NSEvent.EventType, _ p: CGPoint) {
             if let e = NSEvent.mouseEvent(with: t, location: v.convert(p, to: nil), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                           windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { w.sendEvent(e) }
         }
-        var info: [String: Any] = [:], ok = true
+        var ok = true
         // Hover (before any drag), then move, then a drag near the bottom-right edge (loupe flips to the other side).
         let steps: [(String, NSEvent.EventType, CGPoint)] = [("hover", .mouseMoved, CGPoint(x: 60, y: 50)),
                                                              ("moved", .mouseMoved, CGPoint(x: 101.5, y: 80)),
