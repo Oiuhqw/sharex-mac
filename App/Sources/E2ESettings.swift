@@ -1,6 +1,7 @@
 #if SHAREX_E2E
 import AppKit
 import ApplicationServices
+import Combine
 import Darwin
 import KeyboardShortcuts
 import ShareXCore
@@ -491,6 +492,16 @@ enum E2ESettings {
             KeyboardShortcuts.getShortcut(for: $0.name) == $0.name.initialShortcut
         })
 
+        enum RecorderActivity { case idle, recording, ready }
+        var recorderActivity = RecorderActivity.idle
+        let recorderObserver = NotificationCenter.default.publisher(
+            for: Notification.Name("KeyboardShortcuts_recorderActiveStatusDidChange")
+        ).sink { notification in
+            guard let active = notification.userInfo?["isActive"] as? Bool else { return }
+            if active { recorderActivity = .recording }
+            else if recorderActivity == .recording { recorderActivity = .ready }
+        }
+        defer { recorderObserver.cancel() }
         _ = await focusRecorder("lastRegion", in: window)
         let persisted = KeyboardShortcuts.Shortcut(.nine, modifiers: [.control, .option, .shift])
         key(25, "9", in: window, flags: [.control, .option, .shift])
@@ -503,19 +514,36 @@ enum E2ESettings {
 
         window.close()
         E2E.setOpts { $0.options.openEditor = true; $0.options.delaySeconds = 0 }
+        let recorderReady = await E2E.until(1500) {
+            recorderActivity == .ready && !window.isVisible && KeyboardShortcuts.isEnabled(for: .lastRegion)
+        }
+        let shortcutEnabledBefore = KeyboardShortcuts.isEnabled(for: .lastRegion)
+        let busyBefore = E2E.coord.busy
+        let captureBefore = Perf.stamps["capture-start"]
         let canPostEvents = CGPreflightPostEventAccess()
         let source = CGEventSource(stateID: .hidSystemState)
-        for down in [true, false] {
-            let event = CGEvent(keyboardEventSource: source, virtualKey: 25, keyDown: down)
-            event?.flags = [.maskControl, .maskAlternate, .maskShift]
-            event?.post(tap: .cghidEventTap)
+        let events = [true, false].compactMap { CGEvent(keyboardEventSource: source, virtualKey: 25, keyDown: $0) }
+        if recorderReady, !busyBefore, events.count == 2 {
+            for event in events {
+                event.flags = [.maskControl, .maskAlternate, .maskShift]
+                event.post(tap: .cghidEventTap)
+            }
         }
         let fired = await E2E.until(2000) { E2E.surface() != nil }
+        let captureStarted = Perf.stamps["capture-start"] != captureBefore
+        let busyAfter = E2E.coord.busy
+        let shortcutEnabledAfter = KeyboardShortcuts.isEnabled(for: .lastRegion)
         if fired { E2E.esc(); _ = await E2E.until { !E2E.coord.busy } }
-        E2E.record("settings-custom-shortcut-capture", persistedRecorded && fired,
+        E2E.record("settings-custom-shortcut-capture", persistedRecorded && recorderReady && !busyBefore
+                   && events.count == 2 && captureStarted && fired,
                    ["eventPostingPermitted": canPostEvents,
+                    "persistedRecorded": persistedRecorded, "recorderReady": recorderReady,
+                    "shortcutEnabledBefore": shortcutEnabledBefore, "shortcutEnabledAfter": shortcutEnabledAfter,
+                    "createdEvents": events.count, "captureStarted": captureStarted,
+                    "busyBefore": busyBefore, "busyAfter": busyAfter,
                     "note": "Synthetic HID event after closing Settings; a physical key press needs a Mac."],
-                   status: !canPostEvents && !fired && persistedRecorded ? "unverifiable" : nil)
+                   status: !canPostEvents && !fired && persistedRecorded && recorderReady
+                    && !busyBefore && events.count == 2 ? "unverifiable" : nil)
     }
 }
 
@@ -1052,8 +1080,9 @@ private final class SettingsAXWalker {
                         ?? path.last(where: { nodes[$0].diagnostic.role == kAXCellRole }) ?? index
                     break
                 }
-                let children = value(kAXChildrenAttribute, of: element) as? [AXUIElement] ?? []
-                pending += children.reversed().map { ($0, path) }
+                var children = value(kAXChildrenAttribute, of: element) as? [AXUIElement] ?? []
+                if role == kAXListRole { children.reverse() }
+                pending += children.map { ($0, path) }
             }
             if candidate != nil || failure != nil { break }
             pause()
