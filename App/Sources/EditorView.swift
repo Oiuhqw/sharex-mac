@@ -260,6 +260,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
     override func mouseDragged(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
         mouse = p; dragMoved = true
+        renderer.fastLivePreview = true      // a reduced-resolution blur while the pointer moves
         updateDrag(to: p, constrain: e.modifierFlags.contains(.shift))
         refresh()
     }
@@ -285,6 +286,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
 
     override func mouseUp(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
+        renderer.fastLivePreview = false     // release and commit render at full resolution
         // A click must keep its existing snap/step semantics and must not create a pen stroke.
         if dragMoved { updateDrag(to: p, constrain: e.modifierFlags.contains(.shift)) }
         mouse = p

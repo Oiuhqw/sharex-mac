@@ -40,6 +40,10 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
     }
 
     private var surfaces: [Surface] = []
+    #if SHAREX_E2E
+    /// E2E: behave as when macOS declines NSApp.activate() from a hotkey (seen on macOS 14+).
+    static var e2eDeclineActivation = false
+    #endif
     /// E2E seam: the live windows and editors of this session.
     #if SHAREX_E2E
     var e2eSurfaces: [(window: NSWindow, view: EditorView)] { surfaces.map { ($0.window, $0.view) } }
@@ -154,7 +158,11 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
         let front = NSWorkspace.shared.frontmostApplication
         previousApp = front == .current ? nil : front
         // Best effort only; key focus no longer depends on it (OverlayWindow is a non-activating panel).
+        #if SHAREX_E2E
+        if !Self.e2eDeclineActivation { NSApp.activate() }
+        #else
         NSApp.activate()
+        #endif
         let mouse = NSEvent.mouseLocation
         for s in surfaces { s.window.orderFrontRegardless() }
         let key = surfaces.first { $0.window.frame.contains(mouse) } ?? surfaces.first

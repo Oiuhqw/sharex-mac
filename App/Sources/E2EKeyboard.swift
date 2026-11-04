@@ -40,6 +40,8 @@ enum E2EKeyboard {
     }
 
     static func run() async {
+        OverlayController.e2eDeclineActivation = true
+        defer { OverlayController.e2eDeclineActivation = false }
         guard await frontPattern() else {
             E2E.record("keyboard-other-app-front", false, ["error": "pattern app not frontmost"], status: "unverifiable"); return
         }
@@ -53,7 +55,7 @@ enum E2EKeyboard {
         if !cancelled { E2E.esc(); _ = await E2E.until({ !E2E.coord.busy }) }
         E2E.unchanged("keyboard-esc-cancels-other-app-front", m,
                       extra: info.merging(["cancelled": cancelled, "patternStayedFront": patternStayedFront]) { $1 },
-                      cond: o.ok && cancelled && (info["isKey"] as? Bool ?? false))
+                      cond: o.ok && cancelled && (info["isKey"] as? Bool ?? false) && patternStayedFront)
 
         // 2. Tool hotkey, typed text into a Text annotation, Enter commits.
         _ = await frontPattern()
@@ -78,8 +80,9 @@ enum E2EKeyboard {
         let clip = E2E.checkClipboard("keyboard-text-enter-other-app-front", since: m2, w: E2E.cw, h: E2E.ch)
         let info2 = before.merging(["viaHotkey": o.viaHotkey, "toolR": rect, "toolT": textTool, "text": text,
                                     "finished": finished, "clipOK": clip?.ok ?? false]) { $1 }
-        E2E.record("keyboard-tool-hotkeys-other-app-front", rect && textTool, info2)
-        E2E.record("keyboard-text-enter-other-app-front", text == "hi" && finished && (clip?.ok ?? false), info2)
+        let front = (before["frontmost"] as? Int32) == E2E.patternPID
+        E2E.record("keyboard-tool-hotkeys-other-app-front", rect && textTool && front, info2)
+        E2E.record("keyboard-text-enter-other-app-front", text == "hi" && finished && (clip?.ok ?? false) && front, info2)
     }
 }
 

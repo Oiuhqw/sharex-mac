@@ -97,6 +97,9 @@ enum E2ELoupe {
         let primaryH = NSScreen.screens.first?.frame.height ?? 0
         if E2E.patternPID != 0 { NSRunningApplication(processIdentifier: E2E.patternPID)?.activate(); await E2E.wait(500) }
         let n = 100
+        let wasOn = E2E.app.settings.value.options.showMagnifier
+        E2E.setOpts { $0.options.showMagnifier = true }
+        defer { E2E.setOpts { $0.options.showMagnifier = wasOn } }
         for k in 0..<n {
             let sf = E2E.screen.frame
             // Away from the edges so the centre cell is a full interior sample.

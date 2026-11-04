@@ -225,18 +225,20 @@ final class Renderer {
 
     /// The patch for the mark being dragged: one entry, reused while its pixel rect and strength are unchanged
     /// (pointer jitter under a pixel, a pure resize back to a seen size), never stored in effectCache.
-    private var liveCache: (key: EffectKey, image: CGImage)?
+    private var liveCache: (key: EffectKey, image: CGImage, preview: Bool)?
+    /// Set by the editor only while the pointer is dragging; a preview is never what gets committed or exported.
+    var fastLivePreview = false
     func livePatch(_ a: Annotation) -> (image: CGImage, rect: CGRect)? {
         guard let px = Geometry.pixelRect(a.rect, scale: scale).clamped(width: frame.width, height: frame.height) else {
             setRedactionFailure(a.id, rect: nil); return nil
         }
         let key = EffectKey(kind: a.kind, rect: px, strength: a.style.strength)
-        if let c = liveCache, c.key == key { setRedactionFailure(a.id, rect: nil); return (c.image, px.points(scale: scale)) }
+        if let c = liveCache, c.key == key, c.preview == (fastLivePreview && a.kind == .blur) { setRedactionFailure(a.id, rect: nil); return (c.image, px.points(scale: scale)) }
         // Perf (Skeptic c): while dragging, a blur is previewed at reduced resolution; the layer scales it back
         // up. The committed mark and every export use effectPatch at full resolution.
-        if a.kind == .blur, let p = blurPreview(a, px) { setRedactionFailure(a.id, rect: nil); liveCache = (key, p.image); return p }
+        if fastLivePreview, a.kind == .blur, let p = blurPreview(a, px) { setRedactionFailure(a.id, rect: nil); liveCache = (key, p.image, true); return p }
         guard let p = effectPatch(a) else { return nil }
-        liveCache = (key, p.image)
+        liveCache = (key, p.image, false)
         return p
     }
 
