@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import ShareXCore
 
 /// What the overlay produced when the user pressed Enter.
@@ -118,11 +119,14 @@ final class EditorView: NSView, NSTextFieldDelegate {
         let p = convert(w.mouseLocationOutsideOfEventStream, from: nil)
         mouse = bounds.contains(p) ? p : nil
         if case .selecting = phase { hover = mouse.flatMap(pickTarget) }
-        refresh()
+        refreshChrome()
     }
 
     #if SHAREX_E2E
     var e2eLoupe: (visible: Bool, frame: CGRect, label: String, contentsRect: CGRect, source: CGSize) { chrome.e2eLoupe }
+    var e2eSizeLabel: String { chrome.e2eSizeLabel }
+    var e2eAnnotationSyncCount: Int { annotationsView?.e2eSyncCount ?? 0 }
+    var e2eLiveLayerBytes: Int { liveView?.e2eRetainedPatchBytes ?? 0 }
     #endif
 
     var styles: [ShapeKind: ShapeStyle] { doc.styles }
@@ -140,7 +144,8 @@ final class EditorView: NSView, NSTextFieldDelegate {
     func setTool(_ t: Tool) {
         commitText()
         doc.tool = t
-        if case .shape = t { doc.selectedID = nil }
+        toolTip = t == .crop ? "Arrow keys move 1 pixel. Shift moves 10 pixels. Option resizes the right or bottom edge." : nil
+        if t != .select { doc.selectedID = nil }
         refocus()
     }
 
@@ -192,12 +197,12 @@ final class EditorView: NSView, NSTextFieldDelegate {
         let p = convert(e.locationInWindow, from: nil)
         mouse = p
         if case .selecting = phase { hover = pickTarget(at: p) }
-        refresh()
+        refreshChrome()
     }
 
     override func mouseEntered(with e: NSEvent) { mouseMoved(with: e) }
 
-    override func mouseExited(with event: NSEvent) { mouse = nil; hover = nil; refresh() }
+    override func mouseExited(with event: NSEvent) { mouse = nil; hover = nil; refreshChrome() }
 
     private func pickTarget(at p: CGPoint) -> CGRect? { pickIndex(at: p).map { pickRects[$0] } }
 
@@ -274,12 +279,17 @@ final class EditorView: NSView, NSTextFieldDelegate {
         case .newShape(let id): doc.extendShape(id, to: p, constrain: shift)
         case .move(let id, let last): doc.move(id, by: Offset(from: last, to: p)); drag = .move(id, last: p)
         case .resize(let id, let h, let start): doc.resizeFromDragStart(id, handle: h, by: Offset(from: start, to: p))
-        // A drag under 1 pt keeps the previous crop rather than clearing it (Enter would then do nothing).
-        case .cropNew(let s): if let r = Geometry.cropDrag(from: s, to: p, in: bounds0) { doc.setCropLive(r) }
+        case .cropNew(let s): if let r = Geometry.cropDrag(from: s, to: p, in: bounds0, scale: renderer.scale) {
+            doc.setCropLive(renderer.pixelArea(r)?.points(scale: renderer.scale))
+        }
         case .cropResize(let h, let original, let start):
             // Always resize the drag's original crop. Normalizing a crossed edge or clamping at the
             // display boundary must not change which edge the pointer controls on the next event.
-            if let r = Geometry.clamp(h.resize(original, by: Offset(from: start, to: p)), to: bounds0) { doc.setCropLive(r) }
+            let resized = h.resize(original, by: Offset(from: start, to: p))
+            if let r = Geometry.cropDrag(from: resized.origin, to: CGPoint(x: resized.maxX, y: resized.maxY),
+                                         in: bounds0, scale: renderer.scale) {
+                doc.setCropLive(renderer.pixelArea(r)?.points(scale: renderer.scale))
+            }
         case .none: break
         }
     }
@@ -294,7 +304,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
         case (.selecting, .region(let s)):
             // A click without a drag snaps to the window under the cursor, like ShareX.
             let r = dragMoved ? Geometry.rect(from: s, to: p) : pickTarget(at: p)
-            if let r, let c = Geometry.clamp(r, to: bounds0) { enterEditing(crop: c) }
+            if let r, let c = renderer.pixelArea(r) { enterEditing(crop: c.points(scale: renderer.scale)) }
         case (.selecting, .lasso):
             if let pts = lasso, pts.count >= 3, let c = Geometry.clamp(Geometry.bounds(of: pts), to: bounds0) { enterEditing(crop: c) }
             else { lasso = nil }
@@ -372,7 +382,7 @@ final class EditorView: NSView, NSTextFieldDelegate {
         case 53: cancel(); return                                   // Esc
         case 36, 76: if phase == .editing { finish() }; return       // Return, keypad Enter
         case 51, 117: if phase == .editing { deleteSelection() }; return
-        case 123...126: nudge(e.keyCode, by: shift ? 10 : 1); return
+        case 123...126: nudge(e.keyCode, by: shift ? 10 : 1, resizing: e.modifierFlags.contains(.option)); return
         default: break
         }
         guard let ch = e.charactersIgnoringModifiers?.lowercased().first else { return }
@@ -387,15 +397,17 @@ final class EditorView: NSView, NSTextFieldDelegate {
         if phase == .editing, let t = Tool.forKey(ch) { setTool(t) }
     }
 
-    private func nudge(_ key: UInt16, by n: CGFloat) {
-        guard phase == .editing, let id = doc.selectedID else { return }
-        let d: Offset = switch key {
-        case 123: Offset(dx: -n, dy: 0)
-        case 124: Offset(dx: n, dy: 0)
-        case 125: Offset(dx: 0, dy: n)
-        default: Offset(dx: 0, dy: -n)
+    private func nudge(_ key: UInt16, by n: Int, resizing: Bool) {
+        guard phase == .editing else { return }
+        let dx = key == 123 ? -n : key == 124 ? n : 0
+        let dy = key == 126 ? -n : key == 125 ? n : 0
+        if doc.tool == .crop, let crop = doc.state.crop, let area = renderer.pixelArea(crop) {
+            let adjusted = area.adjusted(dx: dx, dy: dy, resizing: resizing, width: renderer.frame.width, height: renderer.frame.height)
+            doc.setCrop(adjusted.points(scale: renderer.scale))
+            layoutToolbar()
+        } else if let id = doc.selectedID {
+            doc.beginDrag(); doc.move(id, by: Offset(dx: CGFloat(dx), dy: CGFloat(dy))); doc.endDrag()
         }
-        doc.beginDrag(); doc.move(id, by: d); doc.endDrag()
         refresh()
     }
 
@@ -440,22 +452,20 @@ final class EditorView: NSView, NSTextFieldDelegate {
 
     // MARK: Drawing
 
-    /// Pushes the current state into the layer views. Replaces a full-screen draw(_:) on every mouse event.
+    func releaseResources() {
+        liveView?.releaseResources()
+        renderer.releaseTransientResources()
+        chrome.releaseResources()
+        frameView.layer?.contents = nil
+    }
+
     func refresh() {
-        var c = ChromeView.State()
+        CATransaction.begin(); CATransaction.setDisableActions(true); defer { CATransaction.commit() }
         switch phase {
-        case .selecting(let mode):
+        case .selecting:
+            renderer.synchronize(doc)
             annotationsView?.isHidden = true; liveView?.isHidden = true
-            var hole: CGRect? = hover
-            if case .region(let s) = drag, dragMoved, let m = mouse { hole = Geometry.rect(from: s, to: m) }
-            c.dimEverything = true
-            c.dimHole = hole.map { CGPath(rect: $0, transform: nil) }
-            if let h = hole { c.outline = h; c.sizeLabel = (h, sizeText(h)) }
-            if mode == .lasso { c.lasso = lasso }
-            if showMagnifier, mode == .rectangle || mode == .lasso, let m = mouse {
-                c.crosshair = m
-                c.magnifier = (m, renderer.scale)
-            }
+            liveView?.show(nil, renderer: renderer)
         case .editing:
             if annotationsView == nil {
                 let v = AnnotationsView(frame: CGRect(origin: .zero, size: bounds.size), renderer: renderer)
@@ -468,7 +478,28 @@ final class EditorView: NSView, NSTextFieldDelegate {
             annotationsView?.isHidden = false; liveView?.isHidden = false
             let live = liveID.flatMap { id in doc.annotations.first { $0.id == id } }
             annotationsView?.sync(doc, hide: editingTextID, live: live?.id)
+            // Publish the committed bitmap before removing its temporary privacy guard.
+            if live == nil { annotationsView?.displayIfNeeded() }
             liveView?.show(live, renderer: renderer)
+        }
+        refreshChrome()
+    }
+
+    func refreshChrome() {
+        var c = ChromeView.State()
+        switch phase {
+        case .selecting(let mode):
+            var hole: CGRect? = hover
+            if case .region(let s) = drag, dragMoved, let m = mouse { hole = Geometry.rect(from: s, to: m) }
+            c.dimEverything = true
+            c.dimHole = hole.map { CGPath(rect: $0, transform: nil) }
+            if let h = hole { c.outline = h; c.sizeLabel = (h, sizeText(h)) }
+            if mode == .lasso { c.lasso = lasso }
+            if showMagnifier, mode == .rectangle || mode == .lasso, let m = mouse {
+                c.crosshair = m
+                if !renderer.sourceIsProtected(ChromeView.source(m, scale: renderer.scale)) { c.magnifier = (m, renderer.scale) }
+            }
+        case .editing:
             let crop = doc.state.crop ?? bounds0
             let hole = CGMutablePath()
             if let pts = lasso { hole.addLines(between: pts); hole.closeSubpath() } else { hole.addRect(crop) }
@@ -477,12 +508,14 @@ final class EditorView: NSView, NSTextFieldDelegate {
             if doc.tool == .crop { c.cropHandles = crop }
             if let s = doc.selected { c.selection = s.bounds }
             c.sizeLabel = (crop, sizeText(crop))
+            if doc.tool == .crop, showMagnifier, let m = mouse,
+               !renderer.sourceIsProtected(ChromeView.source(m, scale: renderer.scale)) { c.magnifier = (m, renderer.scale) }
         }
         chrome.apply(c)
     }
 
     private func sizeText(_ r: CGRect) -> String {
-        let s = renderer.scale
-        return "\(Int((r.width * s).rounded())) × \(Int((r.height * s).rounded()))"
+        guard let area = renderer.pixelArea(r) else { return "0 × 0" }
+        return "\(area.w) × \(area.h)"
     }
 }

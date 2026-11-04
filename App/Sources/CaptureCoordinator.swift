@@ -60,7 +60,7 @@ final class CaptureCoordinator {
         if style == .fullscreen, frozen.count > 1 {
             // All displays stitched into one image, edited in a window when the editor is on.
             let scale = frozen.map(\.scale).max() ?? 1
-            guard let img = stitch(frozen) else { return }   // same scale StitchLayout picks
+            guard let img = stitch(frozen) else { throw CaptureError.imageTooLarge }   // same scale StitchLayout picks
             if o.openEditor { openCanvas(img, scale: scale, screen: underMouse, title: "All displays") }
             else { await deliver(img, scale: scale, last: nil) }
             return
@@ -71,7 +71,7 @@ final class CaptureCoordinator {
             if let img = Export.flatten(renderer: r, doc: EditorDocument(), crop: preset.rect, lasso: nil) {
                 await deliver(img, scale: f.scale,
                         last: style == .lastRegion ? LastRegion(displayID: preset.displayID, rect: preset.rect) : nil)
-            }
+            } else { throw CaptureError.captureFailed("The selected image could not be prepared. Try a smaller capture.") }
             return
         }
 
@@ -147,14 +147,14 @@ final class CaptureCoordinator {
         }
         switch error {
         case CaptureError.noPermission: Permissions.showDeniedAlert()
-        case CaptureError.windowGone:
+        case CaptureError.windowGone, CaptureError.imageTooLarge, CaptureError.captureFailed:
             // Not a fault, but silent beeps leave the user guessing.
             NSApp.activate()
             #if SHAREX_E2E
             if E2E.suppressAlerts { E2E.alertsShown += 1; break }   // E2E seam: no modal on a headless runner
             #endif
             let a = NSAlert()
-            a.messageText = "Window not captured"
+            a.messageText = "Screenshot could not be prepared"
             a.informativeText = error.localizedDescription
             a.runModal()
         default: NSSound.beep(); Log.capture.error("capture failed: \(error.localizedDescription, privacy: .public)")

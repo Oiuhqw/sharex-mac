@@ -19,7 +19,7 @@ enum Export {
     /// Renders the crop area at full frame resolution. `lasso` (frame points) makes outside pixels transparent.
     static func flatten(renderer: Renderer, doc: EditorDocument, crop: CGRect, lasso: [CGPoint]?) -> CGImage? {
         let s = renderer.scale
-        guard let area = Geometry.pixelRect(crop, scale: s).clamped(width: renderer.frame.width, height: renderer.frame.height),
+        guard let area = renderer.pixelArea(crop),
               let ctx = Imaging.context(width: area.w, height: area.h, flipped: true) else { return nil }
         ctx.translateBy(x: -CGFloat(area.x), y: -CGFloat(area.y))
         ctx.scaleBy(x: s, y: s)
@@ -32,16 +32,20 @@ enum Export {
     }
 
     /// Adds the border and drop shadow from the capture options (ShareX "image effects" subset).
-    static func decorate(_ image: CGImage, options: CaptureOptions, scale: CGFloat) -> CGImage {
+    static func decorate(_ image: CGImage, options: CaptureOptions, scale: CGFloat) -> CGImage? {
         decorateOffMain(image, options: options, scale: scale)
     }
     /// Pure CoreGraphics on a private context: safe off the main thread.
-    nonisolated static func decorateOffMain(_ image: CGImage, options: CaptureOptions, scale: CGFloat) -> CGImage {
+    nonisolated static func decorateOffMain(_ image: CGImage, options: CaptureOptions, scale: CGFloat) -> CGImage? {
+        guard Imaging.accepts(image), scale.isFinite, scale > 0, scale <= CGFloat(Imaging.maximumPixels) else { return nil }
         let o = options.sanitized()   // never trust a width that could overflow the pixel maths
-        let border = Int((CGFloat(o.borderWidth) * scale).rounded())
+        let scaledBorder = (CGFloat(o.borderWidth) * scale).rounded()
+        guard scaledBorder <= CGFloat(Imaging.maximumPixels) else { return nil }
+        let border = Int(scaledBorder)
         guard border > 0 || o.shadow else { return image }
         let L = DecorationLayout(imageSize: CGSize(width: image.width, height: image.height), border: border, shadow: o.shadow, scale: scale)
-        guard let ctx = Imaging.context(width: Int(L.canvas.width), height: Int(L.canvas.height), flipped: true) else { return image }
+        guard let dimensions = Imaging.pixelDimensions(size: L.canvas, scale: 1),
+              let ctx = Imaging.context(width: dimensions.width, height: dimensions.height, flipped: true) else { return nil }
         let framed = L.image.insetBy(dx: -CGFloat(border), dy: -CGFloat(border))
         if o.shadow {
             ctx.saveGState()
@@ -55,13 +59,14 @@ enum Export {
         if border > 0 { ctx.setFillColor(Imaging.cgColor(o.borderColor)); ctx.fill(framed) }
         ctx.clear(L.image)
         Imaging.drawUpright(image, in: L.image, ctx: ctx)
-        return ctx.makeImage() ?? image
+        return ctx.makeImage()
     }
 
     /// PNG + TIFF bytes with the real DPI (72 × scale), so a Retina capture pastes and opens at on-screen size.
     /// ImageIO only (thread-safe), so this runs off the main thread.
     struct Encoded: Sendable { let png: Data; let tiff: Data }
-    nonisolated static func encode(_ image: CGImage, scale: CGFloat) -> Encoded? {
+    nonisolated static func encode(_ image: CGImage?, scale: CGFloat) -> Encoded? {
+        guard let image, Imaging.accepts(image), scale.isFinite, scale > 0, scale <= CGFloat(Imaging.maximumPixels) else { return nil }
         let dpi = 72 * scale
         let props = [kCGImagePropertyDPIWidth: dpi, kCGImagePropertyDPIHeight: dpi] as CFDictionary
         func bytes(_ type: UTType) -> Data? {

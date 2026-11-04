@@ -32,6 +32,15 @@ public enum Geometry {
         return PixelRect(x: x0, y: y0, w: x1 - x0, h: y1 - y0)
     }
 
+    public static func capturePixels(_ r: CGRect, scale: CGFloat, width: Int, height: Int) -> PixelRect? {
+        guard scale.isFinite, scale > 0, width > 0, height > 0, width < Int.max / 4, height < Int.max / 4,
+              r.origin.x.isFinite, r.origin.y.isFinite, r.width.isFinite, r.height.isFinite,
+              r.maxX.isFinite, r.maxY.isFinite else { return nil }
+        let clipped = r.intersection(CGRect(x: 0, y: 0, width: CGFloat(width) / scale, height: CGFloat(height) / scale))
+        guard !clipped.isNull, !clipped.isEmpty else { return nil }
+        return pixelRect(clipped, scale: scale).clamped(width: width, height: height)
+    }
+
     /// Clamps `r` inside `bounds`. Returns nil when nothing remains.
     public static func clamp(_ r: CGRect, to bounds: CGRect) -> CGRect? {
         let i = r.intersection(bounds)
@@ -39,9 +48,11 @@ public enum Geometry {
     }
 
     /// The selection a crop-tool drag from `a` to `b` produces inside `bounds`, or nil when the drag is
-    /// smaller than one point. Callers keep the previous crop on nil instead of clearing it.
-    public static func cropDrag(from a: CGPoint, to b: CGPoint, in bounds: CGRect) -> CGRect? {
-        clamp(rect(from: a, to: b), to: bounds)
+    /// smaller than one image pixel. Callers keep the previous crop on nil instead of clearing it.
+    public static func cropDrag(from a: CGPoint, to b: CGPoint, in bounds: CGRect, scale: CGFloat = 1) -> CGRect? {
+        let r = rect(from: a, to: b).intersection(bounds)
+        guard scale.isFinite, scale > 0, !r.isNull, r.width * scale >= 1, r.height * scale >= 1 else { return nil }
+        return r
     }
 
     /// Bounding box of all frames (the virtual desktop).
@@ -135,6 +146,18 @@ public struct PixelRect: Equatable, Hashable, Sendable, CustomStringConvertible 
     public var maxY: Int { y + h }
     public var isEmpty: Bool { w <= 0 || h <= 0 }
     public var description: String { "\(x),\(y) \(w)x\(h)" }
+
+    public func intersection(_ other: PixelRect) -> PixelRect? {
+        let left = max(x, other.x), top = max(y, other.y), right = min(maxX, other.maxX), bottom = min(maxY, other.maxY)
+        return right > left && bottom > top ? PixelRect(x: left, y: top, w: right - left, h: bottom - top) : nil
+    }
+
+    public func adjusted(dx: Int, dy: Int, resizing: Bool, width: Int, height: Int) -> PixelRect {
+        if resizing {
+            return PixelRect(x: x, y: y, w: min(max(1, w + dx), width - x), h: min(max(1, h + dy), height - y))
+        }
+        return PixelRect(x: min(max(0, x + dx), width - w), y: min(max(0, y + dy), height - h), w: w, h: h)
+    }
 
     /// Intersection with an image of `width`×`height`. Nil when nothing remains.
     public func clamped(width: Int, height: Int) -> PixelRect? {

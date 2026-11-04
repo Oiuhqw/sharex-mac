@@ -53,6 +53,7 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
     /// Latest explicitly changed tool defaults across all surfaces. Untouched screens hold stale copies.
     private var latestStyles: [ShapeKind: ShapeStyle]
     private var previousApp: NSRunningApplication?
+    private var preparationFailed = false
 
     /// Full-screen overlays. `preset` (display id + display top-left points) skips selection and opens the editor.
     init(frozen: [FrozenScreen], mode: SelectionMode, preset: Preset?, settings: AppSettings,
@@ -110,11 +111,16 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
         // 560 × 240; that still clips Done/Cancel, so the floor is larger.
         let marginPt: CGFloat = 60, minPt = CGSize(width: 760, height: 420)
         let room = CGSize(width: screen.visibleFrame.width - 40, height: screen.visibleFrame.height - 80)
+        preparationFailed = true
+        guard Imaging.accepts(image), scale.isFinite, scale > 0, room.width > 0, room.height > 0 else { return }
         // Image pixels per view point: the image's own scale (real size), or more when it must shrink to fit.
         let viewScale = max(scale, (CGFloat(image.width) / scale + 2 * marginPt) * scale / room.width,
                             (CGFloat(image.height) / scale + 2 * marginPt) * scale / room.height)
-        let m = Int((marginPt * viewScale).rounded())
-        let cw = max(image.width + 2 * m, Int(minPt.width * viewScale)), ch = max(image.height + 2 * m, Int(minPt.height * viewScale))
+        let margin = (marginPt * viewScale).rounded()
+        let padded = CGSize(width: max(CGFloat(image.width) + 2 * margin, ceil(minPt.width * viewScale)),
+                            height: max(CGFloat(image.height) + 2 * margin, ceil(minPt.height * viewScale)))
+        guard let dimensions = Imaging.pixelDimensions(size: padded, scale: 1) else { return }
+        let cw = dimensions.width, ch = dimensions.height
         let imageRect = PixelRect(x: (cw - image.width) / 2, y: (ch - image.height) / 2, w: image.width, h: image.height)
         guard let ctx = Imaging.context(width: cw, height: ch, flipped: true) else { return }
         Imaging.drawUpright(image, in: imageRect.cgRect, ctx: ctx)
@@ -125,7 +131,7 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
         renderer.smoothFrame = abs(viewScale - screen.backingScaleFactor) > 0.01
         let view = EditorView(frame: CGRect(origin: .zero, size: size), renderer: renderer,
                               mode: .rectangle, initialCrop: imageRect.points(scale: viewScale), styles: settings.toolStyles,
-                              showMagnifier: false, pickRects: [], finishOnPick: false)
+                              showMagnifier: settings.options.showMagnifier, pickRects: [], finishOnPick: false)
         let w = OverlayWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: [.titled, .closable],
                               backing: .buffered, defer: false)
         w.title = title
@@ -136,12 +142,13 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
         let vf = screen.visibleFrame
         w.setFrameOrigin(CGPoint(x: vf.midX - w.frame.width / 2, y: vf.midY - w.frame.height / 2))
         add(w, view, displayID: ScreenCapture.displayID(of: screen), outputScale: scale, pickWindows: [])
+        preparationFailed = false
     }
 
     private func add(_ w: NSWindow, _ view: EditorView, displayID: CGDirectDisplayID, outputScale: CGFloat, pickWindows: [WindowInfo]) {
         view.delegate = self
-        // The overlay shows the frozen (possibly sensitive) frame; other apps' screen captures must not see it.
-        // Our own freeze happens before any overlay exists, so this never affects what we capture.
+        // Request the platform's window-sharing restriction. This does not guarantee exclusion from other recorders.
+        // Our own ScreenCaptureKit filter excludes this process independently.
         w.sharingType = .none
         w.hidesOnDeactivate = false
         w.isReleasedWhenClosed = false
@@ -153,7 +160,10 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
     func show() {
         // Nothing could be built (no matching display, or the canvas bitmap failed): end the session
         // instead of leaving the coordinator busy forever.
-        guard !surfaces.isEmpty else { close(.cancelled); return }
+        guard !surfaces.isEmpty else {
+            if preparationFailed { reportPreparationFailure() }
+            close(.cancelled); return
+        }
         // Remember who had focus so it gets it back afterwards (and Active Window keeps working next time).
         let front = NSWorkspace.shared.frontmostApplication
         previousApp = front == .current ? nil : front
@@ -182,7 +192,7 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
         if !surfaces.isEmpty { onStyles(latestStyles) }
         let closing = surfaces
         surfaces.removeAll()
-        for s in closing { s.window.delegate = nil; s.window.orderOut(nil) }
+        for s in closing { s.view.releaseResources(); s.window.delegate = nil; s.window.orderOut(nil) }
         // We are inside the view's own mouse or key handler; release views on the next turn, not under it.
         Task { @MainActor in for s in closing { s.window.contentView = nil } }
         Focus.restore(previousApp)
@@ -223,11 +233,24 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
 
     func editorDidFinish(_ v: EditorView, crop: CGRect, lasso: [CGPoint]?) {
         guard let s = surface(of: v),
-              let image = Export.flatten(renderer: v.renderer, doc: v.doc, crop: crop, lasso: lasso) else { close(.cancelled); return }
+              let image = Export.flatten(renderer: v.renderer, doc: v.doc, crop: crop, lasso: lasso) else {
+            reportPreparationFailure(); close(.cancelled); return
+        }
         close(.finished(EditorResult(image: image, scale: s.outputScale, displayID: s.displayID, crop: crop)))
     }
 
     func editorDidCancel(_ v: EditorView) { close(.cancelled) }
+
+    private func reportPreparationFailure() {
+        #if SHAREX_E2E
+        if E2E.suppressAlerts { E2E.alertsShown += 1; return }
+        #endif
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Screenshot could not be prepared"
+        alert.informativeText = "No image was copied or saved. Select a smaller image. Captures and padded editor canvases are limited to 64 megapixels."
+        alert.runModal()
+    }
 
     // The canvas window's close button.
     func windowWillClose(_ notification: Notification) { close(.cancelled) }

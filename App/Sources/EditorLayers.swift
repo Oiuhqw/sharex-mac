@@ -44,6 +44,9 @@ final class AnnotationsView: PassThroughView {
     private var previous: [Int: Annotation] = [:]
     private var previousOrder: [Int] = []
     private(set) var drawsFrame = false
+    #if SHAREX_E2E
+    private(set) var e2eSyncCount = 0
+    #endif
 
     init(frame: NSRect, renderer: Renderer) {
         self.renderer = renderer
@@ -60,6 +63,10 @@ final class AnnotationsView: PassThroughView {
 
     /// Invalidates the union of what changed: old and new bounds of every added, removed or edited mark.
     func sync(_ doc: EditorDocument, hide: Int?, live: Int? = nil) {
+        #if SHAREX_E2E
+        e2eSyncCount += 1
+        #endif
+        let privacyDirty = renderer.synchronize(doc)
         let now = doc.annotations.filter { $0.id != live }
         defer {
             self.doc = doc; hiddenID = hide; liveID = live
@@ -69,7 +76,7 @@ final class AnnotationsView: PassThroughView {
         if wantFrame != drawsFrame { drawsFrame = wantFrame; layer?.isOpaque = wantFrame; needsDisplay = true; return }
         guard self.doc != nil else { needsDisplay = true; return }
         if hide != hiddenID { needsDisplay = true; return }
-        var dirty = CGRect.null
+        var dirty = privacyDirty ?? .null
         var everything = false
         func mark(_ a: Annotation) {
             switch a.kind {
@@ -146,7 +153,13 @@ final class LiveMarkView: PassThroughView {
         }
         showFailedMasks(renderer.redactionFailureRects)
         for l in [stroke, head, highlight, patch] as [CALayer] { l.isHidden = true }
-        guard let a else { return }
+        patch.contents = nil; patch.backgroundColor = nil; patch.mask = nil
+        guard let a else { renderer.endLiveEffect(); return }
+        if let guardRect = renderer.liveGuard(for: a) {
+            renderer.discardLivePatch()
+            patch.frame = guardRect; patch.backgroundColor = CGColor(gray: 0, alpha: 1); patch.isHidden = false
+            return
+        }
         let s = a.style, color = Imaging.cgColor(s.color, opacity: s.opacity)
         stroke.lineWidth = CGFloat(s.width); stroke.strokeColor = color; stroke.fillColor = nil
         let p = CGMutablePath()
@@ -185,6 +198,18 @@ final class LiveMarkView: PassThroughView {
         }
         stroke.path = p; stroke.isHidden = false
     }
+
+    func releaseResources() {
+        observedRenderer?.redactionFailuresChanged = nil
+        observedRenderer = nil
+        patch.contents = nil; patch.mask = nil; patch.backgroundColor = nil
+        for l in [stroke, head, highlight, patch, failedMasks] as [CALayer] { l.isHidden = true }
+        shownFailureRects = []; failedMasks.path = nil
+    }
+
+    #if SHAREX_E2E
+    var e2eRetainedPatchBytes: Int { (patch.contents as? CGImage).flatMap { Imaging.retainedBytes(of: $0) } ?? 0 }
+    #endif
 
     private func showFailedMasks(_ rects: [CGRect]) {
         guard rects != shownFailureRects else { return }
@@ -258,6 +283,11 @@ final class ChromeView: PassThroughView {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         magImage.contents = image; magSize = CGSize(width: image.width, height: image.height)
         CATransaction.commit()
+    }
+
+    func releaseResources() {
+        magImage.contents = nil; magSize = .zero
+        magnifier.isHidden = true; magLabel.isHidden = true
     }
 
     struct State {
@@ -347,6 +377,7 @@ final class ChromeView: PassThroughView {
     var e2eLoupe: (visible: Bool, frame: CGRect, label: String, contentsRect: CGRect, source: CGSize) {
         (!magnifier.isHidden, magnifier.frame, (magLabel.string as? String) ?? "", magImage.contentsRect, magSize)
     }
+    var e2eSizeLabel: String { (sizeLabel.string as? String)?.trimmingCharacters(in: .whitespaces) ?? "" }
     #endif
 
     /// `r` in y-down image pixels as a contentsRect. The layer tree is flipped (y-down), and CA maps contentsRect

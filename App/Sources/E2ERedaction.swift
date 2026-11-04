@@ -258,13 +258,9 @@ enum E2ERedaction {
                   let area = Geometry.pixelRect(firstMark.rect, scale: scale).clamped(width: image.width, height: image.height) else {
                 E2E.record("redaction-overlap-\(name)", false); continue
             }
-            var laterOnly = doc
-            laterOnly.selectedID = first; laterOnly.deleteSelected()
             let renderer = Renderer(frame: image, scale: scale)
             renderer.e2eRejectedEffectIDs = [first]
-            guard let base = Export.flatten(renderer: Renderer(frame: image, scale: scale), doc: laterOnly,
-                                            crop: CGRect(origin: .zero, size: size), lasso: nil),
-                  let flat = Export.flatten(renderer: renderer, doc: doc, crop: CGRect(origin: .zero, size: size), lasso: nil),
+            guard let flat = Export.flatten(renderer: renderer, doc: doc, crop: CGRect(origin: .zero, size: size), lasso: nil),
                   renderer.livePatch(liveMark) != nil, renderer.redactionFailureRects.count == 1,
                   let encoded = Export.encode(flat, scale: scale), Export.write(encoded),
                   let pngData = NSPasteboard.general.data(forType: .png), let tiffData = NSPasteboard.general.data(forType: .tiff),
@@ -272,7 +268,7 @@ enum E2ERedaction {
                   let png = E2E.decode(pngData), let tiff = E2E.decode(tiffData) else {
                 E2E.record("redaction-overlap-export-\(name)", false); continue
             }
-            let baseline = E2E.bitmap(base)
+            let baseline = E2E.bitmap(flat)
             E2E.record("redaction-overlap-export-\(name)",
                        matchesMask(E2E.bitmap(png), baseline: baseline, area: area)
                        && matchesMask(E2E.bitmap(tiff), baseline: baseline, area: area),

@@ -26,12 +26,13 @@ struct WindowShot {
 }
 
 enum CaptureError: LocalizedError {
-    case noDisplays, noPermission, windowGone, captureFailed(String)
+    case noDisplays, noPermission, windowGone, imageTooLarge, captureFailed(String)
     var errorDescription: String? {
         switch self {
         case .noDisplays: "No displays found."
         case .noPermission: "Screen Recording permission is off."
         case .windowGone: "The window closed before it could be captured."
+        case .imageTooLarge: "This capture exceeds the 64 megapixel image limit. Select a smaller area or fewer displays."
         case .captureFailed(let m): "Capture failed: \(m)"
         }
     }
@@ -61,6 +62,7 @@ enum ScreenCapture {
 
     /// Only the TCC refusal means "no permission"; anything else is a real failure worth reporting as such.
     private static func mapped(_ error: Error) -> CaptureError {
+        if let e = error as? CaptureError { return e }
         if let e = error as? SCStreamError, e.code == .userDeclined { return .noPermission }
         return .captureFailed(error.localizedDescription)
     }
@@ -111,28 +113,44 @@ enum ScreenCapture {
 
     /// Freezes the given screens. Our own windows are excluded from the frame.
     static func freeze(_ screens: [NSScreen], showCursor: Bool) async throws -> [FrozenScreen] {
+        var plannedBytes = 0
+        for screen in screens {
+            guard let dimensions = Imaging.pixelDimensions(size: screen.frame.size, scale: screen.backingScaleFactor),
+                  let bytes = Imaging.allocationBytes(width: dimensions.width, height: dimensions.height),
+                  bytes <= Imaging.maximumPixels * 4 - plannedBytes else { throw CaptureError.imageTooLarge }
+            plannedBytes += bytes
+        }
         if let fx = e2eFixture ?? e2eDisplayFixture {
-            return screens.compactMap { s in
-                let sc = s.backingScaleFactor
-                return fx(Int(s.frame.width * sc), Int(s.frame.height * sc)).map { FrozenScreen(screen: s, displayID: displayID(of: s), image: $0) }
+            var out: [FrozenScreen] = [], retained = 0
+            for screen in screens {
+                guard let dimensions = Imaging.pixelDimensions(size: screen.frame.size, scale: screen.backingScaleFactor),
+                      let image = fx(dimensions.width, dimensions.height) else { throw CaptureError.captureFailed("The display image is unavailable.") }
+                try admit(image, retained: &retained)
+                out.append(FrozenScreen(screen: screen, displayID: displayID(of: screen), image: image))
             }
+            if out.isEmpty { throw CaptureError.noDisplays }
+            return out
         }
         let sp = Perf.signposter.beginInterval("shareable-content")
         let content = try await displayContent(for: screens.map(displayID(of:)))
         Perf.signposter.endInterval("shareable-content", sp)
         defer { prefetch() }
         let ours = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
-        var out: [FrozenScreen] = []
+        var out: [FrozenScreen] = [], retained = 0
         for screen in screens {
             let id = displayID(of: screen)
             guard let display = content.displays.first(where: { $0.displayID == id }) else { continue }
             let filter = SCContentFilter(display: display, excludingApplications: ours, exceptingWindows: [])
             let config = baseConfig(showCursor: showCursor)
             let scale = screen.backingScaleFactor
-            config.width = Int(CGFloat(display.width) * scale)
-            config.height = Int(CGFloat(display.height) * scale)
+            guard let dimensions = Imaging.pixelDimensions(size: CGSize(width: display.width, height: display.height), scale: scale),
+                  let bytes = Imaging.allocationBytes(width: dimensions.width, height: dimensions.height),
+                  bytes <= Imaging.maximumPixels * 4 - retained else { throw CaptureError.imageTooLarge }
+            config.width = dimensions.width
+            config.height = dimensions.height
             do {
                 let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+                try admit(image, retained: &retained)
                 out.append(FrozenScreen(screen: screen, displayID: id, image: image))
             } catch { throw mapped(error) }
         }
@@ -151,7 +169,10 @@ enum ScreenCapture {
             throw CaptureError.windowGone }
         if let fx = e2eFixture, let s = NSScreen.screens.first {
             let sc = s.backingScaleFactor
-            guard let img = fx(Int((info.frame.width * sc).rounded()), Int((info.frame.height * sc).rounded())) else { throw CaptureError.noDisplays }
+            guard let dimensions = Imaging.pixelDimensions(size: info.frame.size, scale: sc) else { throw CaptureError.imageTooLarge }
+            guard let img = fx(dimensions.width, dimensions.height) else { throw CaptureError.noDisplays }
+            var retained = 0
+            try admit(img, retained: &retained)
             return WindowShot(image: img, scale: sc, screen: s)
         }
         let content = try await shareableContent()
@@ -163,12 +184,21 @@ enum ScreenCapture {
         config.ignoreShadowsSingleWindow = true
         // pointPixelScale is the window's backing scale; the frame size × scale gives exact pixels, no resampling.
         let scale = CGFloat(filter.pointPixelScale)
-        config.width = Int((w.frame.width * scale).rounded())
-        config.height = Int((w.frame.height * scale).rounded())
+        guard let dimensions = Imaging.pixelDimensions(size: w.frame.size, scale: scale) else { throw CaptureError.imageTooLarge }
+        config.width = dimensions.width
+        config.height = dimensions.height
         do {
             let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            var retained = 0
+            try admit(image, retained: &retained)
             return WindowShot(image: image, scale: scale, screen: screen)
         } catch { throw mapped(error) }
+    }
+
+    private static func admit(_ image: CGImage, retained: inout Int) throws {
+        guard Imaging.accepts(image), let bytes = Imaging.retainedBytes(of: image),
+              bytes <= Imaging.maximumPixels * 4 - retained else { throw CaptureError.imageTooLarge }
+        retained += bytes
     }
 
     private static func overlap(_ a: CGRect, _ b: CGRect) -> CGFloat {

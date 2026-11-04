@@ -2,6 +2,30 @@ import XCTest
 @testable import ShareXCore
 
 final class GeometryTests: XCTestCase {
+    func testCapturePixelsClampsBeforeSnapping() {
+        XCTAssertEqual(Geometry.capturePixels(CGRect(x: 10.25, y: 7.75, width: 20.5, height: 10.5), scale: 2, width: 100, height: 80),
+                       PixelRect(x: 20, y: 15, w: 42, h: 22))
+        XCTAssertEqual(Geometry.capturePixels(CGRect(x: -3.5, y: 39.5, width: 10, height: 12), scale: 2, width: 100, height: 80),
+                       PixelRect(x: 0, y: 79, w: 13, h: 1))
+        XCTAssertNil(Geometry.capturePixels(CGRect(x: CGFloat.infinity, y: 0, width: 1, height: 1), scale: 2, width: 100, height: 80))
+        XCTAssertNil(Geometry.capturePixels(CGRect(x: 0, y: 0, width: 1, height: 1), scale: .nan, width: 100, height: 80))
+    }
+
+    func testPixelCropKeysPreserveOnePixelAndClamp() {
+        let area = PixelRect(x: 20, y: 15, w: 42, h: 22)
+        XCTAssertEqual(area.adjusted(dx: 1, dy: -1, resizing: false, width: 100, height: 80), PixelRect(x: 21, y: 14, w: 42, h: 22))
+        XCTAssertEqual(area.adjusted(dx: -100, dy: 100, resizing: false, width: 100, height: 80), PixelRect(x: 0, y: 58, w: 42, h: 22))
+        XCTAssertEqual(area.adjusted(dx: -100, dy: 100, resizing: true, width: 100, height: 80), PixelRect(x: 20, y: 15, w: 1, h: 65))
+        XCTAssertEqual(area.adjusted(dx: 10, dy: -10, resizing: true, width: 100, height: 80), PixelRect(x: 20, y: 15, w: 52, h: 12))
+    }
+
+    func testRetinaCropDragAllowsOnePixel() {
+        let bounds = CGRect(x: 0, y: 0, width: 100, height: 100)
+        XCTAssertEqual(Geometry.cropDrag(from: CGPoint(x: 10, y: 20), to: CGPoint(x: 10.5, y: 20.5), in: bounds, scale: 2),
+                       CGRect(x: 10, y: 20, width: 0.5, height: 0.5))
+        XCTAssertNil(Geometry.cropDrag(from: CGPoint(x: 10, y: 20), to: CGPoint(x: 10.4, y: 20.5), in: bounds, scale: 2))
+    }
+
     func testRectFromAnyDragDirection() {
         let r = CGRect(x: 10, y: 20, width: 30, height: 40)
         XCTAssertEqual(Geometry.rect(from: CGPoint(x: 40, y: 60), to: CGPoint(x: 10, y: 20)), r)
