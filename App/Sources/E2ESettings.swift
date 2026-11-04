@@ -877,7 +877,9 @@ private final class SettingsAXWalker {
         case .selectMenu(let identifier, let title):
             let result = selectMenu(identifier, title: title, in: request.title)
             return failure.map(SettingsAXClient.Reply.failure) ?? .modal(result)
-        case .selectFolder(let name): return .folder(selectFolder(name, in: request.title))
+        case .selectFolder(let name):
+            canRetryAttribute = true
+            return .folder(selectFolder(name, in: request.title))
         }
     }
 
@@ -1017,11 +1019,10 @@ private final class SettingsAXWalker {
         func result(_ selected: Bool) -> SettingsAXClient.FolderSelection {
             .init(selected: selected, nodes: nodes.map(\.diagnostic), error: failure)
         }
-        let nameRoles = [kAXRowRole, kAXCellRole, kAXStaticTextRole, kAXBrowserRole]
-        var candidates: [Int] = []
+        let nameRoles = [kAXRowRole, kAXCellRole, kAXStaticTextRole, kAXTextFieldRole, kAXBrowserRole]
+        var candidate: Int?
         repeat {
             nodes.removeAll()
-            candidates.removeAll()
             guard let sheet = walk(in: title, matching: .role(kAXSheetRole), sheetOnly: true).found.first else {
                 guard failure == nil else { return result(false) }
                 pause()
@@ -1047,20 +1048,20 @@ private final class SettingsAXWalker {
                 nodes.append(Node(element: element,
                                   diagnostic: .init(role: role, names: names, attributes: attributes, path: path)))
                 if nameRoles.contains(role), names.contains(name) {
-                    let candidate = path.last(where: { nodes[$0].diagnostic.role == kAXRowRole })
+                    candidate = path.last(where: { nodes[$0].diagnostic.role == kAXRowRole })
                         ?? path.last(where: { nodes[$0].diagnostic.role == kAXCellRole }) ?? index
-                    if !candidates.contains(candidate) { candidates.append(candidate) }
+                    break
                 }
                 let children = value(kAXChildrenAttribute, of: element) as? [AXUIElement] ?? []
-                pending += children.map { ($0, path) }
+                pending += children.reversed().map { ($0, path) }
             }
-            if !candidates.isEmpty || failure != nil { break }
+            if candidate != nil || failure != nil { break }
             pause()
         } while ProcessInfo.processInfo.systemUptime < deadline
         guard failure == nil else { return result(false) }
-        guard candidates.count == 1, let candidate = candidates.first else {
+        guard let candidate else {
             failure = nodes.isEmpty ? "Folder chooser AX sheet did not appear within 3 seconds"
-                : "Folder \(name) matched \(candidates.count) AX selection rows"
+                : "Folder \(name) was absent from chooser AX selection elements"
             return result(false)
         }
         let path = nodes[candidate].diagnostic.path
@@ -1091,8 +1092,7 @@ private final class SettingsAXWalker {
                         return result(false)
                     }
                     guard let member = path.reversed().first(where: { member in
-                        nameRoles.contains(nodes[member].diagnostic.role)
-                            && members.contains(where: { CFEqual($0, nodes[member].element) })
+                        members.contains(where: { CFEqual($0, nodes[member].element) })
                     }) else { continue }
                     target = nodes[member].element
                     selection = [target] as CFArray
