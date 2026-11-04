@@ -26,6 +26,7 @@ enum E2EResources {
     private final class Ownership {
         weak var renderer: Renderer?
         weak var editor: EditorView?
+        weak var window: NSWindow?
         var released: Bool { renderer == nil && editor == nil }
     }
 
@@ -44,8 +45,9 @@ enum E2EResources {
             let window = OverlayWindow(contentRect: bounds, styleMask: .borderless, backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false; window.acceptsMouseMovedEvents = true
             window.contentView = editor; window.orderFrontRegardless(); window.makeKey(); window.makeFirstResponder(editor)
-            defer { editor.releaseResources(); window.orderOut(nil); window.contentView = nil; window.close(); CATransaction.flush() }
+            defer { E2EPerf.close(editor, window) }
             let ownership = Ownership(); ownership.renderer = renderer; ownership.editor = editor
+            ownership.window = window
             let start = CGPoint(x: bounds.width * 0.15, y: bounds.height * 0.2)
             let end = CGPoint(x: start.x + min(bounds.width * 0.45, 1024 / scale),
                               y: start.y + min(bounds.height * 0.45, 768 / scale))
@@ -74,7 +76,9 @@ enum E2EResources {
             let loupe = editor.e2eLoupe
             let pointerVerified = loupe.visible && loupe.label.contains("X: \(Int(lastPointer.x * scale))")
                 && loupe.label.contains("Y: \(Int(lastPointer.y * scale))")
-            guard let flat = Export.flatten(renderer: renderer, doc: editor.doc, crop: bounds, lasso: nil),
+            guard let editing = Snapshot.read(),
+                  let flat = Export.flatten(renderer: renderer, doc: editor.doc, crop: bounds, lasso: nil),
+                  let flattened = Snapshot.read(),
                   let encoded = Export.encode(flat, scale: scale), let decoded = E2E.decode(encoded.png),
                   let active = Snapshot.read() else { return nil }
             let pixels = E2E.bitmap(flat)
@@ -88,8 +92,11 @@ enum E2EResources {
                 && liveLayerBytes > 0 && liveLayerBytes <= 16 * 1024 * 1024
                 && liveBytesAfterCommit == 0 && liveLayerBytesAfterCommit == 0 && pointerSyncs == 0
             if index == 0 { E2EOrientation.writePNG(flat, "resources-\(name).png") }
+            guard let validated = Snapshot.read() else { return nil }
             return Session(ownership: ownership, metrics: [
                 "index": index, "width": image.width, "height": image.height, "scale": scale,
+                "editorRSSBytes": editing.rss, "flattenedRSSBytes": flattened.rss,
+                "validatedRSSBytes": validated.rss,
                 "activeRSSBytes": active.rss, "cacheBytes": renderer.e2eCacheBytes,
                 "cacheEntries": renderer.e2eCacheEntryCount, "liveBytes": liveBytes,
                 "liveLayerBytes": liveLayerBytes, "liveBytesAfterCommit": liveBytesAfterCommit,
@@ -123,7 +130,8 @@ enum E2EResources {
             guard let after = Snapshot.read() else { return nil }
             let cpu = after.cpuMS - before.cpuMS, wall = after.wallMS - before.wallMS
             guard cpu >= 0, wall > 0 else { return nil }
-            samples.append(["cpuMS": cpu, "wallMS": wall, "cpuPercentOneCore": 100 * cpu / wall])
+            samples.append(["cpuMS": cpu, "wallMS": wall, "cpuPercentOneCore": 100 * cpu / wall,
+                            "beforeRSSBytes": Double(before.rss), "afterRSSBytes": Double(after.rss)])
         }
         return samples
     }
@@ -146,25 +154,39 @@ enum E2EResources {
                 await E2E.wait(200)
                 guard let after = Snapshot.read() else { E2E.record("resources-\(name)-rss", false); return }
                 result.metrics["beforeRSSBytes"] = before.rss
+                result.metrics["cleanupRSSBytes"] = active.rss
                 result.metrics["afterRSSBytes"] = after.rss
                 result.metrics["lifetimePeakRSSBytes"] = after.lifetimePeakRSS
                 result.metrics["cpuMS"] = active.cpuMS - before.cpuMS
                 result.metrics["wallMS"] = active.wallMS - before.wallMS
                 result.metrics["ownershipReleased"] = result.ownership.released
+                result.metrics["windowReleased"] = result.ownership.window == nil
                 let pass = result.metrics["outputCorrect"] as? Bool == true
                     && result.metrics["budgetsPassed"] as? Bool == true && result.ownership.released
                 E2E.record("resources-\(name)-session-\(index)", pass, result.metrics)
                 sessions.append(result.metrics)
             }
             guard let end = Snapshot.read() else { E2E.record("resources-\(name)-final", false); return }
+            guard let settledIdle = await idle(), let settled = Snapshot.read() else {
+                E2E.record("resources-\(name)-settled", false); return
+            }
             scenarios[name] = ["frameSource": name == "synthetic2x" ? "synthetic" : (E2E.source.contains("fixture") ? "fixture-display" : "ScreenCaptureKit"),
                                "warmIdle": idleSamples, "baselineRSSBytes": baseline.rss, "endRSSBytes": end.rss,
                                "residualGrowthBytes": Int64(end.rss) - Int64(baseline.rss),
+                               "settledIdle": settledIdle, "settledRSSBytes": settled.rss,
+                               "settledGrowthBytes": Int64(settled.rss) - Int64(baseline.rss),
                                "lifetimePeakRSSBytes": end.lifetimePeakRSS, "sessions": sessions]
         }
         let report: [String: Any] = ["schemaVersion": 1, "pid": ProcessInfo.processInfo.processIdentifier,
             "rssSource": "proc_pidinfo(PROC_PIDTASKINFO).pti_resident_size", "peakSource": "getrusage.ru_maxrss (macOS bytes, process lifetime)",
             "cpuSource": "getrusage user+system CPU; percent is relative to one core",
+            "rssStages": ["editorRSSBytes": "After editor interactions, before export and validation",
+                          "flattenedRSSBytes": "After flatten, before encoding and PNG validation",
+                          "activeRSSBytes": "After encoding and PNG decode, before pixel comparison",
+                          "validatedRSSBytes": "After pixel comparison and optional PNG artifact write",
+                          "cleanupRSSBytes": "After session return and its autorelease pools drain",
+                          "afterRSSBytes": "After 200 ms idle following session cleanup",
+                          "settledRSSBytes": "After five further 500 ms idle samples at scenario end"],
             "scope": "App process including PNG validation and framework caches; excludes WindowServer/GPU memory and CPU. RSS is reported without a baseline-derived growth gate.",
             "scenarios": scenarios]
         E2EPerf.out["resources"] = report

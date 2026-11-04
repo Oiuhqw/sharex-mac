@@ -21,32 +21,65 @@ enum E2ESettings {
         return expected.count == 8 && shortcutState() == expected
     }
 
-    private static func elements(in root: Any) -> [any NSAccessibilityProtocol] {
-        var result: [any NSAccessibilityProtocol] = []
+    private struct Element {
+        let object: NSObject
+        var native: (any NSAccessibilityProtocol)? { object as? any NSAccessibilityProtocol }
+        var identifier: String? { native?.accessibilityIdentifier() ?? object.accessibilityAttributeValue(.identifier) as? String }
+        var title: String? { native?.accessibilityTitle() ?? object.accessibilityAttributeValue(.title) as? String }
+        var label: String? { native?.accessibilityLabel() ?? object.accessibilityAttributeValue(.description) as? String }
+        var value: Any? { native?.accessibilityValue() ?? object.accessibilityAttributeValue(.value) }
+        var role: String? { native?.accessibilityRole()?.rawValue ?? object.accessibilityAttributeValue(.role) as? String }
+        var children: [Any] {
+            (native?.accessibilityChildren() ?? []) + (object.accessibilityAttributeValue(.children) as? [Any] ?? [])
+        }
+        var frame: CGRect {
+            if let native { return native.accessibilityFrame() }
+            guard let position = object.accessibilityAttributeValue(.position) as? NSValue,
+                  let size = object.accessibilityAttributeValue(.size) as? NSValue else { return .zero }
+            return CGRect(origin: position.pointValue, size: size.sizeValue)
+        }
+        var diagnostic: [String: Any] {
+            ["class": NSStringFromClass(type(of: object)), "identifier": identifier ?? "",
+             "role": role ?? "", "label": label ?? title ?? "", "frame": NSStringFromRect(frame),
+             "modernProtocol": native != nil, "actions": object.accessibilityActionNames().map(\.rawValue)]
+        }
+
+        func press() -> Bool {
+            if native?.accessibilityPerformPress() == true { return true }
+            guard object.accessibilityActionNames().contains(.press) else { return false }
+            object.accessibilityPerformAction(.press)
+            return true
+        }
+    }
+
+    private static func elements(in root: Any) -> [Element] {
+        var result: [Element] = []
         var visited = Set<ObjectIdentifier>()
         func visit(_ object: Any) {
-            guard let element = object as? any NSAccessibilityProtocol,
-                  visited.insert(ObjectIdentifier(element)).inserted else { return }
+            guard let object = object as? NSObject,
+                  visited.insert(ObjectIdentifier(object)).inserted else { return }
+            let element = Element(object: object)
             result.append(element)
-            for child in element.accessibilityChildren() ?? [] { visit(child) }
+            for child in element.children { visit(child) }
+            if let window = object as? NSWindow, let content = window.contentView { visit(content) }
             if let view = object as? NSView { for child in view.subviews { visit(child) } }
         }
         visit(root)
         return result
     }
 
-    private static func element(_ id: String, in window: NSWindow) -> (any NSAccessibilityProtocol)? {
-        elements(in: window).first { $0.accessibilityIdentifier() == id }
+    private static func element(_ id: String, in window: NSWindow) -> Element? {
+        elements(in: window).first { $0.identifier == id }
     }
 
     @discardableResult
     private static func press(_ id: String, in window: NSWindow) -> Bool {
         guard let target = element(id, in: window) else { return false }
-        return target.accessibilityPerformPress()
+        return target.press()
     }
 
-    private static func click(_ target: any NSAccessibilityProtocol, in window: NSWindow) {
-        let frame = target.accessibilityFrame()
+    private static func click(_ target: Element, in window: NSWindow) {
+        let frame = target.frame
         let point = window.convertPoint(fromScreen: CGPoint(x: frame.midX, y: frame.midY))
         for type: NSEvent.EventType in [.leftMouseDown, .leftMouseUp] {
             if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
@@ -69,14 +102,27 @@ enum E2ESettings {
     }
 
     private static func navigate(_ page: String, in window: NSWindow) async -> Bool {
-        guard let target = element("settings.page.\(page)", in: window) else { return false }
+        guard let target = element("settings.page.\(page)", in: window) else {
+            E2E.record("settings-navigation-\(page)", false, ["error": "sidebar item absent"])
+            return false
+        }
         click(target, in: window)
-        await E2E.wait(200)
         let identifiers = ["capture": "settings.capture.cursor", "shortcuts": "settings.shortcuts.search", "output": "settings.output.saveToFile"]
-        return identifiers[page].flatMap { element($0, in: window) } != nil
+        let arrived = await E2E.until(1500) { identifiers[page].flatMap { element($0, in: window) } != nil }
+        let point = window.convertPoint(fromScreen: CGPoint(x: target.frame.midX, y: target.frame.midY))
+        E2E.record("settings-navigation-\(page)", arrived, ["target": target.diagnostic,
+                   "clickPoint": NSStringFromPoint(point),
+                   "windowKey": window.isKeyWindow, "appActive": NSApp.isActive])
+        return arrived
     }
 
     private static func screenshot(_ name: String, window: NSWindow) {
+        let tree: [String: Any] = ["windowFrame": NSStringFromRect(window.frame), "windowKey": window.isKeyWindow,
+                                  "appActive": NSApp.isActive, "elements": elements(in: window).map(\.diagnostic)]
+        do {
+            let data = try JSONSerialization.data(withJSONObject: tree, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: E2E.out.appendingPathComponent("\(name)-accessibility.json"))
+        } catch { E2E.record("\(name)-accessibility", false, ["error": error.localizedDescription]) }
         guard let view = window.contentView,
               let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
             E2E.record(name, false, ["error": "no window bitmap"]); return
@@ -93,13 +139,13 @@ enum E2ESettings {
     }
 
     private static func recorder(_ id: String, in window: NSWindow) -> KeyboardShortcuts.RecorderCocoa? {
-        elements(in: window).compactMap { $0 as? KeyboardShortcuts.RecorderCocoa }
+        elements(in: window).compactMap { $0.object as? KeyboardShortcuts.RecorderCocoa }
             .first { $0.accessibilityIdentifier() == "settings.shortcut.\(id).recorder" }
     }
 
     private static func feedback(in window: NSWindow) -> String {
         element("settings.shortcuts.feedback", in: window).map {
-            ($0.accessibilityLabel() ?? "") + ($0.accessibilityValue() as? String ?? "")
+            ($0.label ?? "") + ($0.value as? String ?? "")
         } ?? ""
     }
 
@@ -128,9 +174,9 @@ enum E2ESettings {
     private static func dismissSheet(_ title: String, in window: NSWindow) -> Bool {
         guard let sheet = window.attachedSheet,
               let button = elements(in: sheet).first(where: {
-                  $0.accessibilityRole() == .button && ($0.accessibilityTitle() == title || $0.accessibilityLabel() == title)
+                  $0.role == NSAccessibility.Role.button.rawValue && ($0.title == title || $0.label == title)
               }) else { return false }
-        return button.accessibilityPerformPress()
+        return button.press()
     }
 
     static func run() async {
@@ -156,14 +202,18 @@ enum E2ESettings {
         let toggledCursor = press("settings.capture.cursor", in: window)
         await E2E.wait(100)
         E2E.record("settings-capture-toggle-persists", capture && toggledCursor
-                   && SettingsStore().value.options.showCursor == !cursor)
+                   && SettingsStore().value.options.showCursor == !cursor,
+                   ["navigation": capture, "pressed": toggledCursor, "before": cursor,
+                    "after": SettingsStore().value.options.showCursor])
         screenshot("settings-capture", window: window)
 
         let output = await navigate("output", in: window)
         let save = E2E.app.settings.value.saveToFile
         let toggledSave = press("settings.output.saveToFile", in: window)
         await E2E.wait(100)
-        E2E.record("settings-output-toggle-persists", output && toggledSave && SettingsStore().value.saveToFile == !save)
+        E2E.record("settings-output-toggle-persists", output && toggledSave && SettingsStore().value.saveToFile == !save,
+                   ["navigation": output, "pressed": toggledSave, "before": save,
+                    "after": SettingsStore().value.saveToFile])
         _ = press("settings.output.saveToFile", in: window)
         let folderBefore = E2E.app.settings.value.saveFolder
         let chooser = press("settings.output.chooseFolder", in: window)
@@ -193,7 +243,7 @@ enum E2ESettings {
         screenshot("settings-output", window: window)
 
         let shortcutsPage = await navigate("shortcuts", in: window)
-        let recorders = elements(in: window).compactMap { $0 as? KeyboardShortcuts.RecorderCocoa }
+        let recorders = elements(in: window).compactMap { $0.object as? KeyboardShortcuts.RecorderCocoa }
         E2E.record("settings-eight-accessible-recorders", shortcutsPage && recorders.count == 8
                    && recorders.allSatisfy { !($0.accessibilityLabel() ?? "").isEmpty }, ["count": recorders.count])
         screenshot("settings-shortcuts", window: window)

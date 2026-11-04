@@ -118,15 +118,20 @@ enum E2EEditing {
     }
 
     static func resetSelection() async {
-        let name = "editing-rightclick-reset-and-tiny-drag"
+        let name = "editing-rightclick-reset-and-one-pixel-drag"
         guard let s = await open(name) else { return }
         E2E.mouse(.rightMouseDown, CGPoint(x: 200, y: 200), in: (s.window, s.view))
         let reset = s.view.phase == .selecting(.rectangle) && s.view.doc.state.crop == nil
+        E2E.drag(CGPoint(x: 200, y: 200), CGPoint(x: 200, y: 200))
+        let emptyRejected = s.view.phase == .selecting(.rectangle) && s.view.doc.state.crop == nil
         E2E.drag(CGPoint(x: 200, y: 200), CGPoint(x: 200.25, y: 200.25))
-        let tinyRejected = s.view.phase == .selecting(.rectangle) && s.view.doc.state.crop == nil
+        let tiny = s.view.doc.state.crop.flatMap { s.view.renderer.pixelArea($0) }
+        let onePixelSelected = s.view.phase == .editing && tiny?.w == 1 && tiny?.h == 1
+        E2E.mouse(.rightMouseDown, CGPoint(x: 200, y: 200), in: (s.window, s.view))
         E2E.drag(E2E.C.origin, CGPoint(x: E2E.C.maxX, y: E2E.C.maxY))
-        await finish(name, s, condition: reset && tinyRejected && s.view.doc.state.crop == E2E.C,
-                     info: ["reset": reset, "tinyDragRejected": tinyRejected]) { $0.px == s.original.px }
+        await finish(name, s, condition: reset && emptyRejected && onePixelSelected && s.view.doc.state.crop == E2E.C,
+                     info: ["reset": reset, "emptyDragRejected": emptyRejected,
+                            "onePixelSelected": onePixelSelected]) { $0.px == s.original.px }
     }
 
     static func toolbarMoveResize() async {

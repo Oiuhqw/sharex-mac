@@ -31,6 +31,14 @@ enum E2EPerf {
         return w
     }
 
+    static func close(_ view: EditorView, _ window: NSWindow) {
+        view.releaseResources()
+        window.orderOut(nil)
+        window.contentView = nil
+        window.close()
+        CATransaction.flush()
+    }
+
     static func send(_ t: NSEvent.EventType, _ p: CGPoint, _ v: EditorView, _ w: NSWindow) {
         let wp = v.convert(p, to: nil)
         if let e = NSEvent.mouseEvent(with: t, location: wp, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
@@ -95,12 +103,16 @@ enum E2EPerf {
         // 1. Editor construction + first frame at 2x (part of hotkey -> overlay visible).
         var builds: [Double] = []
         for _ in 0..<5 {
-            let t0 = Perf.now()
-            let v = EditorView(frame: CGRect(origin: .zero, size: ptSize), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
-                               initialCrop: nil, styles: [:], showMagnifier: true, pickRects: [], finishOnPick: false)
-            let w = window(for: v); w.displayIfNeeded(); CATransaction.flush()
-            builds.append(Perf.now() - t0)
-            w.orderOut(nil); w.contentView = nil
+            let elapsed = autoreleasepool {
+                let t0 = Perf.now()
+                let v = EditorView(frame: CGRect(origin: .zero, size: ptSize), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
+                                   initialCrop: nil, styles: [:], showMagnifier: true, pickRects: [], finishOnPick: false)
+                let w = window(for: v)
+                defer { close(v, w) }
+                w.displayIfNeeded(); CATransaction.flush()
+                return Perf.now() - t0
+            }
+            builds.append(elapsed)
             await E2E.wait(50)
         }
         out["overlayBuildFirstFrame2x_ms"] = stats(builds)
@@ -110,6 +122,7 @@ enum E2EPerf {
             let v = EditorView(frame: CGRect(origin: .zero, size: ptSize), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
                                initialCrop: nil, styles: [:], showMagnifier: true, pickRects: [], finishOnPick: false)
             let w = window(for: v); w.displayIfNeeded()
+            defer { close(v, w) }
             let vs = Vsync(w)
             defer { vs.stop() }
             for p in path(60, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 1500, y: 900)) { await timed(.mouseMoved, p, v, w, vs) }
@@ -118,7 +131,6 @@ enum E2EPerf {
             for p in path(120, from: CGPoint(x: 210, y: 160), to: CGPoint(x: 1400, y: 950)) { await timed(.leftMouseDragged, p, v, w, vs) }
             takeSamples("regionDrag2x_ms")
             _ = frame(.leftMouseUp, CGPoint(x: 1400, y: 950), v, w)
-            w.orderOut(nil); w.contentView = nil
         }
 
         // On-screen orientation is checked by E2EOrientation (E2E run, fails CI).
@@ -131,6 +143,7 @@ enum E2EPerf {
                                initialCrop: CGRect(x: 40, y: 80, width: 1640, height: 1000), styles: styles, showMagnifier: false,
                                pickRects: [], finishOnPick: false)
             let w = window(for: v); w.displayIfNeeded()
+            defer { close(v, w) }
             func shape(_ k: ShapeKind, _ a: CGPoint, _ b: CGPoint) {
                 v.setTool(.shape(k))
                 _ = frame(.leftMouseDown, a, v, w)
@@ -145,7 +158,7 @@ enum E2EPerf {
             shape(.rectangle, CGPoint(x: 1100, y: 600), CGPoint(x: 1500, y: 900))
             shape(.arrow, CGPoint(x: 1200, y: 950), CGPoint(x: 1600, y: 650))
             shape(.pen, CGPoint(x: 150, y: 950), CGPoint(x: 900, y: 1000))
-            guard v.doc.annotations.count == 8 else { fail("annotation-corpus"); w.orderOut(nil); w.contentView = nil; return }
+            guard v.doc.annotations.count == 8 else { fail("annotation-corpus"); return }
             let movingBlurID = v.doc.annotations.first(where: { $0.kind == .blur })?.id
 
             let vs = Vsync(w)
@@ -177,7 +190,6 @@ enum E2EPerf {
             guard selectedBlur else {
                 fail("move-blur-selection")
                 _ = frame(.leftMouseUp, blurStart, v, w)
-                w.orderOut(nil); w.contentView = nil
                 return
             }
             for p in path(120, from: blurStart, to: blurEnd) { await timed(.leftMouseDragged, p, v, w, vs) }
@@ -234,7 +246,6 @@ enum E2EPerf {
             out["commitPipelineAsync2x_ms"] = stats(pipeline)
             out["savePNG2x_ms"] = stats(save)
             out["outputCorrectness"] = ["clipboard": clipboardOK, "savePNG": saveOK, "asyncPipeline": pipelineOK, "attemptsPerOperation": 5]
-            w.orderOut(nil); w.contentView = nil
         }
 
         // 5. Real path at runner resolution: capture(.region) -> overlay shown (SCK freeze if granted).

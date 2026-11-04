@@ -94,22 +94,32 @@ enum E2ERedaction {
         }
     }
 
-    private static func freshNativePreview(image: CGImage, mark: Annotation, scale: CGFloat, name: String) async -> E2E.Bitmap? {
+    private static func freshNativePreview(image: CGImage, doc: EditorDocument, scale: CGFloat,
+                                           name: String) async -> (native: E2E.Bitmap?, source: E2E.Bitmap?) {
+        guard let mark = doc.selected else { return (nil, nil) }
         let renderer = Renderer(frame: image, scale: scale)
         renderer.liveEffectID = mark.id
         let root = PassThroughView(frame: CGRect(origin: .zero, size: size))
         root.layerContentsRedrawPolicy = .never
         root.addSubview(FrameView(frame: root.bounds, image: image, smooth: false))
         let committed = AnnotationsView(frame: root.bounds, renderer: renderer)
-        root.addSubview(committed); committed.sync(EditorDocument(), hide: nil)
+        root.addSubview(committed)
         let live = LiveMarkView(frame: root.bounds)
-        root.addSubview(live); live.show(mark, renderer: renderer)
+        root.addSubview(live)
         let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.sharingType = .readOnly; window.hasShadow = false
+        defer {
+            live.releaseResources(); renderer.releaseTransientResources()
+            window.orderOut(nil); window.contentView = nil; window.close()
+        }
         window.contentView = root; window.orderFrontRegardless()
+        committed.sync(doc, hide: nil, live: mark.id)
+        live.show(mark, renderer: renderer)
+        _ = snapshot(root, scale: scale)
+        await E2E.wait(20)
+        let source = snapshot(root, scale: scale, name: "source-\(name)")
         let result = await windowSnapshot(window, name: name)
-        window.orderOut(nil); window.contentView = nil
-        return result
+        return (result, source)
     }
 
     private static func effectRestored(_ image: E2E.Bitmap, baseline: E2E.Bitmap, area: PixelRect) -> Bool {
@@ -148,12 +158,29 @@ enum E2ERedaction {
             E2E.record("redaction-native-compositor-\(name)", false, ["error": "missing comparison image"]); return
         }
         let sameScale = abs(sourceScale - backingScale) < 0.001
-        E2E.record("redaction-native-compositor-\(name)", sameScale && native.px == composed.px,
+        let colors = nativeColorComparison(native, expected: composed)
+        E2E.record("redaction-native-compositor-\(name)", sameScale && colors.matches,
                    ["sourceScale": sourceScale, "actualBackingScale": backingScale,
                     "nativeVsComposed": differences(native, expected: composed),
-                    "note": sameScale ? "Exact comparison at matching source and display scale."
+                    "outputColorQuantization": colors.details,
+                    "note": sameScale ? "Native RGB may differ by one 8-bit value. Alpha, privacy masks, and internal render comparisons remain exact."
                         : "The runner downsamples the source to its lower display scale. WindowServer and software layer rendering use different sampling. This does not verify a physical Retina compositor."],
                    status: sameScale ? nil : "unverifiable")
+    }
+
+    private static func nativeColorComparison(_ actual: E2E.Bitmap?, expected: E2E.Bitmap?) -> (matches: Bool, details: [String: Any]) {
+        guard let actual, let expected, actual.w == expected.w, actual.h == expected.h else {
+            return (false, ["missingOrWrongSize": true])
+        }
+        var maximumRGBDelta = 0, alphaDifferences = 0
+        for i in stride(from: 0, to: actual.px.count, by: 4) {
+            for channel in 0..<3 {
+                maximumRGBDelta = max(maximumRGBDelta, abs(Int(actual.px[i + channel]) - Int(expected.px[i + channel])))
+            }
+            if actual.px[i + 3] != expected.px[i + 3] { alphaDifferences += 1 }
+        }
+        return (maximumRGBDelta <= 1 && alphaDifferences == 0,
+                ["allowedRGBDelta": 1, "maximumRGBDelta": maximumRGBDelta, "alphaDifferentPixels": alphaDifferences])
     }
 
     static func run() async {
@@ -395,20 +422,20 @@ enum E2ERedaction {
             if captureNative {
                 let nativeRecovered = await windowSnapshot(window, name: "redaction-move-\(name)-native-recovered.png")
                 let composedRecovered = snapshot(root, scale: nativeScale, name: "redaction-move-\(name)-recovered-composed-native-scale.png")
-                var nativeReference: E2E.Bitmap?
-                if let mark = doc.selected {
-                    nativeReference = await freshNativePreview(image: image, mark: mark, scale: scale,
-                                                              name: "redaction-move-\(name)-native-fresh-reference.png")
-                }
+                let reference = await freshNativePreview(image: image, doc: doc, scale: scale,
+                                                         name: "redaction-move-\(name)-native-fresh-reference.png")
+                let referenceColors = nativeColorComparison(nativeRecovered, expected: reference.native)
                 let nativeRecoveryOK: Bool
-                if let nativeRecovered, let nativeBaseline, let nativeArea, let nativeReference {
+                if let nativeRecovered, let nativeBaseline, let nativeArea, let recovered, let referenceSource = reference.source {
                     nativeRecoveryOK = renderer.redactionFailureRects.isEmpty
                         && effectRestored(nativeRecovered, baseline: nativeBaseline, area: nativeArea)
-                        && nativeRecovered.px == nativeReference.px
+                        && recovered.px == referenceSource.px && referenceColors.matches
                 } else { nativeRecoveryOK = false }
                 E2E.record("redaction-native-recovery-content-\(name)", nativeRecoveryOK,
                            ["actualBackingScale": nativeScale, "nativeVsComposed": differences(nativeRecovered, expected: composedRecovered),
-                            "nativeVsFreshReference": differences(nativeRecovered, expected: nativeReference)])
+                            "nativeVsFreshReference": differences(nativeRecovered, expected: reference.native),
+                            "sourceVsFreshReference": differences(recovered, expected: reference.source),
+                            "outputColorQuantization": referenceColors.details])
                 recordNativeComparison("recovery-\(name)", native: nativeRecovered, composed: composedRecovered,
                                        sourceScale: scale, backingScale: nativeScale)
             }

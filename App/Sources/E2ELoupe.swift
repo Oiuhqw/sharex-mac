@@ -164,22 +164,26 @@ enum E2ELoupe {
             info[name] = r
         }
         send(.leftMouseUp, CGPoint(x: 250, y: 200))
-        w.orderOut(nil); w.contentView = nil
-        // Hover cost: 300 moves straight into the view (refresh + layer updates, no capture).
+        v.releaseResources(); w.orderOut(nil); w.contentView = nil; w.close()
+        // Pace commits at display ticks so WindowServer queue backpressure does not dominate hover cost.
         do {
             let v2 = EditorView(frame: CGRect(origin: .zero, size: size), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
                                 initialCrop: nil, styles: [:], showMagnifier: true, pickRects: [], finishOnPick: false)
             let w2 = OverlayWindow(contentRect: w.frame, styleMask: .borderless, backing: .buffered, defer: false)
             w2.isReleasedWhenClosed = false; w2.contentView = v2; w2.orderFrontRegardless()
-            var t: [Double] = []
+            let vsync = E2EPerf.Vsync(w2)
+            defer { vsync.stop() }
+            var t: [Double] = [], cpu: [Double] = []
             var retina = (n: 0, ok: 0, fails: [[String: Any]]())
             for k in 0..<300 {
                 let p = CGPoint(x: 5 + Double(k % 290), y: 5 + Double((k * 7) % 230))
                 guard let e = NSEvent.mouseEvent(with: .mouseMoved, location: v2.convert(p, to: nil), modifierFlags: [],
                                                  timestamp: 0, windowNumber: w2.windowNumber, context: nil, eventNumber: 0,
                                                  clickCount: 0, pressure: 0) else { continue }
-                let t0 = DispatchTime.now().uptimeNanoseconds
+                guard await vsync.next() >= 0 else { ok = false; break }
+                let t0 = DispatchTime.now().uptimeNanoseconds, c0 = E2EPerf.cpuNow()
                 v2.mouseMoved(with: e); CATransaction.flush()
+                cpu.append(E2EPerf.cpuNow() - c0)
                 t.append(Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6)
                 // Skeptic (b): the runner is 1x, so check the 2x frozen frame by state: pixel label and sampled centre.
                 if p.x > 10, p.x < size.width - 10, p.y > 10, p.y < size.height - 10, k % 10 == 0 {
@@ -187,14 +191,15 @@ enum E2ELoupe {
                     retina.n += 1; if r.ok { retina.ok += 1 } else if retina.fails.count < 3 { retina.fails.append(r.info) }
                 }
             }
-            t.sort()
-            let p50 = t[t.count / 2], p95 = t[Int(Double(t.count) * 0.95)]
-            info["hoverMs"] = ["p50": p50, "p95": p95, "max": t.last ?? 0, "n": t.count]
-            ok = ok && p95 < 2
+            let timing = E2EPerf.stats(t)
+            info["hoverMs"] = timing
+            info["hoverCPUMs"] = E2EPerf.stats(cpu)
+            info["hoverTimingScope"] = "Debug mouseMoved + CATransaction.flush, paced at display ticks; excludes capture and GPU rendering"
+            ok = ok && t.count == 300 && (timing["p95"] ?? .infinity) < 2
             E2E.record("loupe-2x-frame-state", retina.n > 10 && retina.ok == retina.n,
                        ["checked": retina.n, "ok": retina.ok, "frameScale": sc, "windowBacking": w2.backingScaleFactor,
                         "fails": retina.fails, "note": "2x frozen frame simulated; the runner display is 1x"])
-            w2.orderOut(nil); w2.contentView = nil
+            v2.releaseResources(); w2.orderOut(nil); w2.contentView = nil; w2.close()
         }
         E2E.record("loupe", ok, info)
         await reopen()
