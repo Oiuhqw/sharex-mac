@@ -92,6 +92,10 @@ jobs:
       - name: E2E (real app, real pasteboard; SCK if TCC grant works)
         run: scripts/e2e.sh
 
+      - name: E2E across mixed-scale virtual displays
+        timeout-minutes: 12
+        run: scripts/e2e-multidisplay.sh
+
       - name: Upload E2E artifacts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

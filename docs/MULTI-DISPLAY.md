@@ -18,6 +18,8 @@ ShareX.app/Contents/MacOS/ShareX --e2e-multidisplay /tmp/sharex-multidisplay --m
 
 Use a separate output directory for `vertical-negative`. The driver writes `results.json` and panel images. It checks both native drag routes, shared undo, seam preview and export pixels, redaction failure coverage, text host changes, fixed toolbar placement, mouse completion, fullscreen panel presence, sparse desktop crops, and cache invalidation after scale changes. Its tile patterns are deterministic fixtures on real NSScreen geometry. This is not a claim that those pixels came from ScreenCaptureKit.
 
+On the GitHub macOS runner, `scripts/e2e-multidisplay.sh` builds the external display helper and runs both layouts after the baseline E2E suite. The helper supplies one 1x and one 2x display, each 1280 by 800 logical points. It writes each layout to `ready.json`. The script stops the helper after each run and keeps logs under `e2e-out/multidisplay`. Private virtual-display interfaces remain in this test helper and are not part of the app.
+
 Run the normal app E2E, shortcut recovery E2E, core XCTest suite, and core AddressSanitizer suite as well. E2E sources stay behind `SHAREX_E2E` and must remain absent from the release package.
 
 Windows static checks do not prove AppKit behavior. Native compilation, E2E, physical mouse routing across monitors, real mixed-density hardware, and separate Spaces remain validation requirements. The driver records physical routing and separate Spaces as unverified.
