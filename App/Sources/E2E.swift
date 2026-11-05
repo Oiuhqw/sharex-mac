@@ -18,6 +18,10 @@ enum E2E {
     // MARK: helper processes
 
     static func handlesHelperMode() -> Bool {
+        if let scenario = arg(after: "--e2e-seed-shortcuts"), let out = arg(after: "--out") {
+            E2ESettings.seedShortcutRecovery(scenario, out: out)
+            return true
+        }
         if args.contains("--e2e-pattern") { runPattern(); return true }
         if let out = arg(after: "--e2e-verify") { verifySettings(out); return true }
         return false
@@ -80,8 +84,10 @@ enum E2E {
         r["lastRegionPresent"] = s.lastRegion != nil
         r["delaySeconds"] = s.options.delaySeconds
         r["borderWidth"] = s.options.borderWidth
+        let shortcutPersistence = E2ESettings.verifyPersistence(out)
+        r["shortcutPersistence"] = shortcutPersistence
         let pass = (r["rectangleColorBlue"] as? Bool == true) && (r["rectangleWidth8"] as? Bool == true) && s.saveToFile && s.lastRegion != nil
-            && s.options.borderWidth == 0 && s.options.delaySeconds == 0
+            && s.options.borderWidth == 0 && s.options.delaySeconds == 0 && shortcutPersistence
         r["pass"] = pass
         let d = try! JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys])
         try? d.write(to: URL(fileURLWithPath: out).appendingPathComponent("verify-settings.json"))
@@ -112,6 +118,7 @@ enum E2E {
     static func finishRun() {
         let pass = results.allSatisfy { ($0["pass"] as? Bool) ?? false || ($0["status"] as? String) == "unverifiable" }
         let doc: [String: Any] = ["frameSource": source, "screens": NSScreen.screens.map { ["w": $0.frame.width, "h": $0.frame.height, "scale": $0.backingScaleFactor] },
+                                  "unverified": results.filter { ($0["status"] as? String) == "unverifiable" }.compactMap { $0["name"] as? String },
                                   "results": results, "pass": pass, "macOS": ProcessInfo.processInfo.operatingSystemVersionString]
         let d = try! JSONSerialization.data(withJSONObject: doc, options: [.prettyPrinted, .sortedKeys])
         try? d.write(to: out.appendingPathComponent("results.json"))
@@ -278,27 +285,62 @@ enum E2E {
 
     static func runAll() async {
         await wait(800)
+        if let scenario = arg(after: "--shortcut-recovery") {
+            await E2ESettings.verifyShortcutRecovery(scenario)
+            return
+        }
+        if args.contains("--memory-diagnosis") {
+            source = "synthetic-memory-diagnosis"
+            await E2EResources.diagnose()
+            return
+        }
         if !Permissions.hasScreenRecording {
             source = "fixture"
             ScreenCapture.e2eFixture = { checker($0, $1) }
+            record("capture-display-native", false, ["reason": "Screen Recording permission is unavailable", "fixtureFallback": true], status: "unverifiable")
         } else {
             // Granted in TCC.db but SCK may still refuse: probe once.
             do {
                 let f = try await ScreenCapture.freeze([screen], showCursor: false)
+                guard let img = f.first?.image else { throw CaptureError.noDisplays }
+                E2EOrientation.writePNG(img, "native-display-probe.png")
+                record("capture-display-native", img.width > 0 && img.height > 0,
+                       ["api": "ScreenCaptureKit", "width": img.width, "height": img.height, "fixtureFallback": false])
                 // The hosted runner's display frame shows only a black desktop (other apps' windows are not
                 // composited into it), so blur/pixelate/highlighter/spotlight would have nothing to change.
                 // Fall back to a synthetic display frame then; window captures stay real.
-                if let img = f.first?.image, uniform(img) {
+                if uniform(img) {
                     source = "sck-window+fixture-display"; ScreenCapture.e2eDisplayFixture = { checker($0, $1) }
+                    record("capture-display-textured-content", false,
+                           ["reason": "Native display pixels are uniform; editor tests use fixture pixels", "fixtureFallback": true], status: "unverifiable")
                     NSLog("E2E display frame is uniform; using display fixture. pattern=\(String(describing: patternWindow()?.frame))")
-                }
+                } else { record("capture-display-textured-content", true, ["fixtureFallback": false]) }
             }
-            catch { source = "fixture"; ScreenCapture.e2eFixture = { checker($0, $1) }; NSLog("E2E SCK refused: \(error)") }
+            catch {
+                source = "fixture"; ScreenCapture.e2eFixture = { checker($0, $1) }
+                let denied: Bool
+                if let captureError = error as? CaptureError, case .noPermission = captureError { denied = true } else { denied = false }
+                // Continue the editor/pasteboard tests, but never hide an unexpected native capture error.
+                record("capture-display-native", false, ["error": error.localizedDescription, "fixtureFallback": true],
+                       status: denied ? "unverifiable" : nil)
+                NSLog("E2E SCK refused: \(error)")
+            }
         }
         setOpts { s in s = AppSettings(); s.saveToFile = true; s.saveFolder = saved.path; s.playSound = false
                   s.options.showMagnifier = false }
 
-        if args.contains("--perf") { await E2EPerf.run(); return }
+        if args.contains("--perf") {
+            await E2EResources.run()
+            await E2EPerf.run()
+            return
+        }
+        await probeNativeWindow()
+        await E2EExport.run()
+        E2ERenderer.run()
+        E2EPrivacy.run()
+        E2EPrecision.run()
+        await E2ERedaction.run()
+        E2EStylePersistence.run()
         await menuAndSettings()
 
         // Baseline region, no marks: crop size and Retina scale.
@@ -402,14 +444,22 @@ enum E2E {
 
         await combined()
         await E2EOrientation.run()
+        await E2ELoupe.run()
+        await E2EResize.run()
         await copyPaths()
+        await E2EEditing.run()
+        await E2EEllipseHit.run()
         await nonEditorModes()
         await editorModes()
+        await lastRegionMissingDisplay()
         await cancelPaths()
         await reentrancyAndFocus()
         await decorationAndNaming()
         await retina2x()
         await hotkey()
+        await E2EKeyboard.run()
+        await E2EClipboardOrder.run()
+        await E2ESettings.run()
         record("multi-display", NSScreen.screens.count > 1, ["screens": NSScreen.screens.count],
                status: NSScreen.screens.count > 1 ? nil : "unverifiable")
         // Leave settings in a known state for the relaunch check.
@@ -491,6 +541,28 @@ enum E2E {
     static var full: (Int, Int) { (Int(screen.frame.width * scale), Int(screen.frame.height * scale)) }
 
     static func patternWindow() -> WindowInfo? { ScreenCapture.windows().first { $0.pid == patternPID } }
+
+    /// Keep a real, separate-process window probe distinct from fixture-backed editor scenarios.
+    static func probeNativeWindow() async {
+        guard ScreenCapture.e2eFixture == nil else {
+            record("capture-window-native-content", false,
+                   ["reason": "Native capture is unavailable; window fixtures are enabled"], status: "unverifiable")
+            return
+        }
+        guard let window = patternWindow() else {
+            record("capture-window-native-content", false, ["error": "Pattern helper window is missing"]); return
+        }
+        do {
+            let shot = try await ScreenCapture.captureWindow(window)
+            E2EOrientation.writePNG(shot.image, "native-window-probe.png")
+            let textured = !uniform(shot.image)
+            record("capture-window-native-content", textured,
+                   ["api": "ScreenCaptureKit", "helperPID": patternPID, "windowID": window.id,
+                    "width": shot.image.width, "height": shot.image.height, "textured": textured, "fixtureFallback": false])
+        } catch {
+            record("capture-window-native-content", false, ["error": error.localizedDescription, "fixtureFallback": false])
+        }
+    }
 
     /// Open editor OFF: every fixed-area style copies straight away.
     static func nonEditorModes() async {
@@ -599,6 +671,51 @@ enum E2E {
                 if let c = checkClipboard(name, since: m, w: ww, h: wh) { record(name, c.ok && opened, c.info.merging(["canvasEditorOpened": opened]) { $1 }) }
             }
         }
+    }
+
+    static func lastRegionMissingDisplay() async {
+        let previous = app.settings.value
+        defer { setOpts { $0 = previous } }
+        let displayIDs = Set(NSScreen.screens.map { ScreenCapture.displayID(of: $0) })
+        var missingID = UInt32.max
+        while displayIDs.contains(missingID) { missingID -= 1 }
+        setOpts {
+            $0.lastRegion = LastRegion(displayID: missingID, rect: CGRect(x: 10, y: 10, width: 100, height: 50))
+            $0.options.openEditor = false
+            $0.options.delaySeconds = 0
+            $0.saveToFile = true
+            $0.saveFolder = saved.path
+            $0.playSound = false
+        }
+
+        let m = markClipboard()
+        coord.capture(.lastRegion)
+        let opened = await until {
+            coord.overlay?.e2eSurfaces.contains {
+                $0.window.isKeyWindow && $0.window.firstResponder === $0.view
+            } == true || !coord.busy
+        }
+        let surfaces = coord.overlay?.e2eSurfaces ?? []
+        let selecting = !surfaces.isEmpty && surfaces.allSatisfy {
+            $0.window.isVisible && $0.view.phase == .selecting(.rectangle)
+                && $0.view.doc.state.crop == nil && $0.view.lasso == nil
+        }
+        let clipboardUnchanged = NSPasteboard.general.changeCount == m.change
+            && NSPasteboard.general.string(forType: .string) == "e2e-sentinel"
+        let filesUnchanged = savedFiles() == m.files
+        record("lastRegion-missing-display-selects-region",
+               opened && selecting && coord.busy && clipboardUnchanged && filesUnchanged,
+               ["savedDisplayID": missingID, "connectedDisplayIDs": displayIDs.sorted(),
+                "selectingRegion": selecting, "visibleOverlays": surfaces.filter { $0.window.isVisible }.count,
+                "clipboardUnchanged": clipboardUnchanged, "filesUnchanged": filesUnchanged])
+
+        if !surfaces.isEmpty { await E2EKeyboard.post(53) }
+        let cancelled = await until({ !coord.busy && coord.overlay == nil })
+        let windowsClosed = surfaces.allSatisfy { !$0.window.isVisible }
+        unchanged("lastRegion-missing-display-esc-cancels", m,
+                  extra: ["cancelledByEscape": cancelled, "windowsClosed": windowsClosed],
+                  cond: selecting && cancelled && windowsClosed)
+        if !cancelled { esc(); _ = await until({ !coord.busy }) }
     }
 
     static func cancelPaths() async {
@@ -722,7 +839,9 @@ enum E2E {
         let bid = d.addShape(.blur, at: CGPoint(x: 260, y: 120)); d.extendShape(bid, to: CGPoint(x: 380, y: 280))
         guard let flat = Export.flatten(renderer: r, doc: d, crop: CGRect(x: 100, y: 100, width: 300, height: 200), lasso: nil) else {
             record("retina-2x-pipeline", false, ["error": "flatten"]); return }
-        let img = Export.decorate(flat, options: CaptureOptions(), scale: 2)
+        guard let img = Export.decorate(flat, options: CaptureOptions(), scale: 2) else {
+            record("retina-2x-pipeline", false, ["error": "decorate"]); return
+        }
         let m = markClipboard()
         let copied = Export.copyToClipboard(img, scale: 2)
         let url = Export.savePNG(img, scale: 2, folder: saved.path)
@@ -762,3 +881,4 @@ enum E2E {
     }
 }
 #endif
+

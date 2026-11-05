@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # Fixes, round 1 (response to reviews/macos-developer.md)
 
 **Toolchain.** The review says there is no Swift on the box. There is one; it just is not on PATH by default:

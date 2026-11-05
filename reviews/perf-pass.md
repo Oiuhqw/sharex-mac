@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # Perf pass (+ security hardening)
 
 CI: GitHub `macos-15` runner, which has a 1x display. The 2x case is simulated with a synthetic 3456×2234 px frame (16" MBP at 2x).

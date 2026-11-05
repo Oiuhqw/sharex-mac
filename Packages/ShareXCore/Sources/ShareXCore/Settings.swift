@@ -11,10 +11,18 @@ public struct LastRegion: Codable, Equatable, Sendable {
     public var rect: CGRect
     public init(displayID: UInt32, rect: CGRect) { (self.displayID, self.rect) = (displayID, rect) }
 
-    /// Resolves against the current displays (id → top-left-point bounds). Falls back to the first
-    /// display when the original is gone, and clamps so a replay never reads outside the screen.
+    var isValid: Bool {
+        let values = [rect.origin.x, rect.origin.y, rect.size.width, rect.size.height,
+                      rect.origin.x + rect.size.width, rect.origin.y + rect.size.height]
+        return values.allSatisfy { $0.isFinite && abs($0) <= CGFloat(Int32.max) }
+            && rect.size.width > 0 && rect.size.height > 0
+    }
+
+    /// Resolves only on the saved display and clamps the region to its current point bounds.
+    /// Returns nil when that display is absent or the region has no usable area.
     public func resolve(displays: [(id: UInt32, size: CGSize)]) -> (id: UInt32, rect: CGRect)? {
-        guard let d = displays.first(where: { $0.id == displayID }) ?? displays.first else { return nil }
+        guard isValid else { return nil }
+        guard let d = displays.first(where: { $0.id == displayID }) else { return nil }
         guard let r = Geometry.clamp(rect, to: CGRect(origin: .zero, size: d.size)) else { return nil }
         return (d.id, r)
     }
@@ -24,11 +32,13 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var options = CaptureOptions()
     public var toolStyles: [ShapeKind: ShapeStyle] = [:]
     public var lastRegion: LastRegion?
-    public var saveToFile = false
+    public var saveToFile = true
     /// Folder path; empty means ~/Pictures/ShareX.
     public var saveFolder = ""
     public var playSound = true
     public init() {}
+
+    static let maximumStoredBytes = 1_048_576
 
     /// Decodes stored settings. Unknown or corrupt data yields defaults, and missing keys keep
     /// their defaults, so adding a setting never wipes the user's others.
@@ -36,7 +46,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         // Validate with JSONSerialization first: swift-foundation's JSONDecoder traps (a `try!` inside
         // JSONDecoder.swift) on some malformed input, such as a raw control character in an object key,
         // instead of throwing. Found by FuzzTests; corrupt stored settings must never crash launch.
-        guard let data, (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) is [String: Any],
+        guard let data, data.count <= maximumStoredBytes,
+              (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) is [String: Any],
               let s = try? JSONDecoder().decode(AppSettings.self, from: data) else { return AppSettings() }
         return s
     }
@@ -48,8 +59,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
         let def = AppSettings()
         options = ((try? c.decodeIfPresent(CaptureOptions.self, forKey: .options)) ?? def.options).sanitized()
         toolStyles = ((try? c.decodeIfPresent([ShapeKind: ShapeStyle].self, forKey: .toolStyles)) ?? def.toolStyles)
-            .mapValues { $0.sanitized() }
+        toolStyles = Dictionary(uniqueKeysWithValues: toolStyles.map { ($0.key, $0.value.sanitized(for: $0.key)) })
         lastRegion = try? c.decodeIfPresent(LastRegion.self, forKey: .lastRegion)
+        if lastRegion?.isValid == false { lastRegion = nil }
         saveToFile = (try? c.decodeIfPresent(Bool.self, forKey: .saveToFile)) ?? def.saveToFile
         saveFolder = (try? c.decodeIfPresent(String.self, forKey: .saveFolder)) ?? def.saveFolder
         playSound = (try? c.decodeIfPresent(Bool.self, forKey: .playSound)) ?? def.playSound

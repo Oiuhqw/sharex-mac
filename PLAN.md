@@ -1,51 +1,44 @@
-# ShareX for macOS: merged plan (awaiting founder approval)
-Sources: plans/head-of-eng.md, plans/cto.md, plans/architect.md
+# ShareX for macOS: implementation and verification plan
 
-## Stack
-Swift 6, AppKit (overlay, hotkeys, clipboard), SwiftUI (settings, menu bar). ScreenCaptureKit only. macOS 14+. A menu-bar app, signed with Developer ID and notarized, not sandboxed in v1.
+This document replaces the original planning-only proposal. The older proposals in plans/ are historical.
 
-## Capture styles (chosen before the screenshot)
-In: fullscreen, active monitor, monitor picker, active window, window picker, region, last region, freehand/lasso.
-Pre-capture options: delay timer, show cursor, magnifier/crosshair, window border/shadow.
-Phase 2: scrolling capture (needs Accessibility, fragile).
-Out: video/GIF recording, OCR, webpage capture, uploads/destinations. This is a screenshot-only app.
+## Implemented design
 
-## Annotation (core feature, as in ShareX region capture)
-Annotate in the selection overlay before the shot is finalized, the way ShareX does it:
-- Shapes: rectangle/box, ellipse, line, arrow.
-- Highlight: translucent marker box.
-- Area effects: blur, pixelate, spotlight (dims everything except one area).
-- Drawing: freehand pen.
-- Text: plain or with background.
-- Numbered step markers.
-- Crop.
-Every tool has color, stroke width, fill and opacity settings, plus undo/redo and select/move/resize/delete. Tool hotkeys follow ShareX letters where possible. Enter or a double-click finalizes; Esc cancels.
-Blur and pixelate are baked into pixels on export, not a removable layer, so the redaction can't be undone.
+The app is a native menu-bar application for macOS 14 and later. AppKit owns capture windows and editing. SwiftUI owns Settings. ScreenCaptureKit supplies display and window images. CoreGraphics and CoreImage render the output. KeyboardShortcuts 3.1.0 supplies global shortcuts; no other external runtime package is used.
 
-## Pipeline
-Pick a style and options (CaptureRequest), then the delay runs. The screen freezes into a frozen frame and an overlay opens (one borderless window per screen, Retina-correct). In the overlay you select an area and annotate it. The annotations are flattened onto the crop, then border and shadow are added. The clipboard is cleared and gets one item holding both PNG and TIFF.
+Packages/ShareXCore contains geometry, capture options, annotations, the editor document, undo history, and stored settings. App/Sources contains platform adapters and the UI.
 
-## Layout
-CaptureCore (types, settings, LastRegionStore), CaptureKit (ScreenCaptureKit engine), CaptureUI (overlays, pickers), Annotate (shape model, tool renderers, undo stack, CoreImage blur/pixelate), App (menu bar, hotkeys via the KeyboardShortcuts package, no Accessibility needed).
+The capture path checks permission, applies the selected delay, freezes pixels, and opens selection or editing. The editor retains the frozen frame and an ordered annotation document. Export flattens the selected area, adds the requested border or shadow, and encodes PNG and TIFF. Clipboard and local PNG writes have separate results. A failed destination can be retried without repeating a successful write.
 
-## Milestones
-M0 Screen Recording permission flow, plus fullscreen/active monitor to the clipboard
-M1 region, last region, hotkeys
-M2 annotation core: box, highlight, arrow/line, pen, blur/pixelate, text, undo/redo, tool settings bar
-M3 the rest of annotation (ellipse, step markers, spotlight, crop, select/move/resize), window picker, lasso, delay, cursor, border/shadow
-M4 polish: save to file, settings, magnifier, a "re-edit last capture" editor window
-M5 time-boxed scrolling capture
+## User controls
 
-## How we verify
-Our box is Linux, so the founder builds in Xcode on a Mac and runs the checklist:
-- the permission grant and denial paths
-- multi-monitor and Retina crops
-- Esc cancels
-- every annotation tool shows up in the pasted image
-- blur can't be reversed in the exported PNG
-- pasting into Preview, Notes and Slack
-- no upload UI anywhere
+- Eight capture modes: region, freehand, window picker, active window, monitor picker, active monitor, fullscreen, and last region.
+- Magnifier and crosshair during selection, plus a magnifier while adjusting a crop. Size labels show crop dimensions in image pixels, before border or shadow padding.
+- Boxes, ellipses, lines, arrows, highlighter, blur, pixelation, spotlight, pen, text, numbered steps, and crop.
+- Selection, movement, resizing, deletion, undo, and redo. Crop arrows move one image pixel; Shift moves ten pixels and Option adjusts the trailing edge.
+- Capture, Shortcuts, and Output settings pages. Shortcut controls include search, native recording, conflicts, clear, per-command defaults, and restore-all confirmation.
+- Clipboard output plus a local PNG for a new installation. Existing preferences are preserved.
 
-## Top risks
-Annotation performance on 5K/multi-display frozen frames (render only the dirty region).
-The Screen Recording (TCC) permission, coordinates on mixed-DPI multi-display setups, clipboard format mismatch, and the fragility of scrolling capture.
+## Privacy and resource rules
+
+Earlier protected pixels remain protected when later blur or pixelation overlaps them. Later filter input replaces those protected pixels with opaque black. Unsafe or over-budget effect operations use an opaque fallback. Blur and pixelation remain visual obscuring tools; they are not a promise that the original content cannot be inferred.
+
+Images are limited to 64 Mi pixels. Stored settings are limited to 1 MiB before parsing. Each owned shortcut string is limited to 1 KiB before decoding and must fit native integer widths. Recovery preserves valid assignments and leaves conflicting recovered defaults disabled. Committed effect patches are limited to 64 MiB and 128 entries. The cached live effect preview is limited to 16 MiB. Protection lookup is bounded by 1,024 candidates and 64 intersections per effect. These limits do not cap total process RSS.
+
+Other recording apps can capture the editor, including pixels before the user finishes redacting them. The app does not claim that NSWindow.sharingType excludes modern recording APIs.
+
+## Verification
+
+The Windows host runs portable script checks without WSL. GitHub macOS runs the core suite, AddressSanitizer, native app E2E, and Release performance/resource checks. E2E test code is excluded from the shipped app. An external process timeout preserves a native stack sample if the test driver stalls.
+
+The performance gate requires Release hover p95 main-thread CPU below 2 ms and verifies event delivery. Debug timing, elapsed time, and display-link callbacks remain diagnostic measurements. They do not prove physical screen presentation time.
+
+Memory checks record repeated sessions, buffer limits, object release, current RSS, peak RSS, and idle CPU. A separate diagnostic process traces image-provider lifetime and context caches. A successful ownership check alone is not proof of a low memory footprint.
+
+The source security audit at `e8f9596` used explicit coverage and two independent coverage critics. All 47 source units were covered and no qualifying vulnerability was found. Audit-driven reliability changes received separate source review. At `a5cb376`, both Intel and Apple silicon passed 97 core tests, 97 AddressSanitizer tests, and 483 native E2E checks, with six hardware-dependent checks explicitly unavailable. See [the review index](reviews/README.md) for current evidence and historical reports.
+
+## Release limits and deferred features
+
+The current package is ad-hoc signed with Hardened Runtime. It is not Apple-notarized. Developer ID signing and notarization need the owner's Apple credentials. Physical keyboard, permission-prompt, Retina, and mixed-monitor checks remain separate hardware checks.
+
+Scrolling capture, video, GIF recording, OCR, uploads, and re-editing a prior capture are not implemented in this version.

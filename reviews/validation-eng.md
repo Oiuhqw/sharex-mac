@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # ShareX macOS — Head of Eng validation (static review + core tests)
 
 Scope: `App/Sources/*` (14 files), `Packages/ShareXCore` (6 sources, 3 test files), checked against `PLAN.md` and `plans/head-of-eng.md` (M0–M8). **Everything below about the app is static wiring only. Nothing was built or run on macOS.** That includes ScreenCaptureKit, TCC, overlay input, Retina crops and pasteboard consumers. Only the `ShareXCore` tests were executed, on Linux.

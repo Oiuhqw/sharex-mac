@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # Validation (macOS developer, round 3): source traced end to end before the Mac E2E run
 
 **Summary: 36 features checked. 29 WORKS, 4 BUG, 3 UNVERIFIABLE-ON-LINUX. No blockers.** All four bugs are small, and each has a fix below.

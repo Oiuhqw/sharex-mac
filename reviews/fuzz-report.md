@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # Fuzz report (ShareXCore)
 
 ## Harness 1: seeded XCTest properties (`Tests/ShareXCoreTests/FuzzTests.swift`)

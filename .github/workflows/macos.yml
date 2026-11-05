@@ -4,24 +4,34 @@ name: macOS
 on:
   push:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: macOS runner architecture
+        type: choice
+        options: [macos-15-intel, macos-15]
+        default: macos-15-intel
 
 permissions:
   contents: read
 
 concurrency:
-  group: macos-${{ github.ref }}
+  group: macos-${{ github.ref }}-${{ inputs.runner || 'macos-15-intel' }}
   cancel-in-progress: true
 
 jobs:
   build-and-test:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner || 'macos-15-intel' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
+      - name: CI script regression tests
+        run: python3 -m unittest discover -s scripts/tests -v
+
       - name: Toolchain
         run: |
-          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+          test -d /Applications/Xcode_26.3.app
+          sudo xcode-select -s /Applications/Xcode_26.3.app
 
           sw_vers
           xcodebuild -version
@@ -33,9 +43,23 @@ jobs:
       - name: Generate project (pinned XcodeGen + Package.resolved)
         run: scripts/ci-setup.sh
 
-      - name: Core tests (seeded fuzz harness included)
+      - name: Core tests (deterministic property tests included)
         working-directory: Packages/ShareXCore
-        run: swift test --parallel
+        env:
+          FUZZ_SEED: '1525137630'
+          FUZZ_SCALE: '1'
+        run: |
+          set -o pipefail
+          swift test --parallel 2>&1 | tee ../../core-tests.log
+
+      - name: Core tests with AddressSanitizer
+        working-directory: Packages/ShareXCore
+        env:
+          FUZZ_SEED: '3405691582'
+          FUZZ_SCALE: '1'
+        run: |
+          set -o pipefail
+          swift test --sanitize=address --parallel 2>&1 | tee ../../core-asan.log
 
       - name: Build app (unsigned)
         run: |
@@ -68,6 +92,14 @@ jobs:
       - name: E2E (real app, real pasteboard; SCK if TCC grant works)
         run: scripts/e2e.sh
 
+      - name: Upload E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e
+          path: e2e-out
+          if-no-files-found: ignore
+
       - name: Build app (Release, for perf)
         if: always()
         run: |
@@ -75,11 +107,19 @@ jobs:
           xcodebuild build -project ShareXMac.xcodeproj -scheme ShareX -configuration Release \
             -destination 'platform=macOS' -derivedDataPath build -disableAutomaticPackageResolution \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) SHAREX_E2E' | tail -5
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) SHAREX_E2E' 2>&1 | tee xcodebuild-release.log | tail -5
 
-      - name: Perf scenario (Release, 2x synthetic display)
+      - name: Perf and resource scenarios (Release, synthetic 2x and runner display)
         if: always()
+        timeout-minutes: 8
         run: scripts/perf.sh
+
+      - name: Memory ownership diagnosis (separate Release process)
+        if: always()
+        run: |
+          python3 scripts/run-bounded.py --timeout 120 --log perf-out/memory-diagnosis/driver.log -- \
+            build/Build/Products/Release/ShareX.app/Contents/MacOS/ShareX \
+            --e2e "$PWD/perf-out/memory-diagnosis" --memory-diagnosis
 
       - name: Upload perf
         if: always()
@@ -89,14 +129,6 @@ jobs:
           path: perf-out
           if-no-files-found: ignore
 
-      - name: Upload E2E artifacts
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: e2e
-          path: e2e-out
-          if-no-files-found: ignore
-
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -104,5 +136,15 @@ jobs:
           name: logs
           path: |
             xcodebuild.log
+            xcodebuild-release.log
+            core-tests.log
+            core-asan.log
             smoke.log
           if-no-files-found: ignore
+
+  package:
+    needs: build-and-test
+    uses: ./.github/workflows/dmg.yml
+    with:
+      runner: ${{ inputs.runner || 'macos-15-intel' }}
+

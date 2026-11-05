@@ -13,6 +13,7 @@ import CoreGraphics
 /// Point rects are `CGRect` (always display top-left unless a name says Cocoa). Pixel rects are
 /// `PixelRect`, a separate integer type, so passing points where pixels are expected does not compile.
 public enum Geometry {
+    private static let pixelRoundingTolerance: CGFloat = 1e-6
     /// The normalized rect spanned by two drag points.
     public static func rect(from a: CGPoint, to b: CGPoint) -> CGRect {
         CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
@@ -26,10 +27,30 @@ public enum Geometry {
     /// Scales a point rect to pixels and snaps outward to whole pixels so a selection never loses an edge.
     public static func pixelRect(_ r: CGRect, scale: CGFloat) -> PixelRect {
         // A tiny epsilon keeps rects that came from whole pixels (p / scale * scale) from growing by one.
-        let e: CGFloat = 1e-6
+        let e = pixelRoundingTolerance
         let x0 = Int((r.minX * scale + e).rounded(.down)), y0 = Int((r.minY * scale + e).rounded(.down))
         let x1 = Int((r.maxX * scale - e).rounded(.up)), y1 = Int((r.maxY * scale - e).rounded(.up))
         return PixelRect(x: x0, y: y0, w: x1 - x0, h: y1 - y0)
+    }
+
+    public static func capturePixels(_ r: CGRect, scale: CGFloat, width: Int, height: Int) -> PixelRect? {
+        guard scale.isFinite, scale > 0, width > 0, height > 0, width < Int.max / 4, height < Int.max / 4,
+              r.origin.x.isFinite, r.origin.y.isFinite, r.width.isFinite, r.height.isFinite,
+              r.maxX.isFinite, r.maxY.isFinite else { return nil }
+        let clipped = r.intersection(CGRect(x: 0, y: 0, width: CGFloat(width) / scale, height: CGFloat(height) / scale))
+        guard !clipped.isNull, !clipped.isEmpty else { return nil }
+        return pixelRect(clipped, scale: scale).clamped(width: width, height: height)
+    }
+
+    public static func fullyCoveredPixels(_ r: CGRect, scale: CGFloat, width: Int, height: Int) -> PixelRect? {
+        guard let outer = capturePixels(r, scale: scale, width: width, height: height) else { return nil }
+        let clipped = r.intersection(CGRect(x: 0, y: 0, width: CGFloat(width) / scale, height: CGFloat(height) / scale))
+        let e = pixelRoundingTolerance
+        let x = max(outer.x, Int(ceil(clipped.minX * scale - e)))
+        let y = max(outer.y, Int(ceil(clipped.minY * scale - e)))
+        let right = min(outer.maxX, Int(floor(clipped.maxX * scale + e)))
+        let bottom = min(outer.maxY, Int(floor(clipped.maxY * scale + e)))
+        return right > x && bottom > y ? PixelRect(x: x, y: y, w: right - x, h: bottom - y) : nil
     }
 
     /// Clamps `r` inside `bounds`. Returns nil when nothing remains.
@@ -39,9 +60,13 @@ public enum Geometry {
     }
 
     /// The selection a crop-tool drag from `a` to `b` produces inside `bounds`, or nil when the drag is
-    /// smaller than one point. Callers keep the previous crop on nil instead of clearing it.
-    public static func cropDrag(from a: CGPoint, to b: CGPoint, in bounds: CGRect) -> CGRect? {
-        clamp(rect(from: a, to: b), to: bounds)
+    /// smaller than one image pixel. Callers keep the previous crop on nil instead of clearing it.
+    public static func cropDrag(from a: CGPoint, to b: CGPoint, in bounds: CGRect, scale: CGFloat = 1) -> CGRect? {
+        let r = rect(from: a, to: b).intersection(bounds)
+        guard scale.isFinite, scale > 0, !r.isNull,
+              r.width * scale >= 1 - pixelRoundingTolerance,
+              r.height * scale >= 1 - pixelRoundingTolerance else { return nil }
+        return r
     }
 
     /// Bounding box of all frames (the virtual desktop).
@@ -64,6 +89,37 @@ public enum Geometry {
         let t = len2 == 0 ? 0 : max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2))
         let cx = a.x + t * dx - p.x, cy = a.y + t * dy - p.y
         return (cx * cx + cy * cy).squareRoot()
+    }
+
+    static func signedDistance(_ p: CGPoint, toEllipse r: CGRect) -> CGFloat {
+        var a = r.width / 2, b = r.height / 2
+        var x = abs(p.x - r.midX), y = abs(p.y - r.midY)
+        guard a > 0, b > 0, a.isFinite, b.isFinite, x.isFinite, y.isFinite else { return .infinity }
+        if a < b { swap(&a, &b); swap(&x, &y) }
+        let scale = max(a, max(x, y))
+        a /= scale; b /= scale; x /= scale; y /= scale
+        if a == b { return (hypot(x, y) - a) * scale }
+        if x == 0 { return (y - b) * scale }
+
+        let difference = (a - b) * (a + b)
+        let nearest: CGPoint
+        if y == 0 {
+            let c = min(1, a * x / difference)
+            nearest = CGPoint(x: a * c, y: b * sqrt(max(0, 1 - c * c)))
+        } else {
+            var lower: CGFloat = 0, upper: CGFloat = .pi / 2
+            for _ in 0..<64 {
+                let angle = (lower + upper) / 2
+                let s = sin(angle), c = cos(angle)
+                let distanceDerivative = a * x * s - b * y * c - difference * s * c
+                if distanceDerivative > 0 { upper = angle }
+                else { lower = angle }
+            }
+            let angle = (lower + upper) / 2
+            nearest = CGPoint(x: a * cos(angle), y: b * sin(angle))
+        }
+        let distance = hypot(x - nearest.x, y - nearest.y) * scale
+        return hypot(x / a, y / b) <= 1 ? -distance : distance
     }
 
     /// The two barb end points of an arrow head at `tip`, pointing away from `tail`.
@@ -136,6 +192,18 @@ public struct PixelRect: Equatable, Hashable, Sendable, CustomStringConvertible 
     public var isEmpty: Bool { w <= 0 || h <= 0 }
     public var description: String { "\(x),\(y) \(w)x\(h)" }
 
+    public func intersection(_ other: PixelRect) -> PixelRect? {
+        let left = max(x, other.x), top = max(y, other.y), right = min(maxX, other.maxX), bottom = min(maxY, other.maxY)
+        return right > left && bottom > top ? PixelRect(x: left, y: top, w: right - left, h: bottom - top) : nil
+    }
+
+    public func adjusted(dx: Int, dy: Int, resizing: Bool, width: Int, height: Int) -> PixelRect {
+        if resizing {
+            return PixelRect(x: x, y: y, w: min(max(1, w + dx), width - x), h: min(max(1, h + dy), height - y))
+        }
+        return PixelRect(x: min(max(0, x + dx), width - w), y: min(max(0, y + dy), height - h), w: w, h: h)
+    }
+
     /// Intersection with an image of `width`×`height`. Nil when nothing remains.
     public func clamped(width: Int, height: Int) -> PixelRect? {
         let x0 = max(0, x), y0 = max(0, y), x1 = min(width, maxX), y1 = min(height, maxY)
@@ -179,17 +247,22 @@ public struct StitchLayout: Equatable, Sendable {
 /// The numbers behind blur and pixelate. The pixels themselves are made by CoreImage in the app;
 /// these are the parts that decide how strong the redaction is and where the grid sits.
 public enum EffectMath {
-    /// Gaussian sigma in pixels. Three box passes of radius r approximate σ = r; the floor of 4 px keeps
-    /// even the weakest setting from leaving small text readable.
+    /// Weakest redaction strength in points (security review N1: 2 px left small text readable).
+    public static let minStrength: Double = 8
+
+    /// Gaussian sigma in pixels. Three box passes of radius r approximate σ = r; strength is floored at
+    /// `minStrength` points so even the weakest setting does not leave small text readable.
     public static func blurSigma(strength: Double, scale: CGFloat) -> Double {
-        let v = strength * Double(scale)
-        return v.isFinite ? max(4, v) : 4
+        let sc = Double(scale).isFinite && scale > 0 ? Double(scale) : 1
+        let v = max(minStrength, strength) * sc
+        return v.isFinite ? max(minStrength, v) : minStrength
     }
 
-    /// Pixelate block size in pixels; at least 2 so every block really merges pixels.
+    /// Pixelate block size in pixels; floored at `minStrength` points like blur.
     public static func pixelateBlock(strength: Double, scale: CGFloat) -> Double {
-        let v = strength * Double(scale)
-        return v.isFinite ? max(2, v) : 2
+        let sc = Double(scale).isFinite && scale > 0 ? Double(scale) : 1
+        let v = max(minStrength, strength) * sc
+        return v.isFinite ? max(minStrength, v) : minStrength
     }
 
     /// CIPixellate centre for a region given in y-up pixels. Blocks are laid out from this point, so using

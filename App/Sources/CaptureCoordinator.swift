@@ -60,7 +60,7 @@ final class CaptureCoordinator {
         if style == .fullscreen, frozen.count > 1 {
             // All displays stitched into one image, edited in a window when the editor is on.
             let scale = frozen.map(\.scale).max() ?? 1
-            guard let img = stitch(frozen) else { return }   // same scale StitchLayout picks
+            guard let img = stitch(frozen) else { throw CaptureError.imageTooLarge }   // same scale StitchLayout picks
             if o.openEditor { openCanvas(img, scale: scale, screen: underMouse, title: "All displays") }
             else { await deliver(img, scale: scale, last: nil) }
             return
@@ -71,7 +71,7 @@ final class CaptureCoordinator {
             if let img = Export.flatten(renderer: r, doc: EditorDocument(), crop: preset.rect, lasso: nil) {
                 await deliver(img, scale: f.scale,
                         last: style == .lastRegion ? LastRegion(displayID: preset.displayID, rect: preset.rect) : nil)
-            }
+            } else { throw CaptureError.captureFailed("The selected image could not be prepared. Try a smaller capture.") }
             return
         }
 
@@ -147,14 +147,14 @@ final class CaptureCoordinator {
         }
         switch error {
         case CaptureError.noPermission: Permissions.showDeniedAlert()
-        case CaptureError.windowGone:
+        case CaptureError.windowGone, CaptureError.imageTooLarge, CaptureError.captureFailed:
             // Not a fault, but silent beeps leave the user guessing.
             NSApp.activate()
             #if SHAREX_E2E
             if E2E.suppressAlerts { E2E.alertsShown += 1; break }   // E2E seam: no modal on a headless runner
             #endif
             let a = NSAlert()
-            a.messageText = "Window not captured"
+            a.messageText = "Screenshot could not be prepared"
             a.informativeText = error.localizedDescription
             a.runModal()
         default: NSSound.beep(); Log.capture.error("capture failed: \(error.localizedDescription, privacy: .public)")
@@ -171,14 +171,21 @@ final class CaptureCoordinator {
         let encoded = await Task.detached(priority: .userInitiated) { () -> Export.Encoded? in
             Export.encode(Export.decorateOffMain(box.image, options: opts, scale: scale), scale: scale)
         }.value
-        guard let encoded, Export.write(encoded) else { NSSound.beep(); return }
-        Perf.stamp("clipboard-ready")
-        // The clipboard already has the image; a failed save must still be visible, not silent.
-        if s.saveToFile, await Export.savePNGData(encoded.png, folder: s.saveFolder) == nil {
-            NSSound.beep(); Log.export.error("could not save PNG to \(s.saveFolder, privacy: .private)")
+        guard let encoded else {
+            let previous = NSWorkspace.shared.frontmostApplication
+            NSApp.activate()
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Screenshot could not be prepared"
+            alert.informativeText = "No image was copied or saved. Try a smaller capture or close other apps to free memory."
+            alert.runModal()
+            if NSWorkspace.shared.frontmostApplication == .current { Focus.restore(previous) }
+            return
         }
-        if let last { settings.update { $0.lastRegion = last } }
-        if s.playSound { NSSound(named: "Tink")?.play() }
+        let delivery = ExportDelivery(encoded: encoded, folder: s.saveToFile ? s.saveFolder : nil)
+        await delivery.attempt()
+        await delivery.finish(playSound: s.playSound)
+        if delivery.hasOutput, let last { settings.update { $0.lastRegion = last } }
     }
 
     /// Places every display at its global position. Output uses the highest scale so Retina detail survives.

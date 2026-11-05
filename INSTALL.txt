@@ -1,0 +1,45 @@
+ShareX for macOS 0.1.2 (build 3)
+macOS 14 or later. Universal: Apple Silicon and Intel.
+
+Drag ShareX.app to Applications, then open it. ShareX lives in the menu bar.
+Allow Screen Recording in System Settings > Privacy & Security, then quit and reopen ShareX.
+
+This build is ad-hoc signed with Hardened Runtime. It is NOT Apple-notarized.
+The packaging workflow does not use Developer ID signing. A downloaded copy may require
+System Settings > Privacy & Security > Open Anyway after the first launch attempt.
+Check ShareX.dmg.sha256 from the same build before installing.
+
+If macOS says the app "is damaged" or refuses to open it, clear the download
+quarantine flag after copying it to Applications, then open it again:
+
+    xattr -dr com.apple.quarantine /Applications/ShareX.app
+
+If capture permission stops working after an ad-hoc update, remove the old ShareX
+entry from Screen Recording permissions, add the updated /Applications/ShareX.app,
+and reopen it.
+
+Changes in 0.1.2:
+- Native Capture, Shortcuts and Output settings pages, with searchable keybindings.
+- Shortcut recording, duplicate feedback, clear, restore, and persistent assignments.
+- Damaged shortcut preferences recover without replacing valid custom assignments.
+- New installations copy to the clipboard and save PNG files to Pictures/ShareX.
+- Crop arrow keys move one image pixel. Shift moves ten; Option resizes the trailing edge.
+- Later blur and pixelate effects preserve earlier protected pixels.
+- Image buffers have allocation limits; cached effects and live previews have byte limits.
+
+Included from 0.1.1:
+- Clipboard and PNG file export succeed or fail independently.
+- Failed outputs show Retry and Save As; the screenshot remains available while recovering.
+- Successful outputs are preserved when retrying, without duplicate files.
+- The success sound plays only when every requested output succeeds.
+- App icon added, and invalid relative save-folder paths rejected.
+- Magnifier (loupe) appears on the first frame and follows the cursor even when ShareX is not the active app.
+- Esc, Return, tool hotkeys and typed text reach the capture overlay while another app stays in front.
+- Blur and pixelate strength cannot go below 8 pt. Use a fully opaque filled box to completely hide sensitive content.
+- Smoother blur while dragging (reduced-resolution preview; the saved image is full resolution).
+
+Native automated tests cover capture/editor/export flows and injected export failures.
+Hosted CI cannot fully verify physical hotkeys, real multi-monitor/Retina hardware,
+or the interactive permission prompts on your Mac.
+
+Other recording apps may capture the editor before redactions are complete.

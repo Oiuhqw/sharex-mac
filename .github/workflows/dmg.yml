@@ -1,18 +1,30 @@
 # Builds the shipped DMG. No Developer ID / notarization is available (no paid Apple account), so the app is
 # ad-hoc signed with the Hardened Runtime. Gatekeeper still rejects it on first open: see README "Installing".
 name: DMG
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: macOS runner architecture
+        type: choice
+        options: [macos-15-intel, macos-15]
+        default: macos-15-intel
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: macos-15-intel
 permissions:
   contents: read
 jobs:
   dmg:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner || 'macos-15-intel' }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - name: Select newest Xcode 16
+      - name: Select Xcode 26.3
         run: |
-          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+          sudo xcode-select -s /Applications/Xcode_26.3.app
           xcodebuild -version
       - name: Generate project (pinned XcodeGen + Package.resolved)
         run: scripts/ci-setup.sh
@@ -37,6 +49,15 @@ jobs:
           SYMS=$(nm -a "$BIN" 2>/dev/null | grep -E 'E2E|e2eFixture|e2eDisplayFixture|e2eSurfaces' || true)
           if [ -n "$SYMS" ]; then echo "$SYMS" | head -20; echo "::error::E2E symbols found in the shipped binary"; exit 1; fi
           echo "nm: no E2E symbols ($(nm -a "$BIN" 2>/dev/null | wc -l | tr -d ' ') symbols checked)"
+      - name: Verify packaged icon
+        run: |
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$APP/Contents/Info.plist")" = AppIcon
+          test -s "$APP/Contents/Resources/AppIcon.icns"
+          iconutil -c iconset "$APP/Contents/Resources/AppIcon.icns" -o /tmp/ShareX.iconset
+          # actool can keep large representations in Assets.car; iconutil's legacy filenames vary.
+          # Require a decodable legacy icon, and report the representations actually packaged.
+          test -n "$(find /tmp/ShareX.iconset -name '*.png' -print -quit)"
+          find /tmp/ShareX.iconset -name '*.png' -exec sips -g pixelWidth -g pixelHeight {} \;
       - name: Ad-hoc sign inside-out with Hardened Runtime (no --deep)
         run: |
           # Nested code first (frameworks, dylibs, helpers, XPC, bundles), deepest paths first, then the app.
@@ -57,12 +78,23 @@ jobs:
           "$APP/Contents/MacOS/ShareX" & PID=$!
           sleep 8
           kill -0 $PID || { echo "::error::app exited under Hardened Runtime"; exit 1; }
-          echo "still running after 8s"; kill $PID || true
+          echo "still running after 8s"
+          echo 'Shipped app, warm idle before any capture. RSS is KiB; CPU is a decaying average over up to one minute.' > package-resources.log
+          for sample in 1 2 3 4 5; do
+            kill -0 "$PID"
+            ps -p "$PID" -o pid=,rss=,pcpu=,time= >> package-resources.log
+            sleep 1
+          done
+          du -sk "$APP" >> package-resources.log
+          stat -f 'Executable bytes: %z' "$APP/Contents/MacOS/ShareX" >> package-resources.log
+          cat package-resources.log
+          kill "$PID" || true
       - name: Make DMG
         run: |
           mkdir dmgroot
           cp -R "$APP" dmgroot/
           ln -s /Applications dmgroot/Applications
+          cp INSTALL.txt dmgroot/
           hdiutil create -volname ShareX -srcfolder dmgroot -ov -format UDZO ShareX.dmg
           hdiutil verify ShareX.dmg
           shasum -a 256 ShareX.dmg | tee ShareX.dmg.sha256
@@ -72,6 +104,8 @@ jobs:
           path: |
             ShareX.dmg
             ShareX.dmg.sha256
+            INSTALL.txt
+            package-resources.log
       - name: Quarantine-simulated install + launch (what a downloaded DMG gets)
         timeout-minutes: 4
         run: |

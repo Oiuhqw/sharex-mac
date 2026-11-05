@@ -69,9 +69,11 @@ final class RegressionTests: XCTestCase {
     // validation-eng: redaction strength and grid placement had no tests.
     func testBlurSigmaMatchesBoxReferenceWithFloor() {
         XCTAssertEqual(EffectMath.blurSigma(strength: 10, scale: 2), 20)
-        XCTAssertEqual(EffectMath.blurSigma(strength: 1, scale: 1), 4, "weak settings still redact")
-        XCTAssertEqual(EffectMath.blurSigma(strength: .nan, scale: 2), 4)
-        XCTAssertEqual(EffectMath.pixelateBlock(strength: 0.5, scale: 1), 2)
+        XCTAssertEqual(EffectMath.blurSigma(strength: 1, scale: 1), 8, "weak settings still redact")
+        XCTAssertEqual(EffectMath.blurSigma(strength: .nan, scale: 2), 16)
+        XCTAssertEqual(EffectMath.pixelateBlock(strength: 0.5, scale: 1), 8)
+        XCTAssertEqual(EffectMath.pixelateBlock(strength: 2, scale: 2), 16, "N1: 2 pt floored to 8 pt")
+        XCTAssertEqual(EffectMath.blurSigma(strength: 2, scale: 2), 16)
         XCTAssertEqual(EffectMath.pixelateBlock(strength: 8, scale: 2), 16)
     }
 

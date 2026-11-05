@@ -1,3 +1,5 @@
+> Historical planning proposal. See [the current implementation plan](../PLAN.md) for the accepted scope and design.
+
 # ShareX for macOS (capture side): CTO technical plan
 **Author:** CTO · **Date:** 2026-11-03 · **Status:** Planning (no application code yet)
 

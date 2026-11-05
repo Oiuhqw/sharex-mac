@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # Validation review (CTO)
 **Date:** 2026-11-03 · **Reviewer:** CTO · **Scope:** static review of `App/Sources/*.swift`, `project.yml`, `Base.xcconfig`, `Local.xcconfig.example`, and the `ShareXCore` capture types, checked against `plans/cto.md`. I compiled nothing: the box is Linux and has no macOS SDK. Prior reviews (macos-developer r1/r2, fixes r1/r2) were cross-checked against the code itself, not their own reports.
 

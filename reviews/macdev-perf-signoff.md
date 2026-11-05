@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # macOS developer sign-off: perf + security pass (`7910f92..61060c2`), 2026-11-03 (UTC+8)
 
 ## Verdict: **SIGN**, with one required on-device check before the DMG is published

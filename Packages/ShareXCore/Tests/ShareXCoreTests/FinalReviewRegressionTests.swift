@@ -54,4 +54,17 @@ final class FinalReviewRegressionTests: XCTestCase {
 
 private extension RGBA {
     func with(g: Double, r: Double, b: Double) -> RGBA { RGBA(r, g, b, a) }
+
+}
+
+final class RedactionStrengthFloorTests: XCTestCase {
+    // Security N1: stored blur/pixelate strengths below 8 pt are raised; spotlight keeps its range.
+    func testStoredWeakRedactionStrengthIsRaised() throws {
+        let json = #"{"toolStyles":["blur",{"strength":2},"pixelate",{"strength":0},"spotlight",{"strength":2}]}"#
+        let s = try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8))
+        XCTAssertEqual(s.toolStyles[.blur]?.strength, 8)
+        XCTAssertEqual(s.toolStyles[.pixelate]?.strength, 8)
+        XCTAssertEqual(s.toolStyles[.spotlight]?.strength, 2)
+        XCTAssertEqual(ShapeStyle(strength: 3).sanitized(for: .blur).strength, 8)
+    }
 }

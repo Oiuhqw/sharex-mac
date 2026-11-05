@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # Review request: macOS Developer
 
 Please review `/workspace/sharex-mac`, which is a full port of the ShareX screenshot and annotation features. Write your feedback to `reviews/macos-developer.md`.

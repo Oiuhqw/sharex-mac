@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # Final feature matrix — ShareX for macOS
 
 Validated 2026-11-03 (UTC+8) on Linux. The core (`Packages/ShareXCore`) is built, unit-tested and fuzzed here.

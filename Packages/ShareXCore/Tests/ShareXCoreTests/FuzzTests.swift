@@ -116,8 +116,8 @@ final class FuzzTests: XCTestCase {
         var rng = SplitMix64(fuzzSeed &+ 3)
         for i in 0..<(10_000 * fuzzScale) {
             let s = Double.random(in: -100...1000, using: &rng), sc = rng.scale()
-            XCTAssertGreaterThanOrEqual(EffectMath.blurSigma(strength: s, scale: sc), 4, "case \(i)")
-            XCTAssertGreaterThanOrEqual(EffectMath.pixelateBlock(strength: s, scale: sc), 2, "case \(i)")
+            XCTAssertGreaterThanOrEqual(EffectMath.blurSigma(strength: s, scale: sc), 8, "case \(i)")
+            XCTAssertGreaterThanOrEqual(EffectMath.pixelateBlock(strength: s, scale: sc), 8, "case \(i)")
             let start = Int.random(in: -5000...5000, using: &rng), count = Int.random(in: 1...3000, using: &rng)
             let block = Int(EffectMath.pixelateBlock(strength: Double.random(in: 0...60, using: &rng), scale: sc))
             let b = EffectMath.blockStarts(origin: start, start: start, count: count, block: block)

@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # macOS Developer review: full code (App + ShareXCore)
 
 Status: static review on Linux. There is **no Swift toolchain on the box** (`which swift` is empty), so `swift test` was not run and nothing was compiled. Anything that depends on AppKit/SCK behaviour or exact SDK annotations is marked [UNVERIFIED]; confirm in Xcode 16 / macOS 14 and 15.

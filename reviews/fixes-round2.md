@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # Fixes, round 2 (response to reviews/macos-developer-r2.md)
 
 | Item | Status | What / why |

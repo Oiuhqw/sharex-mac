@@ -1,3 +1,5 @@
+> Historical planning proposal. See [the current implementation plan](../PLAN.md) for the accepted scope and design.
+
 # ShareX macOS capture: architecture plan
 
 Status: planning only. No code in this repo yet.

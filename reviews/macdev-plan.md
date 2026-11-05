@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # macOS Developer review: PLAN.md + plans/cto.md
 Status: plan-level review. Nothing here has been compiled; [UNVERIFIED] = confirm in Xcode on a Mac.
 
