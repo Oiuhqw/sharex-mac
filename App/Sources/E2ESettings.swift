@@ -123,7 +123,7 @@ enum E2ESettings {
         do {
             let cases = try recoveryCases(scenario)
             let previousRun = E2E.arg(after: "--shortcut-recovery-previous")
-            let fixture = previousRun.map { URL(fileURLWithPath: $0) } ?? E2E.out
+            let fixture: URL = previousRun.map { URL(fileURLWithPath: $0) } ?? E2E.out
             let data = try Data(contentsOf: fixture.appendingPathComponent("seed.json"))
             let seed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             let freshProcess = seed?["pass"] as? Bool == true && seed?["scenario"] as? String == scenario
