@@ -48,7 +48,7 @@ enum Hotkeys {
 
     private static func recoverStoredShortcuts() {
         let defaults = UserDefaults.standard
-        var invalid: [KeyboardShortcuts.Name] = []
+        var invalid: [Command] = []
         for command in commands {
             let key = "KeyboardShortcuts_\(command.name.rawValue)"
             guard let value = defaults.object(forKey: key) else { continue }
@@ -59,10 +59,17 @@ enum Hotkeys {
                UInt32(exactly: shortcut.carbonModifiers) != nil {
                 continue
             }
-            defaults.removeObject(forKey: key)
-            invalid.append(command.name)
+            defaults.set(false, forKey: key)
+            invalid.append(command)
         }
-        KeyboardShortcuts.reset(invalid)
+        for command in invalid where conflict(for: command.name.initialShortcut, command: command) == nil {
+            KeyboardShortcuts.reset([command.name])
+        }
+    }
+
+    private static func conflict(for shortcut: KeyboardShortcuts.Shortcut?, command: Command) -> Command? {
+        guard let shortcut else { return nil }
+        return commands.first { $0.id != command.id && KeyboardShortcuts.getShortcut(for: $0.name) == shortcut }
     }
 
     @MainActor
@@ -81,11 +88,6 @@ enum Hotkeys {
         }
 
         @Published private(set) var feedback: Feedback?
-
-        private func conflict(for shortcut: KeyboardShortcuts.Shortcut?, command: Command) -> Command? {
-            guard let shortcut else { return nil }
-            return commands.first { $0.id != command.id && KeyboardShortcuts.getShortcut(for: $0.name) == shortcut }
-        }
 
         func validate(_ shortcut: KeyboardShortcuts.Shortcut, for command: Command) -> KeyboardShortcuts.ValidationResult {
             if let other = conflict(for: shortcut, command: command) {

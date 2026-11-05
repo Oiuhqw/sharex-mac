@@ -17,7 +17,7 @@ for db in "/Library/Application Support/com.apple.TCC/TCC.db" "$HOME/Library/App
   grant "$db" "$BIN" 1; grant "$db" "com.sharexmac.ShareX" 0
 done
 RRC=0
-for scenario in ranges encoding; do
+for scenario in ranges encoding collision; do
   RECOVERY_OUT="$OUT/shortcut-recovery-$scenario"
   mkdir -p "$RECOVERY_OUT"
   if ! python3 scripts/run-bounded.py --timeout 30 --log "$RECOVERY_OUT/seed.log" -- "$BIN" --e2e-seed-shortcuts "$scenario" --out "$RECOVERY_OUT"; then
@@ -26,6 +26,12 @@ for scenario in ranges encoding; do
   fi
   if ! python3 scripts/run-bounded.py --timeout 60 --log "$RECOVERY_OUT/verify.log" -- "$BIN" --e2e "$RECOVERY_OUT" --shortcut-recovery "$scenario"; then
     RRC=1
+  fi
+  if [ "$scenario" = collision ]; then
+    mkdir -p "$RECOVERY_OUT/relaunch"
+    if ! python3 scripts/run-bounded.py --timeout 60 --log "$RECOVERY_OUT/relaunch/verify.log" -- "$BIN" --e2e "$RECOVERY_OUT/relaunch" --shortcut-recovery "$scenario" --shortcut-recovery-previous "$RECOVERY_OUT"; then
+      RRC=1
+    fi
   fi
 done
 echo "shortcut recovery exit $RRC"

@@ -25,12 +25,22 @@ enum E2ESettings {
     }
 
     private struct RecoveryCase {
+        enum Storage { case preserved, restored, disabled }
+
         let command: Hotkeys.Command
         let id: String
         let input: Any?
         let expected: KeyboardShortcuts.Shortcut?
-        let preserve: Bool
+        let storage: Storage
         var key: String { "KeyboardShortcuts_\(command.name.rawValue)" }
+
+        @MainActor var storageMatches: Bool {
+            switch storage {
+            case .preserved: preferenceMatches(key, input)
+            case .restored: expected != nil || UserDefaults.standard.object(forKey: key) == nil
+            case .disabled: preferenceMatches(key, false)
+            }
+        }
     }
 
     private static func recoveryCases(_ scenario: String) throws -> [RecoveryCase] {
@@ -52,23 +62,31 @@ enum E2ESettings {
                 .monitorPicker: ("invalid-boolean", true),
                 .lastRegion: ("invalid-storage-type", ["carbonKeyCode": 18, "carbonModifiers": 4608]),
             ]
+        case "collision":
+            invalid = [.activeMonitor: ("default-conflict-disabled", "{\"carbonKeyCode\":")]
         default:
             throw NSError(domain: "ShortcutRecovery", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unknown recovery scenario"])
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let customShortcut = scenario == "collision"
+            ? KeyboardShortcuts.Shortcut(.four, modifiers: [.control, .shift])
+            : KeyboardShortcuts.Shortcut(.eight, modifiers: [.control, .option, .shift])
         return try Hotkeys.commands.map { command in
             if let (id, value) = invalid[command.style] {
-                return RecoveryCase(command: command, id: id, input: value, expected: command.name.initialShortcut, preserve: false)
+                let conflict = scenario == "collision"
+                return RecoveryCase(command: command, id: id, input: value,
+                                    expected: conflict ? nil : command.name.initialShortcut,
+                                    storage: conflict ? .disabled : .restored)
             }
             if command.style == .windowPicker {
-                return RecoveryCase(command: command, id: "disabled-preserved", input: false, expected: nil, preserve: true)
+                return RecoveryCase(command: command, id: "disabled-preserved", input: false, expected: nil, storage: .preserved)
             }
             let custom = command.style == .region
-            let shortcut = custom ? KeyboardShortcuts.Shortcut(.eight, modifiers: [.control, .option, .shift]) : command.name.initialShortcut
+            let shortcut = custom ? customShortcut : command.name.initialShortcut
             let encoded = try shortcut.map { String(decoding: try encoder.encode($0), as: UTF8.self) }
             return RecoveryCase(command: command, id: custom ? "custom-preserved" : "default-preserved",
-                                input: encoded, expected: shortcut, preserve: true)
+                                input: encoded, expected: shortcut, storage: .preserved)
         }
     }
 
@@ -104,21 +122,40 @@ enum E2ESettings {
     static func verifyShortcutRecovery(_ scenario: String) async {
         do {
             let cases = try recoveryCases(scenario)
-            let data = try Data(contentsOf: E2E.out.appendingPathComponent("seed.json"))
+            let previousRun = E2E.arg(after: "--shortcut-recovery-previous")
+            let fixture = previousRun.map { URL(fileURLWithPath: $0) } ?? E2E.out
+            let data = try Data(contentsOf: fixture.appendingPathComponent("seed.json"))
             let seed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             let freshProcess = seed?["pass"] as? Bool == true && seed?["scenario"] as? String == scenario
                 && seed?["count"] as? Int == 8 && seed?["pid"] as? Int32 != ProcessInfo.processInfo.processIdentifier
                 && seed?["pid"] as? Int32 != nil
             E2E.record("shortcut-recovery-fresh-process", freshProcess, ["scenario": scenario])
             guard freshProcess else { return }
+            if previousRun != nil {
+                let data = try Data(contentsOf: fixture.appendingPathComponent("recovered.json"))
+                let recovered = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let relaunched = recovered?["scenario"] as? String == scenario && recovered?["synchronized"] as? Bool == true
+                    && recovered?["pid"] as? Int32 != ProcessInfo.processInfo.processIdentifier
+                    && recovered?["pid"] as? Int32 != nil
+                E2E.record("shortcut-recovery-relaunch", relaunched, ["scenario": scenario])
+                guard relaunched else { return }
+            }
             for test in cases {
                 let actual = KeyboardShortcuts.getShortcut(for: test.command.name)
-                let storage = test.preserve ? preferenceMatches(test.key, test.input)
-                    : test.expected != nil || UserDefaults.standard.object(forKey: test.key) == nil
+                let storage = test.storageMatches
                 E2E.record("shortcut-recovery-\(test.id)", actual == test.expected && storage,
                            ["command": test.command.id, "expectedAssigned": test.expected != nil, "storage": storage])
             }
             E2E.record("shortcut-recovery-unrelated-preserved", recoverySentinels.allSatisfy { preferenceMatches($0.key, $0.value) })
+            if scenario == "collision" {
+                let synchronized = UserDefaults.standard.synchronize()
+                E2E.record("shortcut-recovery-synchronized", synchronized)
+                let recovered: [String: Any] = ["scenario": scenario, "pid": ProcessInfo.processInfo.processIdentifier,
+                                               "synchronized": synchronized]
+                let data = try JSONSerialization.data(withJSONObject: recovered, options: [.prettyPrinted, .sortedKeys])
+                try data.write(to: E2E.out.appendingPathComponent("recovered.json"))
+                await verifyRecoveredRegionShortcut()
+            }
             E2E.app.openSettings()
             guard let window = E2E.app.settingsWindow else {
                 E2E.record("shortcut-recovery-native-recorders", false, ["error": "Settings window absent"])
@@ -139,6 +176,49 @@ enum E2ESettings {
         } catch {
             E2E.record("shortcut-recovery-fixture", false, ["error": error.localizedDescription])
         }
+    }
+
+    private static func verifyRecoveredRegionShortcut() async {
+        let previous = E2E.app.settings.value
+        defer { E2E.setOpts { $0 = previous } }
+        E2E.setOpts {
+            $0.options.openEditor = false
+            $0.options.delaySeconds = 0
+            $0.saveToFile = true
+            $0.saveFolder = E2E.saved.path
+            $0.playSound = false
+        }
+        let clipboard = E2E.markClipboard()
+        let canPost = CGPreflightPostEventAccess()
+        let ready = !E2E.coord.busy && KeyboardShortcuts.isEnabled(for: .region)
+        let captureBefore = Perf.stamps["capture-start"]
+        if canPost && ready { await E2EKeyboard.post(21, flags: [.maskControl, .maskShift]) }
+        let opened = await E2E.until(3000) {
+            E2E.coord.overlay?.e2eSurfaces.contains {
+                $0.window.isKeyWindow && $0.window.firstResponder === $0.view
+            } == true
+        }
+        let surfaces = E2E.coord.overlay?.e2eSurfaces ?? []
+        let selectingRegion = !surfaces.isEmpty && surfaces.allSatisfy {
+            $0.window.isVisible && $0.view.phase == .selecting(.rectangle)
+                && $0.view.doc.state.crop == nil && $0.view.lasso == nil
+        }
+        let captureStarted = Perf.stamps["capture-start"] != captureBefore
+        let clipboardUnchanged = NSPasteboard.general.changeCount == clipboard.change
+            && NSPasteboard.general.string(forType: .string) == "e2e-sentinel"
+        let filesUnchanged = E2E.savedFiles() == clipboard.files
+        E2E.record("shortcut-recovery-region-hid", canPost && ready && opened && selectingRegion && captureStarted
+                   && E2E.coord.busy && clipboardUnchanged && filesUnchanged,
+                   ["eventPostingPermitted": canPost, "shortcutReady": ready, "opened": opened,
+                    "selectingRegion": selectingRegion, "captureStarted": captureStarted,
+                    "clipboardUnchanged": clipboardUnchanged, "filesUnchanged": filesUnchanged])
+        if !surfaces.isEmpty { await E2EKeyboard.post(53) }
+        let cancelled = await E2E.until { !E2E.coord.busy && E2E.coord.overlay == nil }
+        let windowsClosed = surfaces.allSatisfy { !$0.window.isVisible }
+        E2E.unchanged("shortcut-recovery-region-escape", clipboard,
+                      extra: ["cancelledByEscape": cancelled, "windowsClosed": windowsClosed],
+                      cond: selectingRegion && cancelled && windowsClosed)
+        if !cancelled { E2E.esc(); _ = await E2E.until { !E2E.coord.busy } }
     }
 
     private static let accessibility = SettingsAXClient()
@@ -869,7 +949,7 @@ private actor SettingsAXClient {
         process.arguments = [SettingsAXTransport.mode, requestData.base64EncodedString()]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = response
-        process.standardError = FileHandle.nullDevice
+        process.standardError = FileHandle.standardError
         let deadline = ProcessInfo.processInfo.systemUptime + 5
         try process.run()
         started?()
@@ -1005,14 +1085,12 @@ private final class SettingsAXWalker {
     private let trusted = AXIsProcessTrusted()
     private var failure: String?
     private var issues: [AttributeIssue] = []
-    private var canRetryAttribute = false
 
     init(parent: pid_t) { self.parent = parent }
 
     func run(_ request: SettingsAXClient.Request) -> SettingsAXClient.Reply {
         switch request.operation {
         case .find(let identifier):
-            canRetryAttribute = true
             let element = find(identifier, in: request.title)
             return failure.map(SettingsAXClient.Reply.failure) ?? .element(element)
         case .snapshot: return .snapshot(snapshot(in: request.title))
@@ -1023,7 +1101,6 @@ private final class SettingsAXWalker {
             let result = selectMenu(identifier, title: title, in: request.title)
             return failure.map(SettingsAXClient.Reply.failure) ?? .modal(result)
         case .selectFolder(let name):
-            canRetryAttribute = true
             return .folder(selectFolder(name, in: request.title))
         }
     }
@@ -1043,16 +1120,22 @@ private final class SettingsAXWalker {
     }
 
     private func attribute(_ attribute: String, of element: AXUIElement) -> (AXError, CFTypeRef?) {
-        guard prepare(element) else { return (.failure, nil) }
-        var result: CFTypeRef?
-        let status = AXUIElementCopyAttributeValue(element, attribute as CFString, &result)
-        checkDeadline()
-        if status == .cannotComplete, canRetryAttribute, failure == nil {
-            canRetryAttribute = false
-            Thread.sleep(forTimeInterval: min(0.025, max(0, deadline - ProcessInfo.processInfo.systemUptime)))
-            return self.attribute(attribute, of: element)
+        var attempts = 0
+        defer {
+            if attempts > 1 {
+                NSLog("E2E AX read %@ attempts=%ld remaining=%.3f failure=%@", attribute, attempts,
+                      max(0, deadline - ProcessInfo.processInfo.systemUptime), failure ?? "none")
+            }
         }
-        return (status, result)
+        while prepare(element) {
+            attempts += 1
+            var result: CFTypeRef?
+            let status = AXUIElementCopyAttributeValue(element, attribute as CFString, &result)
+            checkDeadline()
+            guard status == .cannotComplete, failure == nil else { return (status, result) }
+            Thread.sleep(forTimeInterval: min(0.025, max(0, deadline - ProcessInfo.processInfo.systemUptime)))
+        }
+        return (.failure, nil)
     }
 
     private func value(_ attribute: String, of element: AXUIElement) -> CFTypeRef? {
