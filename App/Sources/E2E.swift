@@ -442,6 +442,7 @@ enum E2E {
         await E2EEditing.run()
         await nonEditorModes()
         await editorModes()
+        await lastRegionMissingDisplay()
         await cancelPaths()
         await reentrancyAndFocus()
         await decorationAndNaming()
@@ -661,6 +662,51 @@ enum E2E {
                 if let c = checkClipboard(name, since: m, w: ww, h: wh) { record(name, c.ok && opened, c.info.merging(["canvasEditorOpened": opened]) { $1 }) }
             }
         }
+    }
+
+    static func lastRegionMissingDisplay() async {
+        let previous = app.settings.value
+        defer { setOpts { $0 = previous } }
+        let displayIDs = Set(NSScreen.screens.map { ScreenCapture.displayID(of: $0) })
+        var missingID = UInt32.max
+        while displayIDs.contains(missingID) { missingID -= 1 }
+        setOpts {
+            $0.lastRegion = LastRegion(displayID: missingID, rect: CGRect(x: 10, y: 10, width: 100, height: 50))
+            $0.options.openEditor = false
+            $0.options.delaySeconds = 0
+            $0.saveToFile = true
+            $0.saveFolder = saved.path
+            $0.playSound = false
+        }
+
+        let m = markClipboard()
+        coord.capture(.lastRegion)
+        let opened = await until {
+            coord.overlay?.e2eSurfaces.contains {
+                $0.window.isKeyWindow && $0.window.firstResponder === $0.view
+            } == true || !coord.busy
+        }
+        let surfaces = coord.overlay?.e2eSurfaces ?? []
+        let selecting = !surfaces.isEmpty && surfaces.allSatisfy {
+            $0.window.isVisible && $0.view.phase == .selecting(.rectangle)
+                && $0.view.doc.state.crop == nil && $0.view.lasso == nil
+        }
+        let clipboardUnchanged = NSPasteboard.general.changeCount == m.change
+            && NSPasteboard.general.string(forType: .string) == "e2e-sentinel"
+        let filesUnchanged = savedFiles() == m.files
+        record("lastRegion-missing-display-selects-region",
+               opened && selecting && coord.busy && clipboardUnchanged && filesUnchanged,
+               ["savedDisplayID": missingID, "connectedDisplayIDs": displayIDs.sorted(),
+                "selectingRegion": selecting, "visibleOverlays": surfaces.filter { $0.window.isVisible }.count,
+                "clipboardUnchanged": clipboardUnchanged, "filesUnchanged": filesUnchanged])
+
+        if !surfaces.isEmpty { await E2EKeyboard.post(53) }
+        let cancelled = await until({ !coord.busy && coord.overlay == nil })
+        let windowsClosed = surfaces.allSatisfy { !$0.window.isVisible }
+        unchanged("lastRegion-missing-display-esc-cancels", m,
+                  extra: ["cancelledByEscape": cancelled, "windowsClosed": windowsClosed],
+                  cond: selecting && cancelled && windowsClosed)
+        if !cancelled { esc(); _ = await until({ !coord.busy }) }
     }
 
     static func cancelPaths() async {

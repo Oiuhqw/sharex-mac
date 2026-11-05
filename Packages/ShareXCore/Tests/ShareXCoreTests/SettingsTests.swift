@@ -85,12 +85,20 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(AppSettings.decode(boundary), AppSettings())
     }
 
-    func testLastRegionResolves() {
+    func testLastRegionResolvesOnMatchingDisplayAndClampsToCurrentBounds() {
         let lr = LastRegion(displayID: 7, rect: CGRect(x: 100, y: 100, width: 500, height: 500))
         let both: [(id: UInt32, size: CGSize)] = [(1, CGSize(width: 1440, height: 900)), (7, CGSize(width: 400, height: 400))]
         XCTAssertEqual(lr.resolve(displays: both)?.id, 7)
         XCTAssertEqual(lr.resolve(displays: both)?.rect, CGRect(x: 100, y: 100, width: 300, height: 300))
-        XCTAssertEqual(lr.resolve(displays: [(1, CGSize(width: 1440, height: 900))])?.id, 1, "display unplugged → primary")
+    }
+
+    func testLastRegionDoesNotResolveOnAnotherDisplayWhenSavedDisplayIsAbsent() {
+        let lr = LastRegion(displayID: 7, rect: CGRect(x: 100, y: 100, width: 500, height: 500))
+        XCTAssertNil(lr.resolve(displays: [(1, CGSize(width: 1440, height: 900))]))
+    }
+
+    func testLastRegionDoesNotResolveWithoutDisplays() {
+        let lr = LastRegion(displayID: 7, rect: CGRect(x: 100, y: 100, width: 500, height: 500))
         XCTAssertNil(lr.resolve(displays: []))
     }
 

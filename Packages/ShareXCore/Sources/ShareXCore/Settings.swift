@@ -18,11 +18,11 @@ public struct LastRegion: Codable, Equatable, Sendable {
             && rect.size.width > 0 && rect.size.height > 0
     }
 
-    /// Resolves against the current displays (id → top-left-point bounds). Falls back to the first
-    /// display when the original is gone, and clamps so a replay never reads outside the screen.
+    /// Resolves only on the saved display and clamps the region to its current point bounds.
+    /// Returns nil when that display is absent or the region has no usable area.
     public func resolve(displays: [(id: UInt32, size: CGSize)]) -> (id: UInt32, rect: CGRect)? {
         guard isValid else { return nil }
-        guard let d = displays.first(where: { $0.id == displayID }) ?? displays.first else { return nil }
+        guard let d = displays.first(where: { $0.id == displayID }) else { return nil }
         guard let r = Geometry.clamp(rect, to: CGRect(origin: .zero, size: d.size)) else { return nil }
         return (d.id, r)
     }
