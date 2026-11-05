@@ -5,6 +5,18 @@ Swift 6, AppKit, ScreenCaptureKit, macOS 14+. Building requires Xcode 26.3 or la
 
 See the [user guide](docs/USER-GUIDE.md) for capture, editing, shortcuts, and output recovery. See the [review index](reviews/README.md) for validation evidence and limits.
 
+## Latest built package
+
+Version **0.1.2, build 3** is built for Intel and Apple Silicon. Download the `ShareX-dmg` artifact from the [successful main build](https://github.com/Oiuhqw/sharex-mac/actions/runs/42038241966), then extract `ShareX.dmg` and `ShareX.dmg.sha256`. GitHub may require sign-in to download Actions artifacts.
+
+The package was built from merge commit `65a3e36433b3d2262d35c19ae69a21eae7b11316` on 5 November 2026. The DMG is 1,942,657 bytes. Its SHA-256 is:
+
+```text
+5fb0f0730b9e60178b13abddaddcc7e667b2aca8ff5a5366dc80a3a1bcdedb58
+```
+
+The package is ad-hoc signed with Hardened Runtime and is not Apple-notarized. Version 0.1.2 has not been published as a GitHub release. The existing public release is 0.1.1. Read the [installation instructions](INSTALL.txt) before opening it.
+
 ## Configure signing for local development
 ```sh
 cp Local.xcconfig.example Local.xcconfig   # then put your Apple team ID in DEVELOPMENT_TEAM
@@ -51,6 +63,18 @@ swift test --package-path Packages/ShareXCore   # core logic tests (also run on 
 Keep the signing team and bundle ID (`com.sharexmac.ShareX`) stable. Screen Recording permission is tied to the signature. To retest the permission flow, run `tccutil reset ScreenCapture com.sharexmac.ShareX`.
 
 ## Build and verification
+
+As of 5 November 2026, the `macOS` and `DMG` GitHub Actions workflows are disabled at the owner's request. Their definitions remain in the repository. Pushes do not start these workflows until they are enabled. The existing package and its passing validation run remain available.
+
+To resume hosted builds, enable both workflows and dispatch the full validation pipeline:
+
+```sh
+gh workflow enable macos.yml --repo Oiuhqw/sharex-mac
+gh workflow enable dmg.yml --repo Oiuhqw/sharex-mac
+gh workflow run macos.yml --repo Oiuhqw/sharex-mac --ref main -f runner=macos-15-intel
+```
+
+- The main build at `65a3e36` passed 97 core tests, the same 97 under AddressSanitizer, 26 script tests, 420 normal E2E checks, and 63 shortcut-recovery checks. There were zero E2E failures and six explicitly unverifiable checks.
 - The macOS workflow compiles the app, runs the core tests normally and with AddressSanitizer, launches the native E2E driver, and records Release performance and resource measurements. Its artifacts contain results, UI screenshots, logs, process RSS, and CPU samples. A strict validator rejects missing measurements and failed output operations.
 - After those checks pass, the same workflow builds a universal Release DMG, verifies its icon and signature, checks that test code is absent, and runs launch/install smoke checks.
 - Version 0.1.1 adds independent output recovery, failure-injection regression cases, an app icon, and absolute save-folder validation.

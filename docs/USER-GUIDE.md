@@ -1,6 +1,6 @@
 # Capture and edit a screenshot
 
-ShareX runs in the macOS menu bar. Use the camera icon to start a capture or open **Settings…**. See [installation instructions](../INSTALL.txt) for the ad-hoc signed, non-notarized build.
+ShareX runs in the macOS menu bar. Use the camera icon to start a capture or open **Settings…**. Get the [latest built package](../README.md#latest-built-package), then follow the [installation instructions](../INSTALL.txt) for the ad-hoc signed, non-notarized build.
 
 ## Make your first capture
 

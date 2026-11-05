@@ -4,11 +4,21 @@ The goal is a lightweight native macOS screenshot tool with precise selection, a
 
 Status at `a5cb376`: native app validation and universal packaging passed on Intel and Apple silicon. Each architecture passed 420 normal E2E checks and 63 shortcut recovery checks, with zero failures and six explicitly unverifiable hardware-dependent checks. The [completed source security audit](security-audit-2026-11-05/REPORT.md) covers `e8f9596` with 47 units, 85 checks, 88 source paths, and no confirmed vulnerability. This report is not a security certification or a completed full fuzz campaign.
 
+## Merged package and final review
+
+[PR 3](https://github.com/Oiuhqw/sharex-mac/pull/3) merged as `65a3e36433b3d2262d35c19ae69a21eae7b11316`. Its tree is identical to the independently reviewed `4a95733` tree. The [main run](https://github.com/Oiuhqw/sharex-mac/actions/runs/42038241966) passed 97 core tests, the same 97 under AddressSanitizer, 26 script tests, 420 normal E2E checks, 63 recovery checks, and six memory ownership checks. E2E recorded zero failures and six unverifiable checks. Universal packaging passed.
+
+The main-run DMG is 1,942,657 bytes. Its verified SHA-256 is `5fb0f0730b9e60178b13abddaddcc7e667b2aca8ff5a5366dc80a3a1bcdedb58`. It is version 0.1.2, build 3, ad-hoc signed with Hardened Runtime, and not Apple-notarized. This is the [latest built package](../README.md#latest-built-package). The checkpoint measurements below still refer to `a5cb376` unless another revision is named.
+
+A further source review on 5 November found no new blocking defect across editor/rendering, capture/output/settings, and comments. It verified the existing main-run evidence and launched no new native test run. One explanation of loupe `contentsRect` orientation remains uncertain; no related product defect was demonstrated. Physical hardware and full-fuzzing limitations remain open.
+
+The subsequent cleanup preserved local evidence archives and 23 cited Actions runs. It removed retired branches and worktrees and disabled both workflows at the owner's request. See [the review index](README.md) for the recovery record and current workflow state.
+
 ## Scope and revisions
 
 - Main was `6960c15dd550fa4b6681277c8ca6a269f597d809`, equal to origin/main.
 - The implementation starts from `48b1ba1bdfe6058f04d62b87dd7f328ee51b2f81`, the existing PR1/PR2 candidate. Its export recovery, fail-closed redaction, crop crossing, and overlay keyboard fixes are retained.
-- The final implementation and test checkpoint is `a5cb376622206106f9d38d88623709c5a643ef7f` on `codex/security-lightweight-review`. The earlier fully passing checkpoint `e8f9596` remains the fixed full-audit source.
+- The final implementation and test checkpoint is `a5cb376622206106f9d38d88623709c5a643ef7f`, originally on the retired `codex/security-lightweight-review` branch. The earlier fully passing checkpoint `e8f9596` remains the fixed full-audit source.
 - Post-audit changes add Last Region recovery, shortcut recovery and conflict handling, bounded AX reads, exact ellipse hit testing, and a shared test-only layer snapshot helper. Native checks at `a5cb376` exercise the integrated changes.
 - Current E2E, package, idle, and hover measurements below refer to `a5cb376`. Earlier failures and the detailed memory diagnosis at `d7e4810550a64862fa6bd555ef27b3929a9f17b9` remain explicitly historical. Final evidence-only commits do not change application, test, build, or package inputs.
 - Source assessment covered all 22 production Swift files, the core model, capture/export boundaries, stored preferences, release workflows, and the pinned runtime dependency.
