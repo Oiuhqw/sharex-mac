@@ -366,6 +366,10 @@ final class ChromeView: PassThroughView {
         (!magnifier.isHidden, magnifier.frame, (magLabel.string as? String) ?? "", magImage.contentsRect, magSize)
     }
     var e2eSizeLabel: String { (sizeLabel.string as? String)?.trimmingCharacters(in: .whitespaces) ?? "" }
+    var e2eSizeLabelFrame: CGRect? {
+        guard !isHiddenOrHasHiddenAncestor, !sizeLabel.isHidden else { return nil }
+        return sizeLabel.frame.intersection(bounds)
+    }
     #endif
 
     /// `r` in y-down image pixels as a contentsRect. The layer tree is flipped (y-down), and CA maps contentsRect

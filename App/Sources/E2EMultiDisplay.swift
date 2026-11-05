@@ -86,7 +86,8 @@ enum E2EMultiDisplay {
         let viewport = surface.view.viewport, sampleScale = native ? surface.window.backingScaleFactor : scale
         let intersection = crop.intersection(viewport).insetBy(dx: 5, dy: 5)
         let dimensionsMatch = preview.w == Int(viewport.width * sampleScale) && preview.h == Int(viewport.height * sampleScale)
-        var checked = 0, nearSeam = 0, unstable = 0, chrome = 0, mismatches = 0
+        let sizeLabelFrame = surface.view.e2eSizeLabelFrame
+        var checked = 0, nearSeam = 0, unstable = 0, toolbar = 0, sizeLabel = 0, mismatches = 0
         var firstMismatch: [String: Any]?
         if !intersection.isNull, intersection.width > 0, intersection.height > 0 {
             for y in stride(from: intersection.minY, to: intersection.maxY, by: 17) {
@@ -94,7 +95,8 @@ enum E2EMultiDisplay {
                     let px = Int((x - viewport.minX) * sampleScale), py = Int((y - viewport.minY) * sampleScale)
                     let point = native ? CGPoint(x: viewport.minX + (CGFloat(px) + 0.5) / sampleScale,
                                                 y: viewport.minY + (CGFloat(py) + 0.5) / sampleScale) : CGPoint(x: x, y: y)
-                    if native && surface.view.e2eToolbar.frame.contains(surface.view.local(point)) { chrome += 1; continue }
+                    if native && surface.view.e2eToolbar.frame.contains(surface.view.local(point)) { toolbar += 1; continue }
+                    if native && sizeLabelFrame?.contains(surface.view.local(point)) == true { sizeLabel += 1; continue }
                     let ex = Int((point.x - crop.minX) * scale), ey = Int((point.y - crop.minY) * scale)
                     let wanted = expected.at(ex, ey)
                     if native {
@@ -141,8 +143,9 @@ enum E2EMultiDisplay {
         let valid = dimensionsMatch && mismatches == 0 && checked >= (native ? 16 : 1) && (!native || nearSeam >= 4)
         var info: [String: Any] = ["matches": valid, "previewSize": [preview.w, preview.h], "dimensionsMatch": dimensionsMatch,
             "sampleScale": sampleScale, "exportScale": scale, "checked": checked, "nearSeam": nearSeam,
-            "skippedUnstable": unstable, "skippedToolbar": chrome, "mismatches": mismatches,
-            "intersection": NSStringFromRect(intersection), "toolbarFrame": NSStringFromRect(surface.view.e2eToolbar.frame)]
+            "skippedUnstable": unstable, "skippedToolbar": toolbar, "skippedSizeLabel": sizeLabel, "mismatches": mismatches,
+            "intersection": NSStringFromRect(intersection), "toolbarFrame": NSStringFromRect(surface.view.e2eToolbar.frame),
+            "sizeLabelFrame": sizeLabelFrame.map { NSStringFromRect($0) } ?? "hidden"]
         if let firstMismatch { info["firstMismatch"] = firstMismatch }
         return (valid, info)
     }

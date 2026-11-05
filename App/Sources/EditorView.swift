@@ -191,6 +191,7 @@ final class EditorView: NSView {
     #if SHAREX_E2E
     var e2eLoupe: (visible: Bool, frame: CGRect, label: String, contentsRect: CGRect, source: CGSize) { chrome.e2eLoupe }
     var e2eSizeLabel: String { chrome.e2eSizeLabel }
+    var e2eSizeLabelFrame: CGRect? { chrome.e2eSizeLabelFrame.map { convert($0, from: chrome) } }
     var e2eAnnotationSyncCount: Int { annotationsView?.e2eSyncCount ?? 0 }
     var e2eLiveLayerBytes: Int { liveView?.e2eRetainedPatchBytes ?? 0 }
     var e2eToolbar: ToolbarView { toolbar }

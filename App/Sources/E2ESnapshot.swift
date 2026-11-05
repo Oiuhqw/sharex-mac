@@ -86,6 +86,9 @@ extension E2E {
             guard child is FrameView || child is AnnotationsView || child is LiveMarkView || (includeChrome && child is ChromeView) else { continue }
             guard let layer = child.layer,
                   let isolated = Imaging.context(width: ctx.width, height: ctx.height, flipped: true) else { return nil }
+            if child is FrameView, layer.magnificationFilter == .nearest, layer.minificationFilter == .nearest {
+                isolated.interpolationQuality = .none
+            }
             isolated.scaleBy(x: scale, y: scale)
             isolated.translateBy(x: child.frame.minX - root.bounds.minX - child.bounds.minX,
                                  y: child.frame.minY - root.bounds.minY - child.bounds.minY)

@@ -330,22 +330,44 @@ static int RunDisplays(NSString *readyPath, NSString *layout, CGDirectDisplayID 
     return 0;
 }
 
-static BOOL DisplaysRemoved(const CGDirectDisplayID *displayIDs, NSHashTable<CGVirtualDisplay *> *lifetimes, BOOL log) {
+typedef NS_ENUM(NSUInteger, DisplayRemovalState) {
+    DisplayRemovalPending,
+    DisplayRemovalComplete,
+    DisplayRemovalError
+};
+
+static DisplayRemovalState DisplayRemoval(const CGDirectDisplayID *displayIDs, NSHashTable<CGVirtualDisplay *> *lifetimes, BOOL log) {
     @autoreleasepool {
         NSUInteger alive = lifetimes.allObjects.count;
+        uint32_t onlineCount = 0, capacity = 0;
+        CGError error = CGGetOnlineDisplayList(0, NULL, &onlineCount);
+        NSMutableArray<NSNumber *> *onlineIDs = [NSMutableArray array];
+        if (error == kCGErrorSuccess) {
+            capacity = onlineCount + 1;
+            NSMutableData *storage = [NSMutableData dataWithLength:(NSUInteger)capacity * sizeof(CGDirectDisplayID)];
+            CGDirectDisplayID *online = storage.mutableBytes;
+            error = CGGetOnlineDisplayList(capacity, online, &onlineCount);
+            if (error == kCGErrorSuccess) {
+                for (uint32_t index = 0; index < onlineCount; index++) [onlineIDs addObject:@(online[index])];
+            }
+        }
+        BOOL complete = error == kCGErrorSuccess && onlineCount < capacity;
         BOOL offline = YES;
         NSMutableArray<NSDictionary *> *states = [NSMutableArray array];
         for (NSUInteger index = 0; index < 2; index++) {
             CGDirectDisplayID displayID = displayIDs[index];
             if (displayID == kCGNullDirectDisplay) continue;
-            BOOL online = CGDisplayIsOnline(displayID);
-            offline = offline && !online;
-            if (log) [states addObject:@{@"displayID": @(displayID), @"online": @(online),
-                                         @"active": @(CGDisplayIsActive(displayID)), @"bounds": FrameJSON(CGDisplayBounds(displayID))}];
+            offline = offline && ![onlineIDs containsObject:@(displayID)];
+            [states addObject:@{@"displayID": @(displayID), @"onlineRaw": @(CGDisplayIsOnline(displayID)),
+                                @"activeRaw": @(CGDisplayIsActive(displayID)), @"bounds": FrameJSON(CGDisplayBounds(displayID))}];
         }
-        if (log) NSLog(@"Virtual display cleanup at uptime %.3f: alive objects %lu, displays %@.",
-                       NSProcessInfo.processInfo.systemUptime, (unsigned long)alive, states);
-        return offline && alive == 0;
+        DisplayRemovalState state = error != kCGErrorSuccess ? DisplayRemovalError
+            : complete && offline && alive == 0 ? DisplayRemovalComplete : DisplayRemovalPending;
+        if (log || state != DisplayRemovalPending) {
+            NSLog(@"Virtual display cleanup at uptime %.3f: alive objects %lu, online IDs %@, enumeration error %d, count %u, capacity %u, complete %d, displays %@.",
+                  NSProcessInfo.processInfo.systemUptime, (unsigned long)alive, onlineIDs, error, onlineCount, capacity, complete, states);
+        }
+        return state;
     }
 }
 
@@ -377,14 +399,14 @@ int main(int argc, const char *argv[]) {
             }
         }
         NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + 3;
-        BOOL removed = DisplaysRemoved(displayIDs, lifetimes, YES);
-        while (!removed && NSProcessInfo.processInfo.systemUptime < deadline) {
+        DisplayRemovalState removal = DisplayRemoval(displayIDs, lifetimes, YES);
+        while (removal == DisplayRemovalPending && NSProcessInfo.processInfo.systemUptime < deadline) {
             PumpRunLoop();
-            removed = DisplaysRemoved(displayIDs, lifetimes, NO);
+            removal = DisplayRemoval(displayIDs, lifetimes, NO);
         }
-        DisplaysRemoved(displayIDs, lifetimes, YES);
-        if (!removed) {
-            NSLog(@"Virtual displays remained online or retained after the lifecycle pool drained and the 3-second removal deadline.");
+        if (removal == DisplayRemovalPending) DisplayRemoval(displayIDs, lifetimes, YES);
+        if (removal != DisplayRemovalComplete) {
+            NSLog(@"Virtual display removal was not proven after the lifecycle pool drained within the 3-second removal deadline.");
             return 1;
         }
         return status;
