@@ -18,6 +18,10 @@ enum E2E {
     // MARK: helper processes
 
     static func handlesHelperMode() -> Bool {
+        if let scenario = arg(after: "--e2e-seed-shortcuts"), let out = arg(after: "--out") {
+            E2ESettings.seedShortcutRecovery(scenario, out: out)
+            return true
+        }
         if args.contains("--e2e-pattern") { runPattern(); return true }
         if let out = arg(after: "--e2e-verify") { verifySettings(out); return true }
         return false
@@ -281,6 +285,10 @@ enum E2E {
 
     static func runAll() async {
         await wait(800)
+        if let scenario = arg(after: "--shortcut-recovery") {
+            await E2ESettings.verifyShortcutRecovery(scenario)
+            return
+        }
         if args.contains("--memory-diagnosis") {
             source = "synthetic-memory-diagnosis"
             await E2EResources.diagnose()

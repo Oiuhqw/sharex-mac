@@ -24,6 +24,123 @@ enum E2ESettings {
         return expected.count == 8 && shortcutState() == expected
     }
 
+    private struct RecoveryCase {
+        let command: Hotkeys.Command
+        let id: String
+        let input: Any?
+        let expected: KeyboardShortcuts.Shortcut?
+        let preserve: Bool
+        var key: String { "KeyboardShortcuts_\(command.name.rawValue)" }
+    }
+
+    private static func recoveryCases(_ scenario: String) throws -> [RecoveryCase] {
+        let invalid: [CaptureStyle: (String, Any)]
+        switch scenario {
+        case "ranges":
+            invalid = [
+                .activeMonitor: ("negative-key", #"{"carbonKeyCode":-1,"carbonModifiers":4608}"#),
+                .freehand: ("key-display-overflow", #"{"carbonKeyCode":65536,"carbonModifiers":4608}"#),
+                .activeWindow: ("key-registration-overflow", #"{"carbonKeyCode":4294967296,"carbonModifiers":4608}"#),
+                .monitorPicker: ("negative-modifiers", #"{"carbonKeyCode":18,"carbonModifiers":-1}"#),
+                .lastRegion: ("modifier-overflow", #"{"carbonKeyCode":18,"carbonModifiers":4294967296}"#),
+            ]
+        case "encoding":
+            invalid = [
+                .activeMonitor: ("oversized-json", "{\"carbonKeyCode\":18,\"carbonModifiers\":4608,\"padding\":\"\(String(repeating: "x", count: 2048))\"}"),
+                .freehand: ("malformed-json", "{\"carbonKeyCode\":"),
+                .activeWindow: ("integer-overflow", #"{"carbonKeyCode":18446744073709551616,"carbonModifiers":4608}"#),
+                .monitorPicker: ("invalid-boolean", true),
+                .lastRegion: ("invalid-storage-type", ["carbonKeyCode": 18, "carbonModifiers": 4608]),
+            ]
+        default:
+            throw NSError(domain: "ShortcutRecovery", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unknown recovery scenario"])
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try Hotkeys.commands.map { command in
+            if let (id, value) = invalid[command.style] {
+                return RecoveryCase(command: command, id: id, input: value, expected: command.name.initialShortcut, preserve: false)
+            }
+            if command.style == .windowPicker {
+                return RecoveryCase(command: command, id: "disabled-preserved", input: false, expected: nil, preserve: true)
+            }
+            let custom = command.style == .region
+            let shortcut = custom ? KeyboardShortcuts.Shortcut(.eight, modifiers: [.control, .option, .shift]) : command.name.initialShortcut
+            let encoded = try shortcut.map { String(decoding: try encoder.encode($0), as: UTF8.self) }
+            return RecoveryCase(command: command, id: custom ? "custom-preserved" : "default-preserved",
+                                input: encoded, expected: shortcut, preserve: true)
+        }
+    }
+
+    private static let recoverySentinels = ["KeyboardShortcuts_unrelatedCommand": "unrelated shortcut sentinel",
+                                            "shortcut-recovery-unrelated-preference": "unrelated preference sentinel"]
+
+    private static func preferenceMatches(_ key: String, _ expected: Any?) -> Bool {
+        let actual = UserDefaults.standard.object(forKey: key)
+        if actual == nil { return expected == nil }
+        guard let expected else { return false }
+        return (actual as? NSObject)?.isEqual(expected) == true
+    }
+
+    static func seedShortcutRecovery(_ scenario: String, out: String) {
+        do {
+            let cases = try recoveryCases(scenario)
+            let defaults = UserDefaults.standard
+            for test in cases { defaults.set(test.input, forKey: test.key) }
+            for (key, value) in recoverySentinels { defaults.set(value, forKey: key) }
+            let pass = cases.count == 8 && cases.allSatisfy { preferenceMatches($0.key, $0.input) }
+                && recoverySentinels.allSatisfy { preferenceMatches($0.key, $0.value) } && defaults.synchronize()
+            let manifest: [String: Any] = ["scenario": scenario, "pid": ProcessInfo.processInfo.processIdentifier,
+                                          "count": cases.count, "pass": pass]
+            let data = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: URL(fileURLWithPath: out).appendingPathComponent("seed.json"))
+            exit(pass ? 0 : 3)
+        } catch {
+            NSLog("E2E FAIL shortcut-recovery-seed %@", error.localizedDescription)
+            exit(3)
+        }
+    }
+
+    static func verifyShortcutRecovery(_ scenario: String) async {
+        do {
+            let cases = try recoveryCases(scenario)
+            let data = try Data(contentsOf: E2E.out.appendingPathComponent("seed.json"))
+            let seed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let freshProcess = seed?["pass"] as? Bool == true && seed?["scenario"] as? String == scenario
+                && seed?["count"] as? Int == 8 && seed?["pid"] as? Int32 != ProcessInfo.processInfo.processIdentifier
+                && seed?["pid"] as? Int32 != nil
+            E2E.record("shortcut-recovery-fresh-process", freshProcess, ["scenario": scenario])
+            guard freshProcess else { return }
+            for test in cases {
+                let actual = KeyboardShortcuts.getShortcut(for: test.command.name)
+                let storage = test.preserve ? preferenceMatches(test.key, test.input)
+                    : test.expected != nil || UserDefaults.standard.object(forKey: test.key) == nil
+                E2E.record("shortcut-recovery-\(test.id)", actual == test.expected && storage,
+                           ["command": test.command.id, "expectedAssigned": test.expected != nil, "storage": storage])
+            }
+            E2E.record("shortcut-recovery-unrelated-preserved", recoverySentinels.allSatisfy { preferenceMatches($0.key, $0.value) })
+            E2E.app.openSettings()
+            guard let window = E2E.app.settingsWindow else {
+                E2E.record("shortcut-recovery-native-recorders", false, ["error": "Settings window absent"])
+                return
+            }
+            window.setContentSize(NSSize(width: 900, height: 850))
+            await E2E.wait(250)
+            let activated = await activate(window)
+            let navigated = activated ? await navigate("shortcuts", in: window) : false
+            let ready = await E2E.until(1500) { recorders(in: window).count == cases.count }
+            let displayed = cases.allSatisfy {
+                recorder($0.command.id, in: window)?.stringValue == ($0.expected?.description ?? "")
+            }
+            E2E.record("shortcut-recovery-native-recorders", activated && navigated && ready && displayed,
+                       ["count": recorders(in: window).count, "displayed": displayed])
+            let failures = await accessibility.takeFailures()
+            E2E.record("shortcut-recovery-accessibility-helper-health", failures.isEmpty, ["errors": failures])
+        } catch {
+            E2E.record("shortcut-recovery-fixture", false, ["error": error.localizedDescription])
+        }
+    }
+
     private static let accessibility = SettingsAXClient()
 
     private static func activate(_ window: NSWindow) async -> Bool {
