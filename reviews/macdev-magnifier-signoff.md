@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # PR #2 (fix/magnifier @ 382ef6a → codex/fix-export-release) — magnifier sign-off
 
 **Verdict: SIGN.** Two follow-ups are listed below. Neither blocks this PR.

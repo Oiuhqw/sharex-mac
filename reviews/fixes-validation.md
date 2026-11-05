@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # Validation round: fixes
 
 Sources: `validation-macdev.md`, `validation-eng.md`, `validation-cto.md`. Every BUG and HIGH/MED item is addressed below.

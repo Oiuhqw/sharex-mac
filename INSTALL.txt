@@ -5,7 +5,7 @@ Drag ShareX.app to Applications, then open it. ShareX lives in the menu bar.
 Allow Screen Recording in System Settings > Privacy & Security, then quit and reopen ShareX.
 
 This build is ad-hoc signed with Hardened Runtime. It is NOT Apple-notarized.
-The project has no Developer ID certificate. A downloaded copy may require
+The packaging workflow does not use Developer ID signing. A downloaded copy may require
 System Settings > Privacy & Security > Open Anyway after the first launch attempt.
 Check ShareX.dmg.sha256 from the same build before installing.
 
@@ -14,12 +14,14 @@ quarantine flag after copying it to Applications, then open it again:
 
     xattr -dr com.apple.quarantine /Applications/ShareX.app
 
-When updating an earlier ad-hoc build, remove the old ShareX entry from Screen
-Recording permissions, add the updated /Applications/ShareX.app, and reopen it.
+If capture permission stops working after an ad-hoc update, remove the old ShareX
+entry from Screen Recording permissions, add the updated /Applications/ShareX.app,
+and reopen it.
 
 Changes in 0.1.2:
 - Native Capture, Shortcuts and Output settings pages, with searchable keybindings.
 - Shortcut recording, duplicate feedback, clear, restore, and persistent assignments.
+- Damaged shortcut preferences recover without replacing valid custom assignments.
 - New installations copy to the clipboard and save PNG files to Pictures/ShareX.
 - Crop arrow keys move one image pixel. Shift moves ten; Option resizes the trailing edge.
 - Later blur and pixelate effects preserve earlier protected pixels.

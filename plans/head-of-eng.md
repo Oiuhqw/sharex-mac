@@ -1,3 +1,5 @@
+> Historical planning proposal. See [the current implementation plan](../PLAN.md) for the accepted scope and design.
+
 # ShareX macOS (capture) — Head of Engineering plan
 
 Planning only. Deliverable is an Xcode / SwiftPM project the founder builds on their Mac. Our Linux box cannot compile or run this.

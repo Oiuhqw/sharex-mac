@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # macOS developer review, round 2
 
 I checked every round 1 item against the code itself, not against `fixes-round1.md`.

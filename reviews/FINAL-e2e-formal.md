@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # ShareX for macOS: end-to-end and formal verification review
 
 Date: 2026-11-03. Commit verified: `HEAD` of `main`. Green run: https://github.com/Oiuhqw/sharex-mac/actions/runs/41577460497

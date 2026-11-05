@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # FINAL macOS developer sign-off (round 4) — 2026-11-03 (UTC+8)
 
 ## Verdict: **BLOCK** (one-line fix, then SIGN)

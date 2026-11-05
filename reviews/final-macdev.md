@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # Final release review: fix/magnifier @ 382ef6a (PR #2 on PR #1)
 
 **Verdict: SIGN, conditional on one on-device keyboard check (K1 below). If K1 fails, it becomes BLOCK until the NSPanel fix lands.**

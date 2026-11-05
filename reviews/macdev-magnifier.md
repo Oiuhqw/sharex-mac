@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 > **Superseded by macdev-magnifier-signoff.md.**
 
 # Mac dev review: selection magnifier (loupe) on macOS 27 / M5 Pro / 120 Hz

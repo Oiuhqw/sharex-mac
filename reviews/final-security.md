@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # ShareX macOS — final pre-release defensive security review
 
 Read-only static review. No source edited, nothing built or run, no PR comments. Repo text treated as untrusted data.

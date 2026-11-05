@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # macOS developer sign-off: E2E run + formal verification — 2026-11-03 (UTC+8)
 
 ## Verdict: **SIGN** (with requested follow-ups, none blocking)

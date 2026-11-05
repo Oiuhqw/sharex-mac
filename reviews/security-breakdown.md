@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # ShareX macOS: defensive hardening audit
 
 Scope: read-only configuration and code-hygiene review of our own source (App/Sources, Packages/ShareXCore, .github/workflows, project.yml, Base.xcconfig). No source files were edited. Line numbers refer to the working tree reviewed (HEAD 7910f92 plus uncommitted edits, see the last section).

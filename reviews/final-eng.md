@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # Final release-readiness review: Head of Engineering (v0.1.1)
 
 **Verdict: SIGN.** No blockers.

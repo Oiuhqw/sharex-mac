@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # Final static scan — 2026-11-03 (UTC+8)
 
 | Scan | Result |

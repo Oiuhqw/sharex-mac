@@ -1,3 +1,5 @@
+> Historical review of an earlier revision. See [the review index](README.md) for current evidence and validation status.
+
 # Final Skeptic review: sharex-mac PR #2 (fix/magnifier @ 382ef6a)
 
 ## VERDICT: BLOCK for release claims on macOS 27 / M5 Pro / 120Hz. SIGN for merging the PR as a CI-verified fix.
