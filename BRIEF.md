@@ -15,13 +15,13 @@ Capture modes are region, freehand, window picker, active window, monitor picker
 
 ## Scope
 
-The app uses Swift, AppKit, ScreenCaptureKit, CoreGraphics, and CoreImage. Settings uses SwiftUI. KeyboardShortcuts is the only external runtime package. The deployment minimum is macOS 14.
+The app uses Swift, AppKit, ScreenCaptureKit, CoreGraphics, and CoreImage. Settings uses SwiftUI. KeyboardShortcuts is the only external runtime package. The deployment minimum is macOS 14 on Apple Silicon. Intel Macs are unsupported.
 
 Uploads, video, GIF recording, OCR, scrolling capture, and reopening a previous editing document are outside this version's scope.
 
 ## Verification and delivery
 
-The development host is Windows. Do not use WSL. GitHub macOS runners provide native builds, automated UI checks, screenshots, clipboard and file checks, and Release measurements. The package is universal for Apple Silicon and Intel.
+The development host is Windows. Do not use WSL. GitHub macOS runners provide native builds, automated UI checks, screenshots, clipboard and file checks, and Release measurements. CI and packaging use Apple Silicon macos-15 runners. The project and package target arm64 only. Architecture assertions reject Intel or universal app binaries.
 
 Native E2E must pass before merge. The final security audit follows the implementation check; its confirmed findings must be fixed and checked again. Update the documentation before merging to main.
 

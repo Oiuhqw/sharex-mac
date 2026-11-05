@@ -4,7 +4,7 @@ This document replaces the original planning-only proposal. The older proposals 
 
 ## Implemented design
 
-The app is a native menu-bar application for macOS 14 and later. AppKit owns capture windows and editing. SwiftUI owns Settings. ScreenCaptureKit supplies display and window images. CoreGraphics and CoreImage render the output. KeyboardShortcuts 3.1.0 supplies global shortcuts; no other external runtime package is used.
+The app is a native menu-bar application for macOS 14 and later on Apple Silicon. Intel Macs are unsupported. App builds target arm64 only. AppKit owns capture windows and editing. SwiftUI owns Settings. ScreenCaptureKit supplies display and window images. CoreGraphics and CoreImage render the output. KeyboardShortcuts 3.1.0 supplies global shortcuts; no other external runtime package is used.
 
 Packages/ShareXCore contains geometry, capture options, annotations, the editor document, undo history, and stored settings. App/Sources contains platform adapters and the UI.
 
@@ -29,7 +29,7 @@ Other recording apps can capture the editor, including pixels before the user fi
 
 ## Verification
 
-The Windows host uses native tools without WSL. When enabled, the GitHub macOS workflow runs the core suite, AddressSanitizer, native app E2E, and Release performance/resource checks. E2E test code is excluded from the shipped app. An external process timeout preserves a native stack sample if the test driver stalls.
+The Windows host uses native tools without WSL. When enabled, the GitHub macOS workflow uses an Apple Silicon macos-15 runner and runs the core suite, AddressSanitizer, native app E2E, and Release performance/resource checks. The package check requires exactly arm64 and rejects E2E code and the private virtual-display helper in the shipped app. An external process timeout preserves a native stack sample if the test driver stalls.
 
 The performance gate requires Release hover p95 main-thread CPU below 2 ms and verifies event delivery. Debug timing, elapsed time, and display-link callbacks remain diagnostic measurements. They do not prove physical screen presentation time.
 
@@ -38,6 +38,8 @@ Memory checks record repeated sessions, buffer limits, object release, current R
 The source security audit at `e8f9596` used explicit coverage and two independent coverage critics. All 47 source units were covered and no qualifying vulnerability was found. Audit-driven reliability changes received separate source review. At `a5cb376`, both Intel and Apple silicon passed 97 core tests, 97 AddressSanitizer tests, and 483 native E2E checks, with six hardware-dependent checks explicitly unavailable. See [the review index](reviews/README.md) for current evidence and historical reports.
 
 ## Delivery status
+
+Version 0.1.3, build 4 is Apple Silicon only. The multi-display source changes still require complete native validation before publication. The results below describe the earlier 0.1.2 build.
 
 [PR 3](https://github.com/Oiuhqw/sharex-mac/pull/3) merged as `65a3e36`. The [main run](https://github.com/Oiuhqw/sharex-mac/actions/runs/42038241966) passed native validation and built the universal 0.1.2 DMG. The reviewed PR head and merge commit have identical file trees. Documentation-only changes after this build do not change application or installer inputs.
 

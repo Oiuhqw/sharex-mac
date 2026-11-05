@@ -27,7 +27,9 @@ enum E2EPerf {
     static func window(for view: EditorView) -> NSWindow {
         let w = OverlayWindow(contentRect: CGRect(origin: CGPoint(x: 0, y: 0), size: ptSize), styleMask: .borderless, backing: .buffered, defer: false)
         w.isReleasedWhenClosed = false; w.acceptsMouseMovedEvents = true
-        w.contentView = view; w.orderFrontRegardless(); w.makeKey(); w.makeFirstResponder(view)
+        w.contentView = view
+        NSLog("E2E TRACE perf window attached")
+        w.orderFrontRegardless(); w.makeKey(); w.makeFirstResponder(view)
         return w
     }
 
@@ -102,28 +104,34 @@ enum E2EPerf {
 
         // 1. Editor construction + first frame at 2x (part of hotkey -> overlay visible).
         var builds: [Double] = []
-        for _ in 0..<5 {
+        for index in 0..<5 {
+            NSLog("E2E TRACE perf editor construction %d", index)
             let elapsed = autoreleasepool {
                 let t0 = Perf.now()
                 let v = EditorView(frame: CGRect(origin: .zero, size: ptSize), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
                                    initialCrop: nil, styles: [:], showMagnifier: true, pickRects: [], finishOnPick: false)
+                NSLog("E2E TRACE perf editor ready %d", index)
                 let w = window(for: v)
+                NSLog("E2E TRACE perf window shown %d", index)
                 defer { close(v, w) }
                 w.displayIfNeeded(); CATransaction.flush()
                 return Perf.now() - t0
             }
             builds.append(elapsed)
+            NSLog("E2E TRACE perf editor closed %d", index)
             await E2E.wait(50)
         }
         out["overlayBuildFirstFrame2x_ms"] = stats(builds)
 
         // 2. Region-selection drag with magnifier + crosshair.
         do {
+            NSLog("E2E TRACE perf selection begin")
             let v = EditorView(frame: CGRect(origin: .zero, size: ptSize), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
                                initialCrop: nil, styles: [:], showMagnifier: true, pickRects: [], finishOnPick: false)
             let w = window(for: v); w.displayIfNeeded()
             defer { close(v, w) }
             let vs = Vsync(w)
+            NSLog("E2E TRACE perf display link ready")
             defer { vs.stop() }
             let hoverPath = path(60, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 1500, y: 900))
             for p in hoverPath { await timed(.mouseMoved, p, v, w, vs) }

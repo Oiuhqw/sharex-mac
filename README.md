@@ -1,13 +1,13 @@
 # ShareX for macOS (screenshots + annotation)
 
 A native menu-bar port of ShareX's screenshot and annotation features. It has no uploads, video, GIF or OCR.
-Swift 6, AppKit, ScreenCaptureKit, macOS 14+. Building requires Xcode 26.3 or later.
+Swift 6, AppKit, ScreenCaptureKit, macOS 14+ on Apple Silicon. Intel Macs are unsupported. Building requires Xcode 26.3 or later on an Apple Silicon Mac.
 
 See the [user guide](docs/USER-GUIDE.md) for capture, editing, shortcuts, and output recovery. See the [review index](reviews/README.md) for validation evidence and limits.
 
 ## Latest built package
 
-The last published build artifact is **0.1.2, build 3**. It is built for Intel and Apple Silicon. Download the `ShareX-dmg` artifact from the [successful main build](https://github.com/Oiuhqw/sharex-mac/actions/runs/42038241966), then extract `ShareX.dmg` and `ShareX.dmg.sha256`. GitHub may require sign-in to download Actions artifacts.
+The last published build artifact is **0.1.2, build 3**. This historical package predates the Apple Silicon-only support policy. Version 0.1.3, build 4 targets arm64 only and still requires native validation. Download the `ShareX-dmg` artifact from the [successful main build](https://github.com/Oiuhqw/sharex-mac/actions/runs/42038241966), then extract `ShareX.dmg` and `ShareX.dmg.sha256`. GitHub may require sign-in to download Actions artifacts.
 
 The package was built from merge commit `65a3e36433b3d2262d35c19ae69a21eae7b11316` on 5 November 2026. The DMG is 1,942,657 bytes. Its SHA-256 is:
 
@@ -47,7 +47,7 @@ reviews/                 macOS Developer review request / feedback
 ```
 
 ## Build
-Use Xcode 26.3 or later for the Swift 6.2 dependency toolchain. The app still runs on macOS 14 or later.
+Use an Apple Silicon Mac with Xcode 26.3 or later for the Swift 6.2 dependency toolchain. The project builds arm64 only. The app runs on macOS 14 or later. Intel builds and Intel Macs are unsupported.
 
 ```sh
 brew install xcodegen
@@ -66,16 +66,16 @@ To resume hosted builds, enable both workflows and dispatch the full validation 
 ```sh
 gh workflow enable macos.yml --repo Oiuhqw/sharex-mac
 gh workflow enable dmg.yml --repo Oiuhqw/sharex-mac
-gh workflow run macos.yml --repo Oiuhqw/sharex-mac --ref main -f runner=macos-15-intel
+gh workflow run macos.yml --repo Oiuhqw/sharex-mac --ref main -f runner=macos-15
 ```
 
 - The main build at `65a3e36` passed 97 core tests, the same 97 under AddressSanitizer, 26 script tests, 420 normal E2E checks, and 63 shortcut-recovery checks. There were zero E2E failures and six explicitly unverifiable checks.
 - The macOS workflow compiles the app, runs the core tests normally and with AddressSanitizer, launches the native E2E driver, and records Release performance and resource measurements. Its artifacts contain results, UI screenshots, logs, process RSS, and CPU samples. A strict validator rejects missing measurements and failed output operations.
-- After those checks pass, the same workflow builds a universal Release DMG, verifies its icon and signature, checks that test code is absent, and runs launch/install smoke checks.
+- After those checks pass, the same workflow builds an arm64 Release DMG, verifies its architecture, icon, and signature, checks that test code and the private virtual-display helper are absent, and runs launch/install smoke checks.
 - Version 0.1.1 adds independent output recovery, failure-injection regression cases, an app icon, and absolute save-folder validation.
 - Version 0.1.2 adds shortcut configuration, pixel crop adjustments, preservation of earlier redactions, and image allocation limits. Effect patches retain at most 64 MiB across 128 cache entries, and the cached live effect preview retains at most 16 MiB. These are buffer limits, not a claim about total process memory. Capture and output images are limited to 64 Mi pixels; an oversized request reports an error.
 - Hosted runners use fixture display frames when their desktop is blank; real window captures still use ScreenCaptureKit when permission is available. Physical hotkeys, real multi-display/Retina hardware and interactive permission prompts still need a Mac check. A green CI run does not certify those scenarios.
-- CI defaults to `macos-15-intel`; manual runs can select the Apple Silicon `macos-15` pool. The package job uses the selected runner and still builds both architectures.
+- CI and packaging run on Apple Silicon `macos-15`. Each job rejects a host whose architecture is not arm64. Debug, performance, and packaged executables must contain exactly the arm64 architecture.
 - The hover performance gate requires Release p95 main-thread CPU below 2 ms and verifies that the events updated the loupe. Debug elapsed time, Release wall time, and the next display-link callback are recorded separately. Hosted-runner display callbacks do not measure physical screen presentation.
 
 ## Capture behavior and privacy
@@ -88,7 +88,7 @@ gh workflow run macos.yml --repo Oiuhqw/sharex-mac --ref main -f runner=macos-15
 
 ## Founder's Mac checklist
 **Setup**
-- [ ] Xcode 26.3+ (Swift 6.2). Deployment target 14.0.
+- [ ] Apple Silicon Mac with Xcode 26.3+ (Swift 6.2). Deployment target 14.0. Intel Macs are unsupported.
 - [ ] Team set; Hardened Runtime ON; App Sandbox OFF. Bundle ID never changes between test builds.
 - [ ] `xcodegen && xcodebuild -scheme ShareX build` compiles clean (fix and report any errors).
 
