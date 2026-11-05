@@ -32,9 +32,9 @@ enum E2ELoupe {
     }
 
     /// Fraction of the 15×15 cells whose colour decodes to the expected frame pixel, plus the centre cell decode.
-    static func check(_ m: E2E.Bitmap, cursor p: CGPoint) -> (ok: Bool, info: [String: Any]) {
+    static func check(_ m: E2E.Bitmap, cursor p: CGPoint, frame: CGRect? = nil) -> (ok: Bool, info: [String: Any]) {
         let kx = Double(m.w) / size.width, ky = Double(m.h) / size.height
-        let L = loupe(p), z = ChromeView.zoom, half = Int(ChromeView.n - 1) / 2
+        let L = frame ?? loupe(p), z = ChromeView.zoom, half = Int(ChromeView.n - 1) / 2
         let cx = Int((p.x * sc).rounded(.down)), cy = Int((p.y * sc).rounded(.down))
         var good = 0, total = 0, centre: [Int] = []
         for j in 0..<Int(ChromeView.n) { for i in 0..<Int(ChromeView.n) {
@@ -127,7 +127,9 @@ enum E2ELoupe {
         w.isReleasedWhenClosed = false; w.level = .screenSaver; w.sharingType = .readOnly
         // As OverlayController.add/show do for the real overlay.
         w.acceptsMouseMovedEvents = true
-        w.contentView = v; NSApp.activate(); w.orderFrontRegardless(); w.makeKeyAndOrderFront(nil); w.makeFirstResponder(v)
+        w.contentView = v
+        NSApp.activate()
+        w.orderFrontRegardless(); w.makeKeyAndOrderFront(nil); w.makeFirstResponder(v)
         await E2E.wait(300)
         var info: [String: Any] = ["isKey": w.isKeyWindow, "appActive": NSApp.isActive, "trackingAreas": v.trackingAreas.count]
         // Real HID moves first: the path the user's mouse takes (needs the PostEvent grant; recorded either way).
@@ -137,7 +139,7 @@ enum E2ELoupe {
             CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: CGPoint(x: sp.x, y: primaryH - sp.y),
                     mouseButton: .left)?.post(tap: .cghidEventTap)
             await E2E.wait(400)
-            if let shot = await capture(w, v, "loupe-\(name).png") { info[name] = check(E2E.bitmap(shot), cursor: p).info }
+            if let shot = await capture(w, v, "loupe-\(name).png") { info[name] = check(E2E.bitmap(shot), cursor: p, frame: v.e2eLoupe.frame).info }
         }
         func send(_ t: NSEvent.EventType, _ p: CGPoint) {
             if let e = NSEvent.mouseEvent(with: t, location: v.convert(p, to: nil), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
@@ -159,8 +161,8 @@ enum E2ELoupe {
             w.displayIfNeeded(); CATransaction.flush()
             await E2E.wait(400)
             guard let shot = await capture(w, v, i == 0 ? "loupe.png" : "loupe-\(name).png") else { ok = false; info[name] = "no capture"; continue }
-            var r = check(E2E.bitmap(shot), cursor: p).info; r["eventMs"] = ms
-            ok = ok && check(E2E.bitmap(shot), cursor: p).ok
+            var r = check(E2E.bitmap(shot), cursor: p, frame: v.e2eLoupe.frame).info; r["eventMs"] = ms
+            ok = ok && check(E2E.bitmap(shot), cursor: p, frame: v.e2eLoupe.frame).ok
             info[name] = r
         }
         send(.leftMouseUp, CGPoint(x: 250, y: 200))

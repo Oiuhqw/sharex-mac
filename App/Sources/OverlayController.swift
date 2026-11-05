@@ -25,78 +25,68 @@ enum EditorOutcome {
     case pickedWindow(WindowInfo)
 }
 
-/// One editor session. Either full-screen overlays (one per frozen display), or a single titled window
-/// around an image that was not a display frame (a live window capture or a multi-display stitch).
 @MainActor
-final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
-    private struct Surface {
-        let window: NSWindow
-        let view: EditorView
-        let displayID: CGDirectDisplayID
-        /// Pixels per point of the delivered image (may differ from the view's scale for a scaled-down canvas).
-        let outputScale: CGFloat
-        /// Window picker only: pickable windows, parallel to the view's pick rects.
-        let pickWindows: [WindowInfo]
-    }
-
+final class OverlayController: NSObject, NSWindowDelegate {
+    private struct Surface { let window: NSWindow; let view: EditorView }
     private var surfaces: [Surface] = []
-    #if SHAREX_E2E
-    /// E2E: behave as when macOS declines NSApp.activate() from a hotkey (seen on macOS 14+).
-    static var e2eDeclineActivation = false
-    #endif
-    /// E2E seam: the live windows and editors of this session.
-    #if SHAREX_E2E
-    var e2eSurfaces: [(window: NSWindow, view: EditorView)] { surfaces.map { ($0.window, $0.view) } }
-    #endif
+    private(set) var session: EditorSession?
     private var completion: ((EditorOutcome) -> Void)?
     private let onStyles: ([ShapeKind: ShapeStyle]) -> Void
-    /// Latest explicitly changed tool defaults across all surfaces. Untouched screens hold stale copies.
-    private var latestStyles: [ShapeKind: ShapeStyle]
     private var previousApp: NSRunningApplication?
     private var preparationFailed = false
-
-    /// Full-screen overlays. `preset` (display id + display top-left points) skips selection and opens the editor.
-    init(frozen: [FrozenScreen], mode: SelectionMode, preset: Preset?, settings: AppSettings,
-         onStyles: @escaping ([ShapeKind: ShapeStyle]) -> Void, completion: @escaping (EditorOutcome) -> Void) {
-        self.completion = completion
-        self.onStyles = onStyles
-        self.latestStyles = settings.toolStyles
-        super.init()
-        let windowInfos = mode == .pickWindow || mode == .rectangle ? ScreenCapture.windows() : []
-        for f in frozen {
-            // With a preset only that display gets an overlay.
-            if let preset, preset.displayID != f.displayID { continue }
-            let sf = f.screen.frame
-            let local = CGRect(origin: .zero, size: sf.size)
-            var picks: [CGRect] = [], pickWindows: [WindowInfo] = []
-            switch mode {
-            case .pickMonitor: picks = [local]
-            case .pickWindow, .rectangle:
-                for w in windowInfos {
-                    if let r = Geometry.clamp(Geometry.cocoaToDisplayTopLeft(w.frame, screenFrame: sf), to: local) {
-                        picks.append(r); pickWindows.append(w)
-                    }
-                }
-            default: break
-            }
-            let view = EditorView(frame: local, renderer: Renderer(frame: f.image, scale: f.scale), mode: mode,
-                                  initialCrop: preset?.rect, styles: settings.toolStyles,
-                                  showMagnifier: settings.options.showMagnifier, pickRects: picks,
-                                  // Monitor picker with the editor off: a click delivers the display straight away.
-                                  finishOnPick: mode == .pickMonitor && !settings.options.openEditor)
-            let w = OverlayWindow(contentRect: sf, styleMask: .borderless, backing: .buffered, defer: false)
-            w.setFrame(sf, display: false)
-            w.level = .screenSaver
-            w.isOpaque = true
-            w.hasShadow = false
-            w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-            add(w, view, displayID: f.displayID, outputScale: f.scale, pickWindows: pickWindows)
-        }
-    }
+    private var topologyObserver: NSObjectProtocol?
+    #if SHAREX_E2E
+    static var e2eDeclineActivation = false
+    var e2eSurfaces: [(window: NSWindow, view: EditorView)] { surfaces.map { ($0.window, $0.view) } }
+    #endif
 
     struct Preset {
         let displayID: CGDirectDisplayID
         let rect: CGRect
+        var desktop = false
+    }
+
+    init(frozen: [FrozenScreen], mode: SelectionMode, preset: Preset?, settings: AppSettings,
+         onStyles: @escaping ([ShapeKind: ShapeStyle]) -> Void, completion: @escaping (EditorOutcome) -> Void) {
+        self.completion = completion; self.onStyles = onStyles
+        super.init()
+        guard let source = DesktopImageSource(frozen: frozen), let map = source.layout else { preparationFailed = true; return }
+        let initial: CGRect?
+        if let preset {
+            if preset.desktop { initial = source.selection(preset.rect) }
+            else if let display = map.displays.first(where: { $0.id == preset.displayID }) {
+                let placement = map.placement(display)
+                initial = source.selection(preset.rect.offsetBy(dx: placement.minX, dy: placement.minY))
+            } else { initial = nil }
+        } else { initial = nil }
+        let windows = ScreenCapture.windows().filter { map.bounds.intersects(Geometry.cocoaToDisplayTopLeft($0.frame, screenFrame: map.cocoaBounds)) }
+        let picks = windows.map { Geometry.cocoaToDisplayTopLeft($0.frame, screenFrame: map.cocoaBounds).intersection(map.bounds) }
+        let renderer = Renderer(source: source, scale: source.scale(for: initial ?? source.bounds) ?? 1)
+        let session = EditorSession(renderer: renderer, mode: mode, initialCrop: initial, styles: settings.toolStyles,
+                                    pickRects: picks, windows: windows, finishOnPick: !settings.options.openEditor)
+        install(session)
+        for (index, frozen) in frozen.enumerated() {
+            let display = map.displays[index], frame = display.frame, viewport = map.placement(display)
+            let view = EditorView(frame: CGRect(origin: .zero, size: frame.size), session: session, viewport: viewport,
+                                  image: frozen.image, showMagnifier: settings.options.showMagnifier,
+                                  safeTop: max(4, frozen.screen.safeAreaInsets.top + 4))
+            let window = OverlayWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+            window.setFrame(frame, display: false); window.level = .screenSaver; window.isOpaque = true; window.hasShadow = false
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+            add(window, view)
+        }
+        let topology = NSScreen.screens.map { DesktopLayout.Display(id: ScreenCapture.displayID(of: $0), frame: $0.frame, scale: $0.backingScaleFactor) }
+        topologyObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                let current = NSScreen.screens.map { DesktopLayout.Display(id: ScreenCapture.displayID(of: $0), frame: $0.frame, scale: $0.backingScaleFactor) }
+                if current != topology { self?.session?.cancel() }
+            }
+        }
+    }
+
+    private func install(_ session: EditorSession) {
+        self.session = session
+        session.completion = { [weak self] in self?.close($0) }
     }
 
     /// A titled editor window around `image`, centred on `screen` and scaled down to fit when it is larger.
@@ -105,10 +95,7 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
          onStyles: @escaping ([ShapeKind: ShapeStyle]) -> Void, completion: @escaping (EditorOutcome) -> Void) {
         self.completion = completion
         self.onStyles = onStyles
-        self.latestStyles = settings.toolStyles
         super.init()
-        // The minimum keeps the vertical toolbar (style row ≈ 650 pt) inside the window. The review suggested
-        // 560 × 240; that still clips Done/Cancel, so the floor is larger.
         let marginPt: CGFloat = 60, minPt = CGSize(width: 760, height: 420)
         let room = CGSize(width: screen.visibleFrame.width - 40, height: screen.visibleFrame.height - 80)
         preparationFailed = true
@@ -129,9 +116,11 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
         let size = CGSize(width: CGFloat(cw) / viewScale, height: CGFloat(ch) / viewScale)
         let renderer = Renderer(frame: canvas, scale: viewScale)
         renderer.smoothFrame = abs(viewScale - screen.backingScaleFactor) > 0.01
-        let view = EditorView(frame: CGRect(origin: .zero, size: size), renderer: renderer,
-                              mode: .rectangle, initialCrop: imageRect.points(scale: viewScale), styles: settings.toolStyles,
-                              showMagnifier: settings.options.showMagnifier, pickRects: [], finishOnPick: false)
+        let session = EditorSession(renderer: renderer, mode: .rectangle, initialCrop: imageRect.points(scale: viewScale),
+                                    styles: settings.toolStyles, pickRects: [], finishOnPick: false, outputScale: scale)
+        install(session)
+        let view = EditorView(frame: CGRect(origin: .zero, size: size), session: session,
+                              viewport: CGRect(origin: .zero, size: size), image: canvas, showMagnifier: settings.options.showMagnifier)
         let w = OverlayWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: [.titled, .closable],
                               backing: .buffered, defer: false)
         w.title = title
@@ -141,19 +130,15 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
         w.delegate = self
         let vf = screen.visibleFrame
         w.setFrameOrigin(CGPoint(x: vf.midX - w.frame.width / 2, y: vf.midY - w.frame.height / 2))
-        add(w, view, displayID: ScreenCapture.displayID(of: screen), outputScale: scale, pickWindows: [])
+        add(w, view)
         preparationFailed = false
     }
 
-    private func add(_ w: NSWindow, _ view: EditorView, displayID: CGDirectDisplayID, outputScale: CGFloat, pickWindows: [WindowInfo]) {
-        view.delegate = self
-        // Request the platform's window-sharing restriction. This does not guarantee exclusion from other recorders.
-        w.sharingType = .none
-        w.hidesOnDeactivate = false
-        w.isReleasedWhenClosed = false
-        w.acceptsMouseMovedEvents = true
-        w.contentView = view
-        surfaces.append(Surface(window: w, view: view, displayID: displayID, outputScale: outputScale, pickWindows: pickWindows))
+
+    private func add(_ window: NSWindow, _ view: EditorView) {
+        window.sharingType = .none; window.hidesOnDeactivate = false; window.isReleasedWhenClosed = false
+        window.acceptsMouseMovedEvents = true; window.contentView = view; window.delegate = self
+        surfaces.append(Surface(window: window, view: view))
     }
 
     func show() {
@@ -176,7 +161,7 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
         for s in surfaces { s.window.orderFrontRegardless() }
         let key = surfaces.first { $0.window.frame.contains(mouse) } ?? surfaces.first
         key?.window.makeKey()
-        if let key { key.window.makeFirstResponder(key.view) }
+        if let key { session?.activate(key.view); key.window.makeFirstResponder(key.view) }
         // Every overlay shows the loupe from its first frame, wherever the cursor already is.
         for s in surfaces { s.view.syncMouse() }
         // Perf: the first frame is on screen once the window has displayed and the transaction is committed.
@@ -187,8 +172,9 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
     private func close(_ outcome: EditorOutcome) {
         guard let c = completion else { return }
         completion = nil
+        if let topologyObserver { NotificationCenter.default.removeObserver(topologyObserver) }; topologyObserver = nil
         // Styles are saved whether the capture finished or was cancelled; they are preferences, not edits.
-        if !surfaces.isEmpty { onStyles(latestStyles) }
+        if !surfaces.isEmpty { onStyles(session?.doc.styles ?? [:]) }
         let closing = surfaces
         surfaces.removeAll()
         for s in closing { s.view.releaseResources(); s.window.delegate = nil; s.window.orderOut(nil) }
@@ -198,60 +184,15 @@ final class OverlayController: NSObject, EditorViewDelegate, NSWindowDelegate {
         c(outcome)
     }
 
-    private func surface(of v: EditorView) -> Surface? { surfaces.first { $0.view === v } }
-
-    // MARK: EditorViewDelegate
-
-    func editorDidChangeStyle(_ v: EditorView, kind: ShapeKind) {
-        guard surface(of: v) != nil else { return }
-        let style = v.doc.style(for: kind)
-        latestStyles[kind] = style
-        // Keep other surfaces' defaults current. Only preferences change, never existing marks or
-        // their undo stacks, so a later width-only edit cannot restore an older screen's color.
-        for s in surfaces where s.view !== v { s.view.rememberStyle(style, for: kind) }
-    }
-
-    func editorDidActivate(_ v: EditorView) {
-        for s in surfaces where s.view !== v { s.view.deactivate() }
-        surface(of: v)?.window.makeKey()
-    }
-
-    func editorDidEnterEditing(_ v: EditorView) {
-        // One screen edits at a time; the others stop taking clicks so Enter can't be ambiguous.
-        for s in surfaces where s.view !== v { s.view.deactivate(); s.window.ignoresMouseEvents = true }
-    }
-
-    func editorDidReturnToSelection(_ v: EditorView) {
-        for s in surfaces { s.window.ignoresMouseEvents = false }
-    }
-
-    func editorDidPickWindow(_ v: EditorView, index i: Int) {
-        guard let s = surface(of: v), i < s.pickWindows.count else { return }
-        close(.pickedWindow(s.pickWindows[i]))
-    }
-
-    func editorDidFinish(_ v: EditorView, crop: CGRect, lasso: [CGPoint]?) {
-        guard let s = surface(of: v),
-              let image = Export.flatten(renderer: v.renderer, doc: v.doc, crop: crop, lasso: lasso) else {
-            reportPreparationFailure(); close(.cancelled); return
-        }
-        close(.finished(EditorResult(image: image, scale: s.outputScale, displayID: s.displayID, crop: crop)))
-    }
-
-    func editorDidCancel(_ v: EditorView) { close(.cancelled) }
 
     private func reportPreparationFailure() {
         #if SHAREX_E2E
         if E2E.suppressAlerts { E2E.alertsShown += 1; return }
         #endif
-        let alert = NSAlert()
-        alert.alertStyle = .warning
+        let alert = NSAlert(); alert.alertStyle = .warning
         alert.messageText = "Screenshot could not be prepared"
-        alert.informativeText = "No image was copied or saved. Select a smaller image. Captures and padded editor canvases are limited to 64 megapixels."
+        alert.informativeText = "No image was copied or saved. Try a smaller capture or close other apps to free memory."
         alert.runModal()
     }
-
-    // The canvas window's close button.
-    func windowWillClose(_ notification: Notification) { close(.cancelled) }
+    func windowWillClose(_ notification: Notification) { session?.cancel() }
 }
-

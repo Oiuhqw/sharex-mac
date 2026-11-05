@@ -94,7 +94,7 @@ enum E2EClipboardOrder {
         E2E.coord.capture(.region)
         guard await E2E.until({ E2E.surface() != nil }), let s = E2E.surface() else { E2E.record("clipboard-busy-after-write", false, ["error": "no overlay"]); return }
         await E2E.wait(150)
-        let frameCS = (s.view.renderer.frame.colorSpace?.name as String?) ?? "<unnamed>"
+        let frameCS = (s.view.renderer.source.colorSpace.name as String?) ?? "<unnamed>"
         E2E.drag(CGPoint(x: E2E.C.minX, y: E2E.C.minY), CGPoint(x: E2E.C.maxX, y: E2E.C.maxY))
         E2E.ret()
         // Sample every main-loop turn; the first turn busy is false must already see the new pasteboard.

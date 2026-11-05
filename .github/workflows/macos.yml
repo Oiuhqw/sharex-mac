@@ -6,21 +6,21 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: macOS runner architecture
+        description: Apple Silicon macOS runner
         type: choice
-        options: [macos-15-intel, macos-15]
-        default: macos-15-intel
+        options: [macos-15]
+        default: macos-15
 
 permissions:
   contents: read
 
 concurrency:
-  group: macos-${{ github.ref }}-${{ inputs.runner || 'macos-15-intel' }}
+  group: macos-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-and-test:
-    runs-on: ${{ inputs.runner || 'macos-15-intel' }}
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -30,6 +30,7 @@ jobs:
 
       - name: Toolchain
         run: |
+          test "$(uname -m)" = arm64
           test -d /Applications/Xcode_26.3.app
           sudo xcode-select -s /Applications/Xcode_26.3.app
 
@@ -62,6 +63,7 @@ jobs:
           swift test --sanitize=address --parallel 2>&1 | tee ../../core-asan.log
 
       - name: Build app (unsigned)
+        id: debug-build
         run: |
           set -o pipefail
           xcodebuild build \
@@ -79,6 +81,7 @@ jobs:
         run: |
           APP=build/Build/Products/Debug/ShareX.app
           test -x "$APP/Contents/MacOS/ShareX"
+          test "$(lipo -archs "$APP/Contents/MacOS/ShareX")" = arm64
           plutil -lint "$APP/Contents/Info.plist"
           "$APP/Contents/MacOS/ShareX" > smoke.log 2>&1 &
           PID=$!
@@ -91,6 +94,11 @@ jobs:
 
       - name: E2E (real app, real pasteboard; SCK if TCC grant works)
         run: scripts/e2e.sh
+
+      - name: E2E across mixed-scale virtual displays
+        if: ${{ !cancelled() && steps.debug-build.outcome == 'success' }}
+        timeout-minutes: 12
+        run: scripts/e2e-multidisplay.sh
 
       - name: Upload E2E artifacts
         if: always()
@@ -108,6 +116,7 @@ jobs:
             -destination 'platform=macOS' -derivedDataPath build -disableAutomaticPackageResolution \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) SHAREX_E2E' 2>&1 | tee xcodebuild-release.log | tail -5
+          test "$(lipo -archs build/Build/Products/Release/ShareX.app/Contents/MacOS/ShareX)" = arm64
 
       - name: Perf and resource scenarios (Release, synthetic 2x and runner display)
         if: always()
@@ -129,6 +138,19 @@ jobs:
           path: perf-out
           if-no-files-found: ignore
 
+      - name: Collect native diagnostics
+        if: failure()
+        run: |
+          mkdir -p native-diagnostics
+          for directory in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+            if [ -d "$directory" ]; then
+              find "$directory" -type f \( -name 'ShareX*.ips' -o -name 'ShareX*.crash' -o -name 'ShareX*.hang' \) \
+                -exec cp {} native-diagnostics/ \;
+            fi
+          done
+          /usr/bin/log show --last 25m --style compact --predicate 'process == "ShareX"' \
+            > native-diagnostics/sharex-system.log 2>&1 || true
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -140,11 +162,12 @@ jobs:
             core-tests.log
             core-asan.log
             smoke.log
+            native-diagnostics
           if-no-files-found: ignore
 
   package:
     needs: build-and-test
     uses: ./.github/workflows/dmg.yml
     with:
-      runner: ${{ inputs.runner || 'macos-15-intel' }}
+      runner: macos-15
 

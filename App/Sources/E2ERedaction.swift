@@ -1,6 +1,5 @@
 #if SHAREX_E2E
 import AppKit
-@preconcurrency import ScreenCaptureKit
 import ShareXCore
 
 @MainActor
@@ -53,17 +52,8 @@ enum E2ERedaction {
     }
 
     private static func windowSnapshot(_ window: NSWindow, name: String) async -> E2E.Bitmap? {
-        window.displayIfNeeded(); CATransaction.flush()
-        await E2E.wait(40)
         do {
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-            guard let target = content.windows.first(where: { $0.windowID == CGWindowID(window.windowNumber) }) else { return nil }
-            let config = SCStreamConfiguration()
-            config.width = Int(size.width * window.backingScaleFactor)
-            config.height = Int(size.height * window.backingScaleFactor)
-            config.showsCursor = false; config.ignoreShadowsSingleWindow = true
-            config.colorSpaceName = CGColorSpace.sRGB
-            let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: target), configuration: config)
+            let image = try await E2E.windowImage(window)
             E2EOrientation.writePNG(image, name)
             return E2E.bitmap(image)
         } catch {
@@ -84,6 +74,7 @@ enum E2ERedaction {
         root.addSubview(committed)
         let live = LiveMarkView(frame: root.bounds)
         root.addSubview(live)
+        E2E.bindFailures(renderer, committed: committed, live: live)
         let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.sharingType = .readOnly; window.hasShadow = false
         defer {
@@ -206,6 +197,7 @@ enum E2ERedaction {
                     root.addSubview(FrameView(frame: root.bounds, image: image, smooth: false))
                     let live = LiveMarkView(frame: root.bounds)
                     root.addSubview(live)
+                    E2E.bindFailures(renderer, live: live)
                     let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
                     window.isReleasedWhenClosed = false
                     window.contentView = root
@@ -289,6 +281,7 @@ enum E2ERedaction {
             root.addSubview(committed)
             let live = LiveMarkView(frame: root.bounds)
             root.addSubview(live)
+            E2E.bindFailures(previewRenderer, committed: committed, live: live)
             let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false; window.contentView = root; window.orderFrontRegardless()
             previewRenderer.liveEffectID = second
@@ -326,6 +319,7 @@ enum E2ERedaction {
             root.addSubview(committed)
             let live = LiveMarkView(frame: root.bounds)
             root.addSubview(live)
+            E2E.bindFailures(renderer, committed: committed, live: live)
             let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false; window.sharingType = .readOnly; window.hasShadow = false
             window.contentView = root; window.orderFrontRegardless()
@@ -436,6 +430,7 @@ enum E2ERedaction {
                 let committed = AnnotationsView(frame: root.bounds, renderer: renderer)
                 root.addSubview(committed)
                 let live = LiveMarkView(frame: root.bounds); root.addSubview(live)
+                E2E.bindFailures(renderer, committed: committed, live: live)
                 let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false; window.contentView = root; window.orderFrontRegardless()
                 return (root, committed, live, window)

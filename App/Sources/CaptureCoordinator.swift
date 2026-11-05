@@ -24,12 +24,15 @@ final class CaptureCoordinator {
     private func run(_ req: CaptureRequest) async throws {
         guard Permissions.requestScreenRecording() else { throw CaptureError.noPermission }
         let o = req.options
-        let displays = NSScreen.screens.map { (id: ScreenCapture.displayID(of: $0), size: $0.frame.size) }
-        // No usable last region yet (or its display is gone): behave like Region.
-        let last = settings.value.lastRegion?.resolve(displays: displays)
-        let style: CaptureStyle = req.style == .lastRegion && last == nil ? .region : req.style
         // Esc (or a click on the timer) during the delay cancels the capture.
         guard await Countdown.run(seconds: o.delaySeconds) else { return }
+
+        let layout = DesktopLayout(displays: NSScreen.screens.map {
+            .init(id: ScreenCapture.displayID(of: $0), frame: $0.frame, scale: $0.backingScaleFactor)
+        })
+        let savedRegion = settings.value.lastRegion
+        let last = layout.flatMap { savedRegion?.resolve(layout: $0) }
+        var style: CaptureStyle = req.style == .lastRegion && last == nil ? .region : req.style
 
         let mouse = NSEvent.mouseLocation
         guard let underMouse = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main ?? NSScreen.screens.first
@@ -48,30 +51,44 @@ final class CaptureCoordinator {
         case .activeMonitor:
             targets = [underMouse]; preset = full(underMouse)
         case .lastRegion:
-            guard let lr = last, let s = NSScreen.screens.first(where: { ScreenCapture.displayID(of: $0) == lr.id }) else { return }
-            targets = [s]; preset = OverlayController.Preset(displayID: lr.id, rect: lr.rect)
+            guard let last, let layout else { return }
+            let ids = Set(layout.participants(in: last).map(\.id))
+            targets = targets.filter { ids.contains(ScreenCapture.displayID(of: $0)) }
         case .fullscreen where NSScreen.screens.count == 1:
             preset = full(underMouse)
         default: break
         }
 
-        let frozen = try await ScreenCapture.freeze(targets, showCursor: o.showCursor)
+        var frozen: [FrozenScreen]
+        do { frozen = try await ScreenCapture.freeze(targets, showCursor: o.showCursor) }
+        catch CaptureError.noDisplays where style == .lastRegion { frozen = [] }
 
-        if style == .fullscreen, frozen.count > 1 {
-            // All displays stitched into one image, edited in a window when the editor is on.
-            let scale = frozen.map(\.scale).max() ?? 1
-            guard let img = stitch(frozen) else { throw CaptureError.imageTooLarge }   // same scale StitchLayout picks
-            if o.openEditor { openCanvas(img, scale: scale, screen: underMouse, title: "All displays") }
-            else { await deliver(img, scale: scale, last: nil) }
-            return
+        if style == .lastRegion {
+            if matchesCurrentLayout(frozen), let map = DesktopImageSource(frozen: frozen)?.layout,
+               let crop = savedRegion?.resolve(layout: map) {
+                preset = OverlayController.Preset(displayID: 0, rect: crop, desktop: true)
+            } else {
+                style = .region
+                frozen = try await ScreenCapture.freeze(NSScreen.screens, showCursor: o.showCursor)
+            }
         }
 
-        if let preset, !o.openEditor, let f = frozen.first(where: { $0.displayID == preset.displayID }) {
-            let r = Renderer(frame: f.image, scale: f.scale)
-            if let img = Export.flatten(renderer: r, doc: EditorDocument(), crop: preset.rect, lasso: nil) {
-                await deliver(img, scale: f.scale,
-                        last: style == .lastRegion ? LastRegion(displayID: preset.displayID, rect: preset.rect) : nil)
-            } else { throw CaptureError.captureFailed("The selected image could not be prepared. Try a smaller capture.") }
+        guard matchesCurrentLayout(frozen) else {
+            throw CaptureError.captureFailed("The display layout changed. Start a new capture.")
+        }
+        guard let source = DesktopImageSource(frozen: frozen) else { throw CaptureError.imageTooLarge }
+        if style == .fullscreen { preset = OverlayController.Preset(displayID: 0, rect: source.bounds, desktop: true) }
+        if let preset, !o.openEditor {
+            let crop: CGRect
+            if preset.desktop { crop = preset.rect }
+            else if let display = source.layout?.displays.first(where: { $0.id == preset.displayID }), let map = source.layout {
+                let placement = map.placement(display)
+                crop = preset.rect.offsetBy(dx: placement.minX, dy: placement.minY)
+            } else { throw CaptureError.noDisplays }
+            let scale = source.scale(for: crop) ?? 1
+            let renderer = Renderer(source: source, scale: scale)
+            guard let image = Export.flatten(renderer: renderer, doc: EditorDocument(), crop: crop, lasso: nil) else { throw CaptureError.imageTooLarge }
+            await deliver(image, scale: scale, last: style == .lastRegion ? source.layout.flatMap { LastRegion(crop: crop, layout: $0) } : nil)
             return
         }
 
@@ -86,7 +103,7 @@ final class CaptureCoordinator {
                 self.overlay = nil
                 Task { @MainActor in
                     await self.deliver(r.image, scale: r.scale,
-                                       last: remember ? LastRegion(displayID: r.displayID, rect: r.crop) : nil)
+                                       last: remember ? r.lastRegion : nil)
                     self.busy = false
                 }
             case .pickedWindow(let w):
@@ -98,6 +115,14 @@ final class CaptureCoordinator {
                 }
             }
         })
+    }
+
+    private func matchesCurrentLayout(_ frozen: [FrozenScreen]) -> Bool {
+        let screens = NSScreen.screens
+        return !frozen.isEmpty && frozen.allSatisfy { tile in
+            screens.contains { ScreenCapture.displayID(of: $0) == tile.displayID
+                && $0.frame == tile.frame && $0.backingScaleFactor == tile.scale }
+        }
     }
 
     /// A window captured live with transparent corners; border and shadow are drawn around it like any capture.
@@ -188,16 +213,7 @@ final class CaptureCoordinator {
         if delivery.hasOutput, let last { settings.update { $0.lastRegion = last } }
     }
 
-    /// Places every display at its global position. Output uses the highest scale so Retina detail survives.
-    private func stitch(_ frozen: [FrozenScreen]) -> CGImage? {
-        // Placement and canvas size come from the core's StitchLayout (unit-tested and fuzzed).
-        guard let layout = StitchLayout(frames: frozen.map(\.screen.frame), scales: frozen.map(\.scale)),
-              let ctx = Imaging.context(width: layout.width, height: layout.height, flipped: true) else { return nil }
-        ctx.scaleBy(x: layout.scale, y: layout.scale)
-        ctx.interpolationQuality = .high
-        for (f, r) in zip(frozen, layout.placements) { Imaging.drawUpright(f.image, in: r, ctx: ctx) }
-        return ctx.makeImage()
-    }
+
 }
 
 /// Hand focus back to the app the user was in. If it is gone, terminated, or refuses activation, hide ShareX

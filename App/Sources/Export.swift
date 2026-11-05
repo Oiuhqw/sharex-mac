@@ -26,7 +26,7 @@ enum Export {
         if let lasso, lasso.count >= 3 {
             ctx.beginPath(); ctx.addLines(between: lasso); ctx.closePath(); ctx.clip()
         }
-        renderer.drawFrame(ctx)
+        renderer.drawFrame(ctx, in: area.points(scale: s))
         renderer.draw(doc, in: ctx)
         return ctx.makeImage()
     }

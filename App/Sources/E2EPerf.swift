@@ -27,7 +27,8 @@ enum E2EPerf {
     static func window(for view: EditorView) -> NSWindow {
         let w = OverlayWindow(contentRect: CGRect(origin: CGPoint(x: 0, y: 0), size: ptSize), styleMask: .borderless, backing: .buffered, defer: false)
         w.isReleasedWhenClosed = false; w.acceptsMouseMovedEvents = true
-        w.contentView = view; w.orderFrontRegardless(); w.makeKey(); w.makeFirstResponder(view)
+        w.contentView = view
+        w.orderFrontRegardless(); w.makeKey(); w.makeFirstResponder(view)
         return w
     }
 

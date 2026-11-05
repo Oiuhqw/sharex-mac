@@ -12,7 +12,7 @@ import ShareXCore
 @MainActor
 enum E2E {
     static let args = CommandLine.arguments
-    static var enabled: Bool { args.contains("--e2e") }
+    static var enabled: Bool { args.contains("--e2e") || args.contains("--e2e-multidisplay") }
     static func arg(after flag: String) -> String? { args.firstIndex(of: flag).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
 
     // MARK: helper processes
@@ -107,12 +107,15 @@ enum E2E {
 
     static func start(_ a: AppDelegate) {
         app = a
-        out = URL(fileURLWithPath: arg(after: "--e2e") ?? "/tmp/e2e")
+        out = URL(fileURLWithPath: arg(after: "--e2e-multidisplay") ?? arg(after: "--e2e") ?? "/tmp/e2e")
         try? FileManager.default.createDirectory(at: saved, withIntermediateDirectories: true)
         if let p = arg(after: "--pattern-pid"), let n = Int32(p) { patternPID = n }
         // Watchdog: a modal or a hang must not eat CI minutes.
         DispatchQueue.main.asyncAfter(deadline: .now() + 300) { record("watchdog", false, ["note": "timed out"]); finishRun() }
-        Task { @MainActor in await runAll(); finishRun() }
+        Task { @MainActor in
+            if args.contains("--e2e-multidisplay") { await E2EMultiDisplay.run() } else { await runAll() }
+            finishRun()
+        }
     }
 
     static func finishRun() {
@@ -145,6 +148,19 @@ enum E2E {
     static func setOpts(_ f: (inout AppSettings) -> Void) { app.settings.update(f) }
 
     // MARK: event synthesis
+
+    @discardableResult
+    static func postClick(_ control: NSView, at point: CGPoint? = nil) -> Bool {
+        guard let window = control.window, window.isVisible else { return false }
+        let point = point ?? CGPoint(x: control.bounds.midX, y: control.bounds.midY)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            guard let event = NSEvent.mouseEvent(with: type, location: control.convert(point, to: nil), modifierFlags: [],
+                                               timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                               context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { return false }
+            NSApp.postEvent(event, atStart: false)
+        }
+        return true
+    }
 
     static func surface() -> (window: NSWindow, view: EditorView)? { coord.overlay?.e2eSurfaces.first }
 
@@ -331,6 +347,7 @@ enum E2E {
 
         if args.contains("--perf") {
             await E2EResources.run()
+            await E2EEditorRegression.run()
             await E2EPerf.run()
             return
         }
@@ -444,6 +461,7 @@ enum E2E {
 
         await combined()
         await E2EOrientation.run()
+        await E2EEditorRegression.run()
         await E2ELoupe.run()
         await E2EResize.run()
         await copyPaths()

@@ -2,8 +2,6 @@
 import AppKit
 import ShareXCore
 
-/// Two independent editor surfaces on one fixture display exercise per-screen style ownership
-/// without claiming coverage of physical multi-display input or capture.
 @MainActor
 enum E2EStylePersistence {
     static func run() {
@@ -20,17 +18,18 @@ enum E2EStylePersistence {
             var saved: [ShapeKind: ShapeStyle]?
             var completed = 0
             var finished = false
-            let controller = OverlayController(frozen: [frozen, frozen], mode: .rectangle, preset: nil, settings: initial,
+            let controller = OverlayController(frozen: [frozen], mode: .rectangle, preset: nil, settings: initial,
                                                onStyles: { saved = $0 }) { outcome in
                 completed += 1
                 if case .finished = outcome { finished = true }
             }
             let surfaces = controller.e2eSurfaces
-            guard surfaces.count == 2 else { E2E.record(name, false); return }
-            let a = surfaces[0].view, b = surfaces[1].view
+            guard let first = surfaces.first else { E2E.record(name, false); return }
+            let a = first.view
+            let b = EditorView(frame: a.bounds, session: a.session, viewport: a.viewport, image: image, showMagnifier: false)
             change(a, b)
-            if finish { controller.editorDidFinish(a, crop: CGRect(x: 0, y: 0, width: 20, height: 20), lasso: nil) }
-            else { controller.editorDidCancel(a) }
+            if finish { a.session.selectDesktop(); a.finish() }
+            else { a.cancel() }
             E2E.record(name, completed == 1 && finished == finish && saved.map(verify) == true,
                        ["surfaces": surfaces.count, "fixtureOnly": true])
         }

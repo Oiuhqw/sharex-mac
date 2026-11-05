@@ -6,7 +6,12 @@ struct FrozenScreen {
     let screen: NSScreen
     let displayID: CGDirectDisplayID
     let image: CGImage
-    var scale: CGFloat { screen.backingScaleFactor }
+    let frame: CGRect
+    let scale: CGFloat
+    init(screen: NSScreen, displayID: CGDirectDisplayID, image: CGImage) {
+        self.screen = screen; self.displayID = displayID; self.image = image
+        frame = screen.frame; scale = screen.backingScaleFactor
+    }
 }
 
 /// An on-screen window from the window server, in Cocoa global points.
@@ -49,6 +54,8 @@ enum ScreenCapture {
     static var e2eDisplayFixture: ((Int, Int) -> CGImage?)?
     /// E2E seam: the next window capture fails as if the window closed, to drive the error-alert path.
     static var e2eForceWindowGone = false
+    static var e2eCapturePixelLimit: Int?
+    static var e2eFrozenResult: (@MainActor ([FrozenScreen]) async -> [FrozenScreen])?
     #else
     // Shipped builds: the seams are constant nil/false, so the compiler drops every test branch.
     static let e2eFixture: ((Int, Int) -> CGImage?)? = nil
@@ -113,11 +120,16 @@ enum ScreenCapture {
 
     /// Freezes the given screens. Our own windows are excluded from the frame.
     static func freeze(_ screens: [NSScreen], showCursor: Bool) async throws -> [FrozenScreen] {
+        #if SHAREX_E2E
+        let maximumPixels = min(Imaging.maximumPixels, e2eCapturePixelLimit ?? Imaging.maximumPixels)
+        #else
+        let maximumPixels = Imaging.maximumPixels
+        #endif
         var plannedBytes = 0
         for screen in screens {
             guard let dimensions = Imaging.pixelDimensions(size: screen.frame.size, scale: screen.backingScaleFactor),
                   let bytes = Imaging.allocationBytes(width: dimensions.width, height: dimensions.height),
-                  bytes <= Imaging.maximumPixels * 4 - plannedBytes else { throw CaptureError.imageTooLarge }
+                  bytes <= maximumPixels * 4 - plannedBytes else { throw CaptureError.imageTooLarge }
             plannedBytes += bytes
         }
         if let fx = e2eFixture ?? e2eDisplayFixture {
@@ -129,6 +141,9 @@ enum ScreenCapture {
                 out.append(FrozenScreen(screen: screen, displayID: displayID(of: screen), image: image))
             }
             if out.isEmpty { throw CaptureError.noDisplays }
+            #if SHAREX_E2E
+            if let e2eFrozenResult { return await e2eFrozenResult(out) }
+            #endif
             return out
         }
         let sp = Perf.signposter.beginInterval("shareable-content")
@@ -145,7 +160,7 @@ enum ScreenCapture {
             let scale = screen.backingScaleFactor
             guard let dimensions = Imaging.pixelDimensions(size: CGSize(width: display.width, height: display.height), scale: scale),
                   let bytes = Imaging.allocationBytes(width: dimensions.width, height: dimensions.height),
-                  bytes <= Imaging.maximumPixels * 4 - retained else { throw CaptureError.imageTooLarge }
+                  bytes <= maximumPixels * 4 - retained else { throw CaptureError.imageTooLarge }
             config.width = dimensions.width
             config.height = dimensions.height
             do {

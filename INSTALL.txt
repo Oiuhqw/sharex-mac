@@ -1,45 +1,76 @@
-ShareX for macOS 0.1.2 (build 3)
-macOS 14 or later. Universal: Apple Silicon and Intel.
+ShareX for macOS 0.1.3, build 4
 
-Drag ShareX.app to Applications, then open it. ShareX lives in the menu bar.
-Allow Screen Recording in System Settings > Privacy & Security, then quit and reopen ShareX.
+Requires macOS 14 or later on Apple Silicon. The app contains arm64 code only.
+Intel Macs are unsupported.
 
-This build is ad-hoc signed with Hardened Runtime. It is NOT Apple-notarized.
-The packaging workflow does not use Developer ID signing. A downloaded copy may require
-System Settings > Privacy & Security > Open Anyway after the first launch attempt.
-Check ShareX.dmg.sha256 from the same build before installing.
+Download ShareX.dmg and ShareX.dmg.sha256 from the same release:
+https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.3
 
-If macOS says the app "is damaged" or refuses to open it, clear the download
-quarantine flag after copying it to Applications, then open it again:
+In the download folder, verify the DMG before installing:
+
+    shasum -a 256 -c ShareX.dmg.sha256
+
+Open the DMG. Drag ShareX.app to Applications, then open it.
+ShareX appears in the menu bar. Open the camera icon and choose Region.
+Allow Screen Recording in System Settings > Privacy & Security.
+Quit and reopen ShareX after you change that permission.
+
+This build is ad-hoc signed with Hardened Runtime. It is not Apple-notarized.
+The packaging workflow does not use Developer ID signing.
+After the first launch attempt, a downloaded copy may require
+System Settings > Privacy & Security > Open Anyway.
+
+If macOS says the verified app is damaged or refuses to open it, remove its
+download quarantine flag after copying it to Applications:
 
     xattr -dr com.apple.quarantine /Applications/ShareX.app
 
-If capture permission stops working after an ad-hoc update, remove the old ShareX
-entry from Screen Recording permissions, add the updated /Applications/ShareX.app,
-and reopen it.
+Then open the app again.
+
+If capture permission stops working after an ad-hoc update, remove the old
+ShareX entry from Screen Recording permissions. Add the updated
+/Applications/ShareX.app, then quit and reopen it.
+
+Changes in 0.1.3:
+- Fullscreen editing stays on the original displays.
+- Rectangular and freehand selections can cross display boundaries.
+- Each display has a fixed top toolbar with Tool, Style, More, Done, and Cancel.
+- Style includes blur and pixelation strength. More includes Undo, Redo, and Delete.
+- New installations assign only Control-Shift-1 for Region.
+- Updates preserve valid saved bindings, including old defaults and disabled shortcuts.
+- Last Region supports multiple displays. A changed participating display starts fresh selection.
+- The output uses the highest scale of the displays touched by the crop.
+- Desktop gaps stay transparent. Oversized output requires a smaller crop.
+- App and package builds contain arm64 code only. Intel Macs are unsupported.
 
 Changes in 0.1.2:
-- Native Capture, Shortcuts and Output settings pages, with searchable keybindings.
-- Shortcut recording, duplicate feedback, clear, restore, and persistent assignments.
+- Native Capture, Shortcuts, and Output settings pages have searchable shortcuts.
+- Shortcut settings support recording, conflict feedback, clear, restore, and saved assignments.
 - Damaged shortcut preferences recover without replacing valid custom assignments.
 - New installations copy to the clipboard and save PNG files to Pictures/ShareX.
-- Crop arrow keys move one image pixel. Shift moves ten; Option resizes the trailing edge.
-- Later blur and pixelate effects preserve earlier protected pixels.
-- Image buffers have allocation limits; cached effects and live previews have byte limits.
+- Optional crop arrow keys move one image pixel. Shift moves ten pixels.
+- Option with an arrow key resizes the crop's trailing edge.
+- Later blur and pixelation effects preserve earlier protected pixels.
+- Image buffers, cached effects, and live previews have allocation limits.
 
 Included from 0.1.1:
 - Clipboard and PNG file export succeed or fail independently.
-- Failed outputs show Retry and Save As; the screenshot remains available while recovering.
-- Successful outputs are preserved when retrying, without duplicate files.
-- The success sound plays only when every requested output succeeds.
-- App icon added, and invalid relative save-folder paths rejected.
-- Magnifier (loupe) appears on the first frame and follows the cursor even when ShareX is not the active app.
-- Esc, Return, tool hotkeys and typed text reach the capture overlay while another app stays in front.
-- Blur and pixelate strength cannot go below 8 pt. Use a fully opaque filled box to completely hide sensitive content.
-- Smoother blur while dragging (reduced-resolution preview; the saved image is full resolution).
+- Failed outputs show Retry and Save As. The screenshot remains available during recovery.
+- Retry preserves successful outputs and does not create duplicate files.
+- The success sound plays only after every requested output succeeds.
+- The app has an icon and rejects relative save-folder paths.
+- The magnifier appears on the first frame and follows the pointer when another app is active.
+- Optional editing keys and typed text reach the capture overlay when another app is active.
+- Blur and pixelation strength start at 8 points. An opaque filled box covers sensitive content completely.
+- Blur uses a reduced-resolution drag preview and full-resolution saved output.
 
-Native automated tests cover capture/editor/export flows and injected export failures.
-Hosted CI cannot fully verify physical hotkeys, real multi-monitor/Retina hardware,
-or the interactive permission prompts on your Mac.
+Native automated checks cover capture, editing, clipboard and PNG output,
+output recovery, and mixed-scale virtual-display layouts.
 
+Physical mouse transitions, separate Spaces, physical display hot-plug, real
+mixed-density display capture, physical shortcuts, and interactive permission
+prompts remain hardware checks. See the 0.1.3 assessment in the repository.
+
+Blur and pixelation do not guarantee that sensitive content cannot be inferred.
+Use a fully opaque filled rectangle and check the exported image before sharing it.
 Other recording apps may capture the editor before redactions are complete.
