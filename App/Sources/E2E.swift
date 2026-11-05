@@ -448,6 +448,7 @@ enum E2E {
         await E2EResize.run()
         await copyPaths()
         await E2EEditing.run()
+        await E2EEllipseHit.run()
         await nonEditorModes()
         await editorModes()
         await lastRegionMissingDisplay()

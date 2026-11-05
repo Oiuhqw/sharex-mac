@@ -73,6 +73,98 @@ final class AnnotationHitTests: XCTestCase {
         XCTAssertFalse(a.hit(CGPoint(x: 200, y: 100)))
     }
 
+    func testFlatEllipseStrokeIsSelectableAroundBothEnds() {
+        for vertical in [false, true] {
+            func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                vertical ? CGPoint(x: y, y: x) : CGPoint(x: x, y: y)
+            }
+            let a = Annotation(id: 1, kind: .ellipse, style: ShapeStyle(width: 40),
+                               start: point(100, 100), end: point(1100, 104))
+            XCTAssertFalse(a.isDegenerate)
+            for x in [CGFloat(100), CGFloat(1100)] {
+                for sign in [CGFloat(-1), CGFloat(1)] {
+                    XCTAssertTrue(a.hit(point(x, 102 + sign * 19), tolerance: 0), "Painted stroke must be selectable")
+                    XCTAssertFalse(a.hit(point(x, 102 + sign * 21), tolerance: 0))
+                    XCTAssertTrue(a.hit(point(x, 102 + sign * 25)), "Pointer tolerance extends beyond the stroke")
+                    XCTAssertFalse(a.hit(point(x, 102 + sign * 27)))
+                }
+            }
+        }
+    }
+
+    func testEllipseSelectionUsesPerpendicularDistanceAtDifferentCurvatures() {
+        for radii in [CGSize(width: 500, height: 2), CGSize(width: 2, height: 500), CGSize(width: 100, height: 50)] {
+            let a = Annotation(id: 1, kind: .ellipse, style: ShapeStyle(width: 40), start: .zero,
+                               end: CGPoint(x: 2 * radii.width, y: 2 * radii.height))
+            for angle in [CGFloat(0.01), 0.2, 0.6, 1.2] {
+                let edge = CGPoint(x: radii.width * (1 + cos(angle)), y: radii.height * (1 + sin(angle)))
+                let nx = cos(angle) / radii.width, ny = sin(angle) / radii.height
+                let length = hypot(nx, ny)
+                func outward(_ distance: CGFloat) -> CGPoint {
+                    CGPoint(x: edge.x + distance * nx / length, y: edge.y + distance * ny / length)
+                }
+                XCTAssertTrue(a.hit(outward(19), tolerance: 0))
+                XCTAssertFalse(a.hit(outward(21), tolerance: 0))
+                XCTAssertTrue(a.hit(outward(25)))
+                XCTAssertFalse(a.hit(outward(27)))
+            }
+        }
+    }
+
+    func testCircleSelectionKeepsHollowInteriorAndStrokeTolerance() {
+        let a = Annotation(id: 1, kind: .ellipse, style: ShapeStyle(width: 4),
+                           start: .zero, end: CGPoint(x: 100, y: 100))
+        for angle in [CGFloat(0), .pi / 4, .pi / 2, .pi] {
+            func point(_ radius: CGFloat) -> CGPoint {
+                CGPoint(x: 50 + radius * cos(angle), y: 50 + radius * sin(angle))
+            }
+            XCTAssertTrue(a.hit(point(43)))
+            XCTAssertTrue(a.hit(point(57)))
+            XCTAssertFalse(a.hit(point(41)))
+            XCTAssertFalse(a.hit(point(59)))
+        }
+        XCTAssertFalse(a.hit(CGPoint(x: 50, y: 50)))
+        XCTAssertFalse(a.hit(.zero))
+    }
+
+    func testFilledFlatEllipseUsesOnlyPointerToleranceOutsideItsEdge() {
+        let a = Annotation(id: 1, kind: .ellipse, style: ShapeStyle(width: 40, filled: true),
+                           start: CGPoint(x: 100, y: 100), end: CGPoint(x: 1100, y: 104))
+        XCTAssertTrue(a.hit(CGPoint(x: 600, y: 102), tolerance: 0))
+        XCTAssertTrue(a.hit(CGPoint(x: 1100, y: 107)))
+        XCTAssertFalse(a.hit(CGPoint(x: 1100, y: 109)))
+        XCTAssertFalse(a.hit(CGPoint(x: 1100, y: 121)), "Filled ellipses do not paint an outer stroke")
+        XCTAssertFalse(a.hit(CGPoint(x: 100, y: 100), tolerance: 0))
+    }
+
+    func testHollowEllipseInnerStrokeFollowsEdgeDistance() {
+        let a = ellipse()
+        let edge = CGPoint(x: 160, y: 90)
+        let nx: CGFloat = 0.006, ny: CGFloat = 0.016
+        let length = hypot(nx, ny)
+        func inward(_ distance: CGFloat) -> CGPoint {
+            CGPoint(x: edge.x - distance * nx / length, y: edge.y - distance * ny / length)
+        }
+        XCTAssertTrue(a.hit(inward(7)))
+        XCTAssertFalse(a.hit(inward(9)))
+        XCTAssertFalse(a.hit(CGPoint(x: 100, y: 50)))
+    }
+
+    func testFlatEllipsePaintSelectsAndDeletesAheadOfAnUnderlyingMark() {
+        var d = EditorDocument(styles: [.ellipse: ShapeStyle(width: 40)])
+        let back = d.addShape(.highlighter, at: CGPoint(x: 50, y: 50))
+        d.extendShape(back, to: CGPoint(x: 1150, y: 160))
+        let front = d.addShape(.ellipse, at: CGPoint(x: 100, y: 100))
+        d.extendShape(front, to: CGPoint(x: 1100, y: 104))
+        let painted = CGPoint(x: 1100, y: 121)
+        XCTAssertEqual(d.hitTest(painted)?.id, front)
+        XCTAssertEqual(d.hitTest(CGPoint(x: 1100, y: 129))?.id, back)
+        d.selectedID = d.hitTest(painted)?.id
+        d.deleteSelected()
+        XCTAssertEqual(d.annotations.map(\.id), [back])
+        XCTAssertEqual(d.hitTest(painted)?.id, back)
+    }
+
     func testEllipseHitTestingSelectsAndDeletesVisibleTopmostMark() {
         var d = EditorDocument()
         d.beginDrag()

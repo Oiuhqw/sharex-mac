@@ -149,17 +149,12 @@ public struct Annotation: Identifiable, Codable, Equatable, Sendable {
             if points.count == 1 { return hypot(p.x - points[0].x, p.y - points[0].y) <= slop }
             return zip(points, points.dropFirst()).contains { Geometry.distance(p, toSegment: $0, $1) <= slop }
         case .ellipse:
-            // Match the painted ellipse, not its rectangular bounds: diagonal edges are selectable
-            // and empty corners remain clickable through to marks underneath.
-            func contains(_ r: CGRect) -> Bool {
-                guard r.width > 0, r.height > 0 else { return false }
-                let x = (p.x - r.midX) / (r.width / 2)
-                let y = (p.y - r.midY) / (r.height / 2)
-                return x * x + y * y <= 1
-            }
+            let r = rect
             let tolerance = style.filled ? t : slop
-            guard contains(rect.insetBy(dx: -tolerance, dy: -tolerance)) else { return false }
-            return style.filled || !contains(rect.insetBy(dx: tolerance, dy: tolerance))
+            guard abs(p.x - r.midX) <= r.width / 2 + tolerance,
+                  abs(p.y - r.midY) <= r.height / 2 + tolerance else { return false }
+            let distance = Geometry.signedDistance(p, toEllipse: r)
+            return style.filled ? distance <= tolerance : abs(distance) <= tolerance
         case .rectangle where !style.filled:
             // Outline only: the interior stays clickable through to what lies beneath.
             let outer = rect.insetBy(dx: -slop, dy: -slop), inner = rect.insetBy(dx: slop, dy: slop)

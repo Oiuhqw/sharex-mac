@@ -91,6 +91,37 @@ public enum Geometry {
         return (cx * cx + cy * cy).squareRoot()
     }
 
+    static func signedDistance(_ p: CGPoint, toEllipse r: CGRect) -> CGFloat {
+        var a = r.width / 2, b = r.height / 2
+        var x = abs(p.x - r.midX), y = abs(p.y - r.midY)
+        guard a > 0, b > 0, a.isFinite, b.isFinite, x.isFinite, y.isFinite else { return .infinity }
+        if a < b { swap(&a, &b); swap(&x, &y) }
+        let scale = max(a, max(x, y))
+        a /= scale; b /= scale; x /= scale; y /= scale
+        if a == b { return (hypot(x, y) - a) * scale }
+        if x == 0 { return (y - b) * scale }
+
+        let difference = (a - b) * (a + b)
+        let nearest: CGPoint
+        if y == 0 {
+            let c = min(1, a * x / difference)
+            nearest = CGPoint(x: a * c, y: b * sqrt(max(0, 1 - c * c)))
+        } else {
+            var lower: CGFloat = 0, upper: CGFloat = .pi / 2
+            for _ in 0..<64 {
+                let angle = (lower + upper) / 2
+                let s = sin(angle), c = cos(angle)
+                let distanceDerivative = a * x * s - b * y * c - difference * s * c
+                if distanceDerivative > 0 { upper = angle }
+                else { lower = angle }
+            }
+            let angle = (lower + upper) / 2
+            nearest = CGPoint(x: a * cos(angle), y: b * sin(angle))
+        }
+        let distance = hypot(x - nearest.x, y - nearest.y) * scale
+        return hypot(x / a, y / b) <= 1 ? -distance : distance
+    }
+
     /// The two barb end points of an arrow head at `tip`, pointing away from `tail`.
     public static func arrowHead(tail: CGPoint, tip: CGPoint, length: CGFloat, spread: CGFloat = .pi / 7) -> (CGPoint, CGPoint) {
         let angle = atan2(tip.y - tail.y, tip.x - tail.x)
