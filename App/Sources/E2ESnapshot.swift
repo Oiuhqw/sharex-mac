@@ -3,11 +3,34 @@ import AppKit
 import ShareXCore
 
 extension E2E {
-    static func bindFailures(_ renderer: Renderer, committed: AnnotationsView, live: LiveMarkView) {
+    static func bindFailures(_ renderer: Renderer, committed: AnnotationsView? = nil, live: LiveMarkView) {
         renderer.redactionFailuresChanged = { [weak live] in live?.showFailedMasks($0) }
         renderer.redactionFailuresNeedDisplay = { [weak committed] rect in
             committed?.setNeedsDisplay(rect.integral)
             DispatchQueue.main.async { [weak committed] in committed?.setNeedsDisplay(rect.integral) }
+        }
+    }
+
+    @discardableResult
+    static func snapshotNativeView(_ view: NSView?, name: String) -> Bool {
+        guard let view, let window = view.window, window.isVisible else {
+            record(name, false, ["error": "native view is not visible"]); return false
+        }
+        view.layoutSubtreeIfNeeded(); window.displayIfNeeded(); CATransaction.flush()
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            record(name, false, ["error": "no native view bitmap"]); return false
+        }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        do {
+            guard let png = bitmap.representation(using: .png, properties: [:]) else {
+                record(name, false, ["error": "PNG encoding failed"]); return false
+            }
+            try png.write(to: out.appendingPathComponent("\(name).png"))
+            let valid = bitmap.pixelsWide > 0 && bitmap.pixelsHigh > 0
+            record(name, valid, ["width": bitmap.pixelsWide, "height": bitmap.pixelsHigh, "source": "AppKit cacheDisplay"])
+            return valid
+        } catch {
+            record(name, false, ["error": error.localizedDescription]); return false
         }
     }
 

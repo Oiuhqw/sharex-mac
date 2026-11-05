@@ -1,7 +1,6 @@
 import AppKit
 import ShareXCore
 
-/// Immutable native tiles. Only samples and final crops allocate new pixels.
 struct DesktopImageSource {
     struct Tile {
         let image: CGImage

@@ -207,7 +207,7 @@ enum E2ERedaction {
                     root.addSubview(FrameView(frame: root.bounds, image: image, smooth: false))
                     let live = LiveMarkView(frame: root.bounds)
                     root.addSubview(live)
-                    E2E.bindFailures(renderer, committed: committed, live: live)
+                    E2E.bindFailures(renderer, live: live)
                     let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
                     window.isReleasedWhenClosed = false
                     window.contentView = root

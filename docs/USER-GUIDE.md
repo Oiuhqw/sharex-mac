@@ -67,7 +67,7 @@ Choose a tool from **Tool**. The keys below are optional. Drag to draw shapes an
 | Blur | B | Blur an area. |
 | Pixelate | P | Replace detail with blocks. |
 | Spotlight | S | Dim the area outside a shape. |
-| Freehand | F | Draw a pen stroke. |
+| Pen | F | Draw a pen stroke. |
 | Text | T | Add text. To edit existing text, select this tool and click the text. |
 | Step marker | I | Add a numbered marker. |
 

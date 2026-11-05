@@ -348,19 +348,7 @@ enum E2ESettings {
     }
 
     private static func screenshot(_ name: String, window: NSWindow) async {
-        guard let view = window.contentView,
-              let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
-            E2E.record(name, false, ["error": "no window bitmap"]); return
-        }
-        view.cacheDisplay(in: view.bounds, to: bitmap)
-        do {
-            guard let png = bitmap.representation(using: .png, properties: [:]) else {
-                E2E.record(name, false, ["error": "PNG encoding failed"]); return
-            }
-            try png.write(to: E2E.out.appendingPathComponent("\(name).png"))
-            E2E.record(name, bitmap.pixelsWide > 0 && bitmap.pixelsHigh > 0,
-                       ["width": bitmap.pixelsWide, "height": bitmap.pixelsHigh])
-        } catch { E2E.record(name, false, ["error": error.localizedDescription]) }
+        E2E.snapshotNativeView(window.contentView, name: name)
         let snapshot = await accessibility.snapshot(in: window.title)
         do {
             let encoder = JSONEncoder()

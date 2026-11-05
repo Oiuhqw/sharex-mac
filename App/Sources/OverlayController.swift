@@ -25,7 +25,6 @@ enum EditorOutcome {
     case pickedWindow(WindowInfo)
 }
 
-/// Owns native panels and focus. The session owns all editing and completion decisions.
 @MainActor
 final class OverlayController: NSObject, NSWindowDelegate {
     private struct Surface { let window: NSWindow; let view: EditorView }

@@ -24,13 +24,15 @@ final class CaptureCoordinator {
     private func run(_ req: CaptureRequest) async throws {
         guard Permissions.requestScreenRecording() else { throw CaptureError.noPermission }
         let o = req.options
+        // Esc (or a click on the timer) during the delay cancels the capture.
+        guard await Countdown.run(seconds: o.delaySeconds) else { return }
+
         let layout = DesktopLayout(displays: NSScreen.screens.map {
             .init(id: ScreenCapture.displayID(of: $0), frame: $0.frame, scale: $0.backingScaleFactor)
         })
-        let last = layout.flatMap { settings.value.lastRegion?.resolve(layout: $0) }
-        let style: CaptureStyle = req.style == .lastRegion && last == nil ? .region : req.style
-        // Esc (or a click on the timer) during the delay cancels the capture.
-        guard await Countdown.run(seconds: o.delaySeconds) else { return }
+        let savedRegion = settings.value.lastRegion
+        let last = layout.flatMap { savedRegion?.resolve(layout: $0) }
+        var style: CaptureStyle = req.style == .lastRegion && last == nil ? .region : req.style
 
         let mouse = NSEvent.mouseLocation
         guard let underMouse = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main ?? NSScreen.screens.first
@@ -49,15 +51,31 @@ final class CaptureCoordinator {
         case .activeMonitor:
             targets = [underMouse]; preset = full(underMouse)
         case .lastRegion:
-            guard let last else { return }
-            preset = OverlayController.Preset(displayID: 0, rect: last, desktop: true)
+            guard let last, let layout else { return }
+            let ids = Set(layout.participants(in: last).map(\.id))
+            targets = targets.filter { ids.contains(ScreenCapture.displayID(of: $0)) }
         case .fullscreen where NSScreen.screens.count == 1:
             preset = full(underMouse)
         default: break
         }
 
-        let frozen = try await ScreenCapture.freeze(targets, showCursor: o.showCursor)
+        var frozen: [FrozenScreen]
+        do { frozen = try await ScreenCapture.freeze(targets, showCursor: o.showCursor) }
+        catch CaptureError.noDisplays where style == .lastRegion { frozen = [] }
 
+        if style == .lastRegion {
+            if matchesCurrentLayout(frozen), let map = DesktopImageSource(frozen: frozen)?.layout,
+               let crop = savedRegion?.resolve(layout: map) {
+                preset = OverlayController.Preset(displayID: 0, rect: crop, desktop: true)
+            } else {
+                style = .region
+                frozen = try await ScreenCapture.freeze(NSScreen.screens, showCursor: o.showCursor)
+            }
+        }
+
+        guard matchesCurrentLayout(frozen) else {
+            throw CaptureError.captureFailed("The display layout changed. Start a new capture.")
+        }
         guard let source = DesktopImageSource(frozen: frozen) else { throw CaptureError.imageTooLarge }
         if style == .fullscreen { preset = OverlayController.Preset(displayID: 0, rect: source.bounds, desktop: true) }
         if let preset, !o.openEditor {
@@ -97,6 +115,14 @@ final class CaptureCoordinator {
                 }
             }
         })
+    }
+
+    private func matchesCurrentLayout(_ frozen: [FrozenScreen]) -> Bool {
+        let screens = NSScreen.screens
+        return !frozen.isEmpty && frozen.allSatisfy { tile in
+            screens.contains { ScreenCapture.displayID(of: $0) == tile.displayID
+                && $0.frame == tile.frame && $0.backingScaleFactor == tile.scale }
+        }
     }
 
     /// A window captured live with transparent corners; border and shadow are drawn around it like any capture.

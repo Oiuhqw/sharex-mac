@@ -10,7 +10,7 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
         (.shape(.line), "line.diagonal", "Line"), (.shape(.arrow), "arrow.up.right", "Arrow"),
         (.shape(.highlighter), "highlighter", "Highlighter"), (.shape(.blur), "drop", "Blur"),
         (.shape(.pixelate), "squareshape.split.3x3", "Pixelate"), (.shape(.spotlight), "light.max", "Spotlight"),
-        (.shape(.pen), "scribble", "Freehand"), (.shape(.text), "textformat", "Text"),
+        (.shape(.pen), "scribble", "Pen"), (.shape(.text), "textformat", "Text"),
         (.shape(.step), "1.circle", "Step marker"),
     ]
 

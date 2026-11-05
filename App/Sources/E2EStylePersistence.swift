@@ -2,7 +2,6 @@
 import AppKit
 import ShareXCore
 
-/// Shared-session style changes from two native views on one fixture screen.
 @MainActor
 enum E2EStylePersistence {
     static func run() {

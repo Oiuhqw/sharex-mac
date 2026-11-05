@@ -2,7 +2,6 @@ import AppKit
 import QuartzCore
 import ShareXCore
 
-/// A native viewport into the session. Geometry and history stay in desktop points.
 @MainActor
 final class EditorView: NSView {
     typealias Phase = EditorSession.Phase
@@ -50,7 +49,7 @@ final class EditorView: NSView {
 
     func local(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x - viewport.minX, y: p.y - viewport.minY) }
     private func local(_ rect: CGRect) -> CGRect { rect.offsetBy(dx: -viewport.minX, dy: -viewport.minY) }
-    private func point(_ event: NSEvent) -> CGPoint {
+    private func desktopPoint(for event: NSEvent) -> CGPoint {
         if let map = renderer.source.layout, let window = event.window ?? window {
             return map.point(cocoa: window.convertPoint(toScreen: event.locationInWindow))
         }
@@ -80,13 +79,13 @@ final class EditorView: NSView {
     @objc func undo(_ sender: Any?) { undo() }
     @objc func redo(_ sender: Any?) { redo() }
     @objc func copy(_ sender: Any?) { if phase == .editing { finish() } }
-    override func mouseMoved(with event: NSEvent) { session.hover(at: point(event), from: self) }
+    override func mouseMoved(with event: NSEvent) { session.hover(at: desktopPoint(for: event), from: self) }
     override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
-    override func mouseExited(with event: NSEvent) { if !viewport.contains(point(event)) { session.hover(at: nil, from: self) } }
-    override func mouseDown(with event: NSEvent) { session.pointerDown(point(event), clicks: event.clickCount, from: self) }
-    override func mouseDragged(with event: NSEvent) { session.pointerDragged(point(event), shift: event.modifierFlags.contains(.shift), from: self) }
-    override func mouseUp(with event: NSEvent) { session.pointerUp(point(event), shift: event.modifierFlags.contains(.shift), from: self) }
-    override func rightMouseDown(with event: NSEvent) { session.secondary(point(event), from: self) }
+    override func mouseExited(with event: NSEvent) { if !viewport.contains(desktopPoint(for: event)) { session.hover(at: nil, from: self) } }
+    override func mouseDown(with event: NSEvent) { session.pointerDown(desktopPoint(for: event), clicks: event.clickCount, from: self) }
+    override func mouseDragged(with event: NSEvent) { session.pointerDragged(desktopPoint(for: event), shift: event.modifierFlags.contains(.shift), from: self) }
+    override func mouseUp(with event: NSEvent) { session.pointerUp(desktopPoint(for: event), shift: event.modifierFlags.contains(.shift), from: self) }
+    override func rightMouseDown(with event: NSEvent) { session.secondary(desktopPoint(for: event), from: self) }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair); addCursorRect(toolbar.frame, cursor: .arrow) }
 
     override func keyDown(with e: NSEvent) {

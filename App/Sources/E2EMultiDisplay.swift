@@ -3,11 +3,10 @@ import AppKit
 import KeyboardShortcuts
 import ShareXCore
 
-/// Native panels on externally supplied NSScreens. Source patterns make seam pixels deterministic.
 @MainActor
 enum E2EMultiDisplay {
     private typealias Surface = (window: NSWindow, view: EditorView)
-    private final class Rig {
+    @MainActor private final class Rig {
         var controller: OverlayController!
         var outcomes: [EditorOutcome] = []
         var result: EditorResult? {
@@ -106,17 +105,14 @@ enum E2EMultiDisplay {
             E2E.record("multidisplay-seam-preview-\(tag)", previewMatches(rig, crop: crop, name: "seam-\(tag)"))
             E2E.record("multidisplay-toolbar-stays-top-\(tag)", toolbarFrames == rig.surfaces.map { $0.view.e2eToolbar.frame }
                        && rig.surfaces.allSatisfy { $0.view.e2eToolbar.frame.minY == $0.view.safeTop })
-            let done = b.view.e2eToolbar.e2eDone
-            let center = done.convert(CGPoint(x: done.bounds.midX, y: done.bounds.midY), to: b.view)
-            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                if let event = NSEvent.mouseEvent(with: type, location: b.view.convert(center, to: nil), modifierFlags: [],
-                                                 timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: b.window.windowNumber,
-                                                 context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { NSApp.postEvent(event, atStart: false) }
-            }
-            await E2E.wait(60)
-            a.view.finish(); b.view.cancel()
-            E2E.record("multidisplay-mouse-done-once-\(tag)", rig.outcomes.count == 1 && rig.result != nil
+            let posted = E2E.postClick(b.view.e2eToolbar.e2eDone)
+            let mouseFinished = await E2E.until { !rig.outcomes.isEmpty }
+            E2E.record("multidisplay-mouse-done-once-\(tag)", posted && mouseFinished && rig.outcomes.count == 1 && rig.result != nil
                        && !a.window.isVisible && !b.window.isVisible)
+            if mouseFinished, rig.result != nil {
+                a.view.finish(); b.view.cancel()
+                E2E.record("multidisplay-terminal-commands-once-\(tag)", rig.outcomes.count == 1)
+            }
             if let result = rig.result {
                 let copied = Export.copyToClipboard(result.image, scale: result.scale)
                 let png = NSPasteboard.general.data(forType: .png).flatMap(E2E.decode)
@@ -130,6 +126,7 @@ enum E2EMultiDisplay {
         await textAndToolbar(frozen)
         sparseAndScale()
         await coordinatorFullscreen()
+        await E2ELastRegion.run()
         E2E.record("multidisplay-separate-spaces-physical-input", false,
                    ["note": "Virtual displays and native window events do not prove physical mouse routing or separate Spaces."], status: "unverifiable")
     }
@@ -174,9 +171,12 @@ enum E2EMultiDisplay {
             E2E.mouse(.leftMouseDown, point, in: surface); E2E.mouse(.leftMouseUp, point, in: surface)
         }
         E2E.record("multidisplay-toolbar-background-consumes-input", rig.session.doc.state.crop == crop && rig.session.doc.history.undoStates.count == history)
+        for (index, surface) in surfaces.enumerated() { await styleUI(surface, tag: "panel-\(index)") }
         let bar = a.view.e2eToolbar
-        bar.fit(maxWidth: 280); a.view.layoutSubtreeIfNeeded()
-        E2E.record("multidisplay-narrow-toolbar-done-visible", bar.fittingSize.width <= 280 && !bar.e2eDone.isHidden && bar.e2eTools.menu!.items.count == 14)
+        bar.fit(maxWidth: 280); bar.setFrameSize(bar.fittingSize); bar.layoutSubtreeIfNeeded()
+        E2E.record("multidisplay-narrow-toolbar-done-visible", bar.bounds.width <= 280 && controlsFit(bar)
+                   && !bar.e2eDone.isHidden && bar.e2eTools.menu!.items.count == 14)
+        E2E.snapshotNativeView(bar, name: "multidisplay-toolbar-narrow")
         rig.cancel()
         let selection = Rig(frozen), chooser = selection.surfaces[0].view.e2eToolbar.e2eTools
         let modes = ["Region", "Freehand", "Window", "Monitor", "Full Desktop"]
@@ -185,6 +185,82 @@ enum E2EMultiDisplay {
         E2E.record("multidisplay-full-desktop-by-mouse", selection.session.doc.state.crop == selection.session.bounds0)
         selection.cancel()
         await E2E.wait(20)
+    }
+
+    private static func controlsFit(_ root: NSView) -> Bool {
+        let controls = E2EEditing.views(root).compactMap { $0 as? NSControl }.filter { !$0.isHiddenOrHasHiddenAncestor }
+        return !controls.isEmpty && controls.allSatisfy { control in
+            control.bounds.width > 0 && control.bounds.height > 0
+                && root.bounds.contains(control.convert(control.bounds, to: root))
+                && !control.visibleRect.isEmpty
+        }
+    }
+
+    private static func styleUI(_ surface: Surface, tag: String) async {
+        let view = surface.view, bar = view.e2eToolbar
+        let selected = command("Rectangle", menu: bar.e2eTools)
+        bar.layoutSubtreeIfNeeded()
+        E2E.record("multidisplay-toolbar-bounds-\(tag)", controlsFit(bar) && view.bounds.contains(bar.frame))
+        E2E.snapshotNativeView(view, name: "multidisplay-full-ui-\(tag)")
+        E2E.snapshotNativeView(bar, name: "multidisplay-toolbar-\(tag)")
+        let posted = E2E.postClick(bar.e2eStyle)
+        let shown = await E2E.until {
+            bar.e2eStyleContents.window.map { $0.isVisible && $0.occlusionState.contains(.visible) } == true
+        }
+        let contents = bar.e2eStyleContents
+        contents.layoutSubtreeIfNeeded()
+        let controls = E2EEditing.views(contents).compactMap { $0 as? NSControl }
+        let buttons = controls.compactMap { $0 as? NSButton }
+        let sliders = controls.compactMap { $0 as? NSSlider }
+        let onScreen = contents.window.map { window in NSScreen.screens.contains { $0.frame.contains(window.frame) } } ?? false
+        E2E.record("multidisplay-style-visible-\(tag)", selected && posted && shown && onScreen
+                   && controlsFit(contents) && controls.allSatisfy { !$0.isHiddenOrHasHiddenAncestor }
+                   && buttons.count == 7 && sliders.count == 3,
+                   ["controls": controls.count, "bounds": NSStringFromRect(contents.bounds),
+                    "controlFrames": controls.map { NSStringFromRect($0.convert($0.bounds, to: contents)) }])
+        guard shown else { bar.closePopover(); return }
+        E2E.snapshotNativeView(contents, name: "multidisplay-style-rectangle-\(tag)")
+
+        var colorsWork = true
+        for title in ["Blue", "Yellow", "Green", "Red", "Black", "White"] {
+            guard let button = buttons.first(where: { $0.title == title }) else { colorsWork = false; continue }
+            let clicked = E2E.postClick(button)
+            let changed = await E2E.until { view.doc.style(for: .rectangle).color == RGBA.palette[button.tag] }
+            colorsWork = colorsWork && clicked && changed
+        }
+        guard let width = sliders.first(where: { $0.accessibilityLabel() == "Width / size" }),
+              let opacity = sliders.first(where: { $0.accessibilityLabel() == "Opacity" }),
+              let fill = buttons.first(where: { $0.title == "Fill" }) else {
+            E2E.record("multidisplay-style-controls-\(tag)", false); bar.closePopover(); return
+        }
+        let oldWidth = view.doc.style(for: .rectangle).width
+        let widthClicked = E2E.postClick(width, at: CGPoint(x: width.bounds.width * (oldWidth > 20 ? 0.2 : 0.8), y: width.bounds.midY))
+        let widthChanged = await E2E.until { abs(view.doc.style(for: .rectangle).width - oldWidth) > 1 }
+        let oldOpacity = view.doc.style(for: .rectangle).opacity
+        let opacityClicked = E2E.postClick(opacity, at: CGPoint(x: opacity.bounds.width * (oldOpacity < 0.5 ? 0.8 : 0.3), y: opacity.bounds.midY))
+        let opacityChanged = await E2E.until { abs(view.doc.style(for: .rectangle).opacity - oldOpacity) > 0.1 }
+        let oldFill = view.doc.style(for: .rectangle).filled
+        let fillClicked = E2E.postClick(fill)
+        let fillChanged = await E2E.until { view.doc.style(for: .rectangle).filled != oldFill }
+        E2E.record("multidisplay-style-controls-\(tag)", colorsWork && widthClicked && widthChanged
+                   && opacityClicked && opacityChanged && fillClicked && fillChanged)
+        bar.closePopover()
+        _ = await E2E.until { contents.window?.isVisible != true }
+
+        let blurSelected = command("Blur", menu: bar.e2eTools)
+        let blurPosted = E2E.postClick(bar.e2eStyle)
+        let blurShown = await E2E.until { contents.window?.isVisible == true }
+        if let strength = sliders.first(where: { $0.accessibilityLabel() == "Effect strength" }), blurShown {
+            E2E.snapshotNativeView(contents, name: "multidisplay-style-blur-\(tag)")
+            let oldStrength = view.doc.style(for: .blur).strength
+            let clicked = E2E.postClick(strength, at: CGPoint(x: strength.bounds.width * (oldStrength > 45 ? 0.2 : 0.8), y: strength.bounds.midY))
+            let changed = await E2E.until { abs(view.doc.style(for: .blur).strength - oldStrength) > 1 }
+            E2E.record("multidisplay-style-strength-\(tag)", blurSelected && blurPosted && controlsFit(contents)
+                       && strength.isEnabled && !fill.isEnabled && clicked && changed)
+        } else { E2E.record("multidisplay-style-strength-\(tag)", false) }
+        bar.closePopover()
+        let restored = await E2E.until { surface.window.firstResponder === view }
+        E2E.record("multidisplay-style-restores-responder-\(tag)", restored)
     }
 
     private static func sparseAndScale() {

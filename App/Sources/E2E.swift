@@ -149,6 +149,19 @@ enum E2E {
 
     // MARK: event synthesis
 
+    @discardableResult
+    static func postClick(_ control: NSView, at point: CGPoint? = nil) -> Bool {
+        guard let window = control.window, window.isVisible else { return false }
+        let point = point ?? CGPoint(x: control.bounds.midX, y: control.bounds.midY)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            guard let event = NSEvent.mouseEvent(with: type, location: control.convert(point, to: nil), modifierFlags: [],
+                                               timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                               context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { return false }
+            NSApp.postEvent(event, atStart: false)
+        }
+        return true
+    }
+
     static func surface() -> (window: NSWindow, view: EditorView)? { coord.overlay?.e2eSurfaces.first }
 
     static func mouse(_ type: NSEvent.EventType, _ p: CGPoint, in s: (window: NSWindow, view: EditorView), clicks: Int = 1, flags: NSEvent.ModifierFlags = []) {
