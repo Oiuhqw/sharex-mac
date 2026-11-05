@@ -259,7 +259,8 @@ static NSArray<NSDictionary *> *DisplaySnapshot(NSArray<CGVirtualDisplay *> *dis
     return snapshot;
 }
 
-static int RunDisplays(NSString *readyPath, NSString *layout) {
+static int RunDisplays(NSString *readyPath, NSString *layout, CGDirectDisplayID *displayIDs,
+                       NSHashTable<CGVirtualDisplay *> *lifetimes) {
     for (NSString *className in @[@"CGVirtualDisplay", @"CGVirtualDisplayDescriptor", @"CGVirtualDisplayMode", @"CGVirtualDisplaySettings"]) {
         if (!NSClassFromString(className)) {
             NSLog(@"Virtual display API unavailable. Missing %@.", className);
@@ -280,6 +281,8 @@ static int RunDisplays(NSString *readyPath, NSString *layout) {
         @autoreleasepool {
             CGVirtualDisplay *display = CreateDisplay(specs[index], firstSerial + (unsigned int)index);
             if (!display) return 1;
+            displayIDs[index] = display.displayID;
+            [lifetimes addObject:display];
             [displays addObject:display];
         }
     }
@@ -320,21 +323,30 @@ static int RunDisplays(NSString *readyPath, NSString *layout) {
     NSLog(@"Virtual displays ready for %@. %@", layout, snapshot);
     deadline = NSProcessInfo.processInfo.systemUptime + 360;
     while (!stopRequested && NSProcessInfo.processInfo.systemUptime < deadline) PumpRunLoop();
-    CGDirectDisplayID displayIDs[2] = {displays[0].displayID, displays[1].displayID};
-    [displays removeAllObjects];
-    deadline = NSProcessInfo.processInfo.systemUptime + 3;
-    while (CGDisplayIsOnline(displayIDs[0]) || CGDisplayIsOnline(displayIDs[1])) {
-        if (NSProcessInfo.processInfo.systemUptime >= deadline) {
-            NSLog(@"Virtual displays remained online after release.");
-            return 1;
-        }
-        PumpRunLoop();
-    }
     if (!stopRequested) {
         NSLog(@"Virtual display keepalive exceeded 360 seconds.");
         return 1;
     }
     return 0;
+}
+
+static BOOL DisplaysRemoved(const CGDirectDisplayID *displayIDs, NSHashTable<CGVirtualDisplay *> *lifetimes, BOOL log) {
+    @autoreleasepool {
+        NSUInteger alive = lifetimes.allObjects.count;
+        BOOL offline = YES;
+        NSMutableArray<NSDictionary *> *states = [NSMutableArray array];
+        for (NSUInteger index = 0; index < 2; index++) {
+            CGDirectDisplayID displayID = displayIDs[index];
+            if (displayID == kCGNullDirectDisplay) continue;
+            BOOL online = CGDisplayIsOnline(displayID);
+            offline = offline && !online;
+            if (log) [states addObject:@{@"displayID": @(displayID), @"online": @(online),
+                                         @"active": @(CGDisplayIsActive(displayID)), @"bounds": FrameJSON(CGDisplayBounds(displayID))}];
+        }
+        if (log) NSLog(@"Virtual display cleanup at uptime %.3f: alive objects %lu, displays %@.",
+                       NSProcessInfo.processInfo.systemUptime, (unsigned long)alive, states);
+        return offline && alive == 0;
+    }
 }
 
 int main(int argc, const char *argv[]) {
@@ -354,11 +366,27 @@ int main(int argc, const char *argv[]) {
         sigemptyset(&action.sa_mask);
         sigaction(SIGTERM, &action, NULL);
         sigaction(SIGINT, &action, NULL);
-        @try {
-            return RunDisplays(readyPath, layout);
-        } @catch (NSException *exception) {
-            NSLog(@"Virtual display API failed. %@", exception);
+        CGDirectDisplayID displayIDs[2] = {kCGNullDirectDisplay, kCGNullDirectDisplay};
+        NSHashTable<CGVirtualDisplay *> *lifetimes = [NSHashTable weakObjectsHashTable];
+        int status = 1;
+        @autoreleasepool {
+            @try {
+                status = RunDisplays(readyPath, layout, displayIDs, lifetimes);
+            } @catch (NSException *exception) {
+                NSLog(@"Virtual display API failed. %@", exception);
+            }
+        }
+        NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + 3;
+        BOOL removed = DisplaysRemoved(displayIDs, lifetimes, YES);
+        while (!removed && NSProcessInfo.processInfo.systemUptime < deadline) {
+            PumpRunLoop();
+            removed = DisplaysRemoved(displayIDs, lifetimes, NO);
+        }
+        DisplaysRemoved(displayIDs, lifetimes, YES);
+        if (!removed) {
+            NSLog(@"Virtual displays remained online or retained after the lifecycle pool drained and the 3-second removal deadline.");
             return 1;
         }
+        return status;
     }
 }

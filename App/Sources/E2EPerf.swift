@@ -103,8 +103,7 @@ enum E2EPerf {
 
         // 1. Editor construction + first frame at 2x (part of hotkey -> overlay visible).
         var builds: [Double] = []
-        for index in 0..<5 {
-            NSLog("E2E TRACE perf editor construction %d", index)
+        for _ in 0..<5 {
             let elapsed = autoreleasepool {
                 let t0 = Perf.now()
                 let v = EditorView(frame: CGRect(origin: .zero, size: ptSize), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
@@ -115,20 +114,17 @@ enum E2EPerf {
                 return Perf.now() - t0
             }
             builds.append(elapsed)
-            NSLog("E2E TRACE perf editor closed %d", index)
             await E2E.wait(50)
         }
         out["overlayBuildFirstFrame2x_ms"] = stats(builds)
 
         // 2. Region-selection drag with magnifier + crosshair.
         do {
-            NSLog("E2E TRACE perf selection begin")
             let v = EditorView(frame: CGRect(origin: .zero, size: ptSize), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
                                initialCrop: nil, styles: [:], showMagnifier: true, pickRects: [], finishOnPick: false)
             let w = window(for: v); w.displayIfNeeded()
             defer { close(v, w) }
             let vs = Vsync(w)
-            NSLog("E2E TRACE perf display link ready")
             defer { vs.stop() }
             let hoverPath = path(60, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 1500, y: 900))
             for p in hoverPath { await timed(.mouseMoved, p, v, w, vs) }

@@ -31,13 +31,40 @@ enum E2ELastRegion {
         return CGCompleteDisplayConfiguration(configuration, .forSession) == .success
     }
 
-    private static func move(_ id: CGDirectDisplayID, to origin: CGPoint) async -> Bool {
-        let old = NSScreen.screens.first { ScreenCapture.displayID(of: $0) == id }?.frame
-        guard configure([id: origin]) else { return false }
-        return await E2E.until {
-            CGDisplayBounds(id).origin == origin
-                && NSScreen.screens.first { ScreenCapture.displayID(of: $0) == id }?.frame != old
+    private static func nativeLayout(requesting origins: [CGDirectDisplayID: CGPoint] = [:]) -> [[String: Any]] {
+        NSScreen.screens.sorted { ScreenCapture.displayID(of: $0) < ScreenCapture.displayID(of: $1) }.map { screen in
+            let id = ScreenCapture.displayID(of: screen), actual = CGDisplayBounds(id)
+            let origin = origins[id] ?? actual.origin
+            let cocoa = screen.frame.offsetBy(dx: origin.x - actual.minX, dy: actual.minY - origin.y)
+            return ["displayID": id, "cgFrame": NSStringFromRect(CGRect(origin: origin, size: actual.size)),
+                    "cocoaFrame": NSStringFromRect(cocoa), "scale": screen.backingScaleFactor,
+                    "online": CGDisplayIsOnline(id), "active": CGDisplayIsActive(id), "main": CGDisplayIsMain(id)]
         }
+    }
+
+    private static func move(_ id: CGDirectDisplayID, to origin: CGPoint, name: String) async -> Bool {
+        let started = ProcessInfo.processInfo.systemUptime, deadline = started + 1.5
+        let before = nativeLayout(), requested = nativeLayout(requesting: [id: origin])
+        let old = NSScreen.screens.first { ScreenCapture.displayID(of: $0) == id }?.frame
+        let oldCG = CGDisplayBounds(id)
+        let requestedCocoa = old?.offsetBy(dx: origin.x - oldCG.minX, dy: oldCG.minY - origin.y)
+        let configured = configure([id: origin]), configuredAt = ProcessInfo.processInfo.systemUptime
+        var settled = false
+        if configured, configuredAt < deadline {
+            settled = await E2E.until(Int((deadline - configuredAt) * 1000)) {
+                CGDisplayBounds(id).origin == origin
+                    && requestedCocoa != old
+                    && NSScreen.screens.first { ScreenCapture.displayID(of: $0) == id }?.frame == requestedCocoa
+            }
+        }
+        let observedAt = ProcessInfo.processInfo.systemUptime
+        let moved = settled && observedAt <= deadline
+        E2E.record("lastregion-native-move-\(name)", moved,
+                   ["displayID": id, "before": before, "requested": requested, "actual": nativeLayout(),
+                    "startedUptime": started, "configuredUptime": configuredAt, "observedUptime": observedAt,
+                    "deadlineUptime": deadline, "configured": configured, "settled": settled,
+                    "countdownVisibleAtObservation": countdownVisible])
+        return moved
     }
 
     private static var countdownVisible: Bool {
@@ -49,12 +76,16 @@ enum E2ELastRegion {
     }
 
     private static func restored(_ origins: [CGDirectDisplayID: CGPoint], frames: [CGDirectDisplayID: CGRect]) async {
+        let started = ProcessInfo.processInfo.systemUptime
+        let before = nativeLayout(), requested = nativeLayout(requesting: origins)
         let configured = configure(origins)
         let settled = await E2E.until {
             origins.allSatisfy { CGDisplayBounds($0.key).origin == $0.value }
                 && frames.allSatisfy { id, frame in NSScreen.screens.contains { ScreenCapture.displayID(of: $0) == id && $0.frame == frame } }
         }
-        E2E.record("lastregion-restore-native-layout", configured && settled)
+        E2E.record("lastregion-restore-native-layout", configured && settled,
+                   ["before": before, "requested": requested, "actual": nativeLayout(),
+                    "startedUptime": started, "observedUptime": ProcessInfo.processInfo.systemUptime])
     }
 
     static func run() async {
@@ -67,6 +98,16 @@ enum E2ELastRegion {
         }
         let settings = E2E.app.settings.value, alerts = E2E.suppressAlerts
         let anchor = fixtures[0], other = fixtures[1], id = ScreenCapture.displayID(of: anchor)
+        let anchorFrame = anchor.frame, anchorCG = CGDisplayBounds(id), otherID = ScreenCapture.displayID(of: other)
+        let otherCG = CGDisplayBounds(otherID)
+        let shifted: CGPoint
+        if anchorCG.maxX == otherCG.minX || anchorCG.minX == otherCG.maxX {
+            shifted = CGPoint(x: otherCG.minX, y: otherCG.minY - 83)
+        } else if anchorCG.maxY == otherCG.minY || anchorCG.minY == otherCG.maxY {
+            shifted = CGPoint(x: otherCG.minX - 127, y: otherCG.minY)
+        } else {
+            E2E.record("lastregion-connected-fixture", false, ["actual": nativeLayout()]); return
+        }
         let origins = Dictionary(uniqueKeysWithValues: fixtures.map { (ScreenCapture.displayID(of: $0), CGDisplayBounds(ScreenCapture.displayID(of: $0)).origin) })
         let frames = Dictionary(uniqueKeysWithValues: fixtures.map { (ScreenCapture.displayID(of: $0), $0.frame) })
         defer {
@@ -85,7 +126,7 @@ enum E2ELastRegion {
         }
         let legacy = LastRegion(displayID: id, rect: crop)
         await admission(legacy: legacy, modern: modern, anchor: anchor, expected: expected)
-        await delayedOrigin(modern, anchor: anchor, other: other, expected: expected)
+        await delayedOrigin(modern, anchorFrame: anchorFrame, otherID: otherID, origin: shifted, expected: expected)
         await restored(origins, frames: frames)
 
         guard let current = layout() else { E2E.record("lastregion-restored-layout", false); return }
@@ -100,11 +141,9 @@ enum E2ELastRegion {
             guard let first = tiles.first else { return [] }
             return [first, first]
         }
-        let otherID = ScreenCapture.displayID(of: other)
-        let shifted = CGPoint(x: origins[otherID]!.x - 127, y: origins[otherID]!.y - 83)
         var changed = false
         await freshSelection("changed-after-freeze", saved: crossDisplay) { tiles in
-            changed = await move(otherID, to: shifted)
+            changed = await move(otherID, to: shifted, name: "after-freeze")
             return tiles
         }
         E2E.record("lastregion-participant-moved-after-freeze", changed)
@@ -149,26 +188,27 @@ enum E2ELastRegion {
         ScreenCapture.e2eCapturePixelLimit = nil; ScreenCapture.e2eFrozenResult = nil
     }
 
-    private static func delayedOrigin(_ saved: LastRegion, anchor: NSScreen, other: NSScreen, expected: E2E.Bitmap) async {
-        let otherID = ScreenCapture.displayID(of: other)
+    private static func delayedOrigin(_ saved: LastRegion, anchorFrame: CGRect, otherID: CGDirectDisplayID,
+                                      origin: CGPoint, expected: E2E.Bitmap) async {
         let oldCrop = layout().flatMap { saved.resolve(layout: $0) }
-        let left = NSScreen.screens.map { CGDisplayBounds(ScreenCapture.displayID(of: $0)).minX }.min() ?? 0
-        let origin = CGPoint(x: left - other.frame.width - 127, y: CGDisplayBounds(otherID).minY)
         E2E.setOpts { $0.lastRegion = saved; $0.options.delaySeconds = 3; $0.options.openEditor = false }
         let mark = E2E.markClipboard()
+        let captureRequestedAt = ProcessInfo.processInfo.systemUptime
         E2E.coord.capture(.lastRegion)
-        let counting = await E2E.until { countdownVisible }
-        let moved = await move(otherID, to: origin)
+        let counting = await E2E.until(1000) { countdownVisible }
+        let moved = await move(otherID, to: origin, name: "countdown-origin")
         let duringDelay = countdownVisible
         let newCrop = layout().flatMap { saved.resolve(layout: $0) }
-        let anchorUnchanged = NSScreen.screens.contains { ScreenCapture.displayID(of: $0) == saved.displayID && $0.frame == anchor.frame }
+        let anchorUnchanged = NSScreen.screens.contains { ScreenCapture.displayID(of: $0) == saved.displayID && $0.frame == anchorFrame }
         let finished = await E2E.until(8000) { !E2E.coord.busy }
         let image = NSPasteboard.general.data(forType: .png).flatMap(E2E.decode).map(E2E.bitmap)
         E2E.record("lastregion-resolves-after-countdown-origin-change", counting && moved && duringDelay && anchorUnchanged
                    && oldCrop != nil && newCrop != nil && oldCrop != newCrop && finished
                    && NSPasteboard.general.changeCount != mark.change && image?.px == expected.px,
                    ["oldCrop": oldCrop.map(NSStringFromRect) ?? "missing", "newCrop": newCrop.map(NSStringFromRect) ?? "missing",
-                    "anchorFrameUnchanged": anchorUnchanged])
+                    "anchorFrameUnchanged": anchorUnchanged, "anchorFrameBefore": NSStringFromRect(anchorFrame),
+                    "captureRequestedUptime": captureRequestedAt, "counting": counting, "moved": moved, "duringDelay": duringDelay,
+                    "clipboardChanged": NSPasteboard.general.changeCount != mark.change, "pixelsMatch": image?.px == expected.px])
         E2E.coord.overlay?.e2eSurfaces.first?.view.cancel()
         _ = await E2E.until { !E2E.coord.busy }
         E2E.setOpts { $0.options.delaySeconds = 0 }
@@ -202,13 +242,16 @@ enum E2ELastRegion {
     private static func delayedParticipant(_ saved: LastRegion, displayID: CGDirectDisplayID, origin: CGPoint) async {
         E2E.setOpts { $0.lastRegion = saved; $0.options.delaySeconds = 3; $0.options.openEditor = false }
         let mark = E2E.markClipboard()
+        let captureRequestedAt = ProcessInfo.processInfo.systemUptime
         E2E.coord.capture(.lastRegion)
-        let counting = await E2E.until { countdownVisible }
-        let moved = await move(displayID, to: origin)
+        let counting = await E2E.until(1000) { countdownVisible }
+        let moved = await move(displayID, to: origin, name: "countdown-participant")
         let duringDelay = countdownVisible
         let ready = await E2E.until(8000) { E2E.coord.overlay != nil || !E2E.coord.busy }
         E2E.record("lastregion-participant-changed-during-countdown-selects-fresh-region",
-                   counting && moved && duringDelay && ready && isFreshSelection(since: mark))
+                   counting && moved && duringDelay && ready && isFreshSelection(since: mark),
+                   ["captureRequestedUptime": captureRequestedAt, "counting": counting, "moved": moved,
+                    "duringDelay": duringDelay, "ready": ready, "freshSelection": isFreshSelection(since: mark)])
         E2E.coord.overlay?.e2eSurfaces.first?.view.cancel()
         _ = await E2E.until { !E2E.coord.busy }
         E2E.setOpts { $0.options.delaySeconds = 0 }

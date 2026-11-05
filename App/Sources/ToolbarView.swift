@@ -46,17 +46,23 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
         row.addArrangedSubview(actions)
         row.orientation = .horizontal; row.spacing = 4; actions.spacing = 4
         stack.orientation = .vertical; stack.alignment = .centerX; stack.spacing = 4
-        stack.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         stack.addArrangedSubview(row); stack.addArrangedSubview(statusLabel)
         statusLabel.font = .systemFont(ofSize: 11); statusLabel.textColor = .labelColor
         statusLabel.preferredMaxLayoutWidth = 300
-        stack.translatesAutoresizingMaskIntoConstraints = false; addSubview(stack)
-        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: leadingAnchor), stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-                                     stack.topAnchor.constraint(equalTo: topAnchor), stack.bottomAnchor.constraint(equalTo: bottomAnchor)])
+        Self.embed(stack, in: self, padding: NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12))
         buildStyle()
         sync()
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("unused") }
+    private static func embed(_ view: NSView, in container: NSView, padding: NSEdgeInsets) {
+        view.translatesAutoresizingMaskIntoConstraints = false; container.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding.left),
+            view.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding.right),
+            view.topAnchor.constraint(equalTo: container.topAnchor, constant: padding.top),
+            view.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -padding.bottom),
+        ])
+    }
     private func item(_ title: String, action: Selector, tag: Int = 0) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self; item.tag = tag; return item
@@ -69,7 +75,6 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
             button.contentTintColor = NSColor(cgColor: Imaging.cgColor(color)); colors.addArrangedSubview(button); colorButtons.append(button)
         }
         let controls = NSStackView(); controls.orientation = .vertical; controls.alignment = .leading; controls.spacing = 10
-        controls.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
         controls.addArrangedSubview(colors)
         for (label, slider) in [("Width / size", width), ("Opacity", opacity), ("Effect strength", strength)] {
             slider.target = self; slider.action = #selector(sliderChanged(_:)); slider.isContinuous = false
@@ -77,7 +82,10 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
             controls.addArrangedSubview(NSStackView(views: [NSTextField(labelWithString: label), slider]))
         }
         fill.target = self; fill.action = #selector(fillChanged); controls.addArrangedSubview(fill)
-        let controller = NSViewController(); controller.view = controls
+        let contents = NSView()
+        Self.embed(controls, in: contents, padding: NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12))
+        contents.setFrameSize(contents.fittingSize)
+        let controller = NSViewController(); controller.view = contents
         popover.contentViewController = controller; popover.behavior = .transient; popover.delegate = self
     }
     func fit(maxWidth: CGFloat) {

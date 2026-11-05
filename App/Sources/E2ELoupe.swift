@@ -118,12 +118,9 @@ enum E2ELoupe {
     }
 
     static func run() async {
-        NSLog("E2E TRACE loupe fixture begin")
         guard let img = fixture() else { E2E.record("loupe", false, ["error": "no fixture"]); return }
-        NSLog("E2E TRACE loupe editor begin")
         let v = EditorView(frame: CGRect(origin: .zero, size: size), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
                            initialCrop: nil, styles: [:], showMagnifier: true, pickRects: [], finishOnPick: false)
-        NSLog("E2E TRACE loupe editor ready")
         let screen = E2E.screen.frame
         let w = OverlayWindow(contentRect: CGRect(x: screen.minX + 120, y: screen.maxY - 120 - size.height, width: size.width, height: size.height),
                               styleMask: .borderless, backing: .buffered, defer: false)
@@ -131,13 +128,9 @@ enum E2ELoupe {
         // As OverlayController.add/show do for the real overlay.
         w.acceptsMouseMovedEvents = true
         w.contentView = v
-        NSLog("E2E TRACE loupe window attached")
         NSApp.activate()
-        NSLog("E2E TRACE loupe app activated")
         w.orderFrontRegardless(); w.makeKeyAndOrderFront(nil); w.makeFirstResponder(v)
-        NSLog("E2E TRACE loupe window shown")
         await E2E.wait(300)
-        NSLog("E2E TRACE loupe HID begin")
         var info: [String: Any] = ["isKey": w.isKeyWindow, "appActive": NSApp.isActive, "trackingAreas": v.trackingAreas.count]
         // Real HID moves first: the path the user's mouse takes (needs the PostEvent grant; recorded either way).
         for (name, p) in [("hid", CGPoint(x: 60, y: 50)), ("hid2", CGPoint(x: 101, y: 80))] {
@@ -146,7 +139,6 @@ enum E2ELoupe {
             CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: CGPoint(x: sp.x, y: primaryH - sp.y),
                     mouseButton: .left)?.post(tap: .cghidEventTap)
             await E2E.wait(400)
-            NSLog("E2E TRACE loupe capture %@", name)
             if let shot = await capture(w, v, "loupe-\(name).png") { info[name] = check(E2E.bitmap(shot), cursor: p, frame: v.e2eLoupe.frame).info }
         }
         func send(_ t: NSEvent.EventType, _ p: CGPoint) {

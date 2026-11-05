@@ -42,25 +42,109 @@ enum E2EMultiDisplay {
         guard let item = menu.menu?.items.first(where: { $0.title == title }), item.isEnabled, let action = item.action else { return false }
         return NSApp.sendAction(action, to: item.target, from: item)
     }
-    private static func previewMatches(_ rig: Rig, crop: CGRect, name: String) -> Bool {
-        guard let flat = Export.flatten(renderer: rig.session.renderer, doc: rig.session.doc, crop: crop, lasso: nil) else { return false }
+    private static func previewMatches(_ rig: Rig, crop: CGRect, name: String) async -> (ok: Bool, info: [String: Any]) {
+        guard let flat = Export.flatten(renderer: rig.session.renderer, doc: rig.session.doc, crop: crop, lasso: nil) else {
+            return (false, ["error": "export unavailable"])
+        }
+        E2EOrientation.writePNG(flat, "\(name)-export.png")
         let expected = E2E.bitmap(flat), scale = rig.session.renderer.scale
-        var checked = 0
+        var softwareOK = true, nativeOK = true
+        var softwarePanels: [[String: Any]] = [], nativePanels: [[String: Any]] = []
         for (index, surface) in rig.surfaces.enumerated() {
-            guard let preview = E2E.snapshotImageLayers(surface.view, scale: scale, name: "\(name)-panel-\(index).png") else { return false }
-            let intersection = crop.intersection(surface.view.viewport).insetBy(dx: 5, dy: 5)
-            guard !intersection.isNull, intersection.width > 0, intersection.height > 0 else { continue }
+            let other = rig.surfaces[index == 0 ? 1 : 0].view.viewport
+            let geometry: [String: Any] = ["panel": index, "viewport": NSStringFromRect(surface.view.viewport),
+                "viewBounds": NSStringFromRect(surface.view.bounds), "windowFrame": NSStringFromRect(surface.window.frame),
+                "layers": surface.view.subviews.compactMap { child -> [String: Any]? in
+                    guard child is FrameView || child is AnnotationsView || child is LiveMarkView else { return nil }
+                    return ["type": String(describing: type(of: child)), "frame": NSStringFromRect(child.frame),
+                            "bounds": NSStringFromRect(child.bounds), "layerBounds": child.layer.map { NSStringFromRect($0.bounds) } ?? "missing"]
+                }]
+            if let preview = E2E.snapshotImageLayers(surface.view, scale: scale, name: "\(name)-panel-\(index).png") {
+                let result = comparePreview(preview, expected: expected, scale: scale, crop: crop, surface: surface, other: other, native: false)
+                softwareOK = result.ok && softwareOK
+                softwarePanels.append(geometry.merging(result.info) { _, value in value })
+            } else {
+                softwareOK = false; softwarePanels.append(geometry.merging(["error": "software snapshot unavailable"]) { _, value in value })
+            }
+            if let preview = await E2E.snapshotNativeWindow(surface.window, name: "\(name)-native-panel-\(index)") {
+                let result = comparePreview(preview, expected: expected, scale: scale, crop: crop, surface: surface, other: other, native: true)
+                nativeOK = result.ok && nativeOK
+                nativePanels.append(geometry.merging(result.info) { _, value in value })
+            } else {
+                nativeOK = false; nativePanels.append(geometry.merging(["error": "native snapshot unavailable"]) { _, value in value })
+            }
+        }
+        E2E.record("multidisplay-native-\(name)", nativeOK,
+                   ["panels": nativePanels, "crop": NSStringFromRect(crop), "exportSize": [expected.w, expected.h],
+                    "stabilityRule": "export pixels within one native pixel of the sample differ by less than 0.02 RGB sum and 0.01 alpha",
+                    "minimumSamplesPerPanel": 16, "minimumSamplesWithin64PointsOfSeam": 4])
+        return (softwareOK, ["panels": softwarePanels, "crop": NSStringFromRect(crop), "exportSize": [expected.w, expected.h]])
+    }
+
+    private static func comparePreview(_ preview: E2E.Bitmap, expected: E2E.Bitmap, scale: CGFloat, crop: CGRect,
+                                       surface: Surface, other: CGRect, native: Bool) -> (ok: Bool, info: [String: Any]) {
+        let viewport = surface.view.viewport, sampleScale = native ? surface.window.backingScaleFactor : scale
+        let intersection = crop.intersection(viewport).insetBy(dx: 5, dy: 5)
+        let dimensionsMatch = preview.w == Int(viewport.width * sampleScale) && preview.h == Int(viewport.height * sampleScale)
+        var checked = 0, nearSeam = 0, unstable = 0, chrome = 0, mismatches = 0
+        var firstMismatch: [String: Any]?
+        if !intersection.isNull, intersection.width > 0, intersection.height > 0 {
             for y in stride(from: intersection.minY, to: intersection.maxY, by: 17) {
                 for x in stride(from: intersection.minX, to: intersection.maxX, by: 17) {
-                    let actual = preview.at(Int((x - surface.view.viewport.minX) * scale), Int((y - surface.view.viewport.minY) * scale))
-                    let wanted = expected.at(Int((x - crop.minX) * scale), Int((y - crop.minY) * scale))
-                    guard abs(actual.r - wanted.r) + abs(actual.g - wanted.g) + abs(actual.b - wanted.b) < 0.04,
-                          abs(actual.a - wanted.a) < 0.01 else { return false }
+                    let px = Int((x - viewport.minX) * sampleScale), py = Int((y - viewport.minY) * sampleScale)
+                    let point = native ? CGPoint(x: viewport.minX + (CGFloat(px) + 0.5) / sampleScale,
+                                                y: viewport.minY + (CGFloat(py) + 0.5) / sampleScale) : CGPoint(x: x, y: y)
+                    if native && surface.view.e2eToolbar.frame.contains(surface.view.local(point)) { chrome += 1; continue }
+                    let ex = Int((point.x - crop.minX) * scale), ey = Int((point.y - crop.minY) * scale)
+                    let wanted = expected.at(ex, ey)
+                    if native {
+                        let radius = Int(ceil(scale / sampleScale))
+                        var stable = ex >= radius && ey >= radius && ex + radius < expected.w && ey + radius < expected.h
+                        if stable {
+                            for sy in (ey - radius)...(ey + radius) {
+                                for sx in (ex - radius)...(ex + radius) {
+                                    let neighbor = expected.at(sx, sy)
+                                    stable = stable && abs(neighbor.r - wanted.r) + abs(neighbor.g - wanted.g) + abs(neighbor.b - wanted.b) < 0.02
+                                        && abs(neighbor.a - wanted.a) < 0.01
+                                }
+                            }
+                        }
+                        if !stable { unstable += 1; continue }
+                    }
+                    let actual = preview.at(px, py)
+                    let matches = abs(actual.r - wanted.r) + abs(actual.g - wanted.g) + abs(actual.b - wanted.b) < 0.04
+                        && abs(actual.a - wanted.a) < 0.01
                     checked += 1
+                    if (viewport.maxX == other.minX && viewport.maxX - point.x <= 64)
+                        || (viewport.minX == other.maxX && point.x - viewport.minX <= 64)
+                        || (viewport.maxY == other.minY && viewport.maxY - point.y <= 64)
+                        || (viewport.minY == other.maxY && point.y - viewport.minY <= 64) { nearSeam += 1 }
+                    if !matches {
+                        mismatches += 1
+                        if firstMismatch == nil {
+                            let fixtureX = (point.x - viewport.minX) * surface.window.backingScaleFactor
+                            let fixtureY = (point.y - viewport.minY) * surface.window.backingScaleFactor
+                            firstMismatch = ["desktopPoint": NSStringFromPoint(point), "previewPixel": [px, py], "exportPixel": [ex, ey],
+                                "checkerCellPixels": 16, "checkerPixelRemainder": [fixtureX.truncatingRemainder(dividingBy: 16), fixtureY.truncatingRemainder(dividingBy: 16)],
+                                "actualRGBA": [actual.r, actual.g, actual.b, actual.a], "expectedRGBA": [wanted.r, wanted.g, wanted.b, wanted.a]]
+                            firstMismatch?["spotlights"] = surface.view.doc.annotations.filter { $0.kind == .spotlight }.map { annotation -> [String: Any] in
+                                let dx = (point.x - annotation.rect.midX) / (annotation.rect.width / 2)
+                                let dy = (point.y - annotation.rect.midY) / (annotation.rect.height / 2)
+                                return ["rect": NSStringFromRect(annotation.rect), "strength": annotation.style.strength,
+                                        "normalizedRadiusSquared": dx * dx + dy * dy, "insideEllipse": dx * dx + dy * dy < 1]
+                            }
+                        }
+                    }
                 }
             }
         }
-        return checked > 0
+        let valid = dimensionsMatch && mismatches == 0 && checked >= (native ? 16 : 1) && (!native || nearSeam >= 4)
+        var info: [String: Any] = ["matches": valid, "previewSize": [preview.w, preview.h], "dimensionsMatch": dimensionsMatch,
+            "sampleScale": sampleScale, "exportScale": scale, "checked": checked, "nearSeam": nearSeam,
+            "skippedUnstable": unstable, "skippedToolbar": chrome, "mismatches": mismatches,
+            "intersection": NSStringFromRect(intersection), "toolbarFrame": NSStringFromRect(surface.view.e2eToolbar.frame)]
+        if let firstMismatch { info["firstMismatch"] = firstMismatch }
+        return (valid, info)
     }
 
     static func run() async {
@@ -102,7 +186,8 @@ enum E2EMultiDisplay {
             let empty = rig.session.doc.annotations.isEmpty
             let redo = command("Redo", menu: b.view.e2eToolbar.e2eMore)
             E2E.record("multidisplay-shared-undo-\(tag)", undo && redo && empty && rig.session.doc.annotations.count == 1)
-            E2E.record("multidisplay-seam-preview-\(tag)", previewMatches(rig, crop: crop, name: "seam-\(tag)"))
+            let preview = await previewMatches(rig, crop: crop, name: "seam-\(tag)")
+            E2E.record("multidisplay-seam-preview-\(tag)", preview.ok, preview.info)
             E2E.record("multidisplay-toolbar-stays-top-\(tag)", toolbarFrames == rig.surfaces.map { $0.view.e2eToolbar.frame }
                        && rig.surfaces.allSatisfy { $0.view.e2eToolbar.frame.minY == $0.view.safeTop })
             let posted = E2E.postClick(b.view.e2eToolbar.e2eDone)
@@ -122,7 +207,7 @@ enum E2EMultiDisplay {
             }
             rig.cancel()
         }
-        effects(frozen)
+        await effects(frozen)
         await textAndToolbar(frozen)
         sparseAndScale()
         await coordinatorFullscreen()
@@ -131,7 +216,7 @@ enum E2EMultiDisplay {
                    ["note": "Virtual displays and native window events do not prove physical mouse routing or separate Spaces."], status: "unverifiable")
     }
 
-    private static func effects(_ frozen: [FrozenScreen]) {
+    private static func effects(_ frozen: [FrozenScreen]) async {
         for kind in [ShapeKind.blur, .pixelate, .highlighter, .spotlight] {
             let rig = Rig(frozen, fullscreen: true), surfaces = rig.surfaces
             guard surfaces.count == 2 else { rig.cancel(); continue }
@@ -140,13 +225,15 @@ enum E2EMultiDisplay {
             let q = CGPoint(x: b.view.viewport.midX + 60, y: b.view.viewport.midY + 60)
             a.view.setTool(.shape(kind)); drag(p, q, from: a)
             let crop = Geometry.rect(from: p, to: q)
-            E2E.record("multidisplay-effect-preview-\(kind.rawValue)", previewMatches(rig, crop: crop, name: "effect-\(kind.rawValue)"))
+            let preview = await previewMatches(rig, crop: crop, name: "effect-\(kind.rawValue)")
+            E2E.record("multidisplay-effect-preview-\(kind.rawValue)", preview.ok, preview.info)
             if kind == .blur || kind == .pixelate {
                 a.view.renderer.e2eRejectEffectImage = true
                 a.view.changeStyle { $0.strength += 3 }
                 let pixels = Export.flatten(renderer: a.view.renderer, doc: a.view.doc, crop: crop, lasso: nil).map(E2E.bitmap)
                 let opaque = pixels.map { $0.frac(CGRect(x: 0, y: 0, width: $0.w, height: $0.h)) { $0.r == 0 && $0.g == 0 && $0.b == 0 && $0.a == 1 } == 1 } ?? false
-                E2E.record("multidisplay-effect-failure-opaque-\(kind.rawValue)", opaque && previewMatches(rig, crop: crop, name: "failure-\(kind.rawValue)"))
+                let failure = await previewMatches(rig, crop: crop, name: "failure-\(kind.rawValue)")
+                E2E.record("multidisplay-effect-failure-opaque-\(kind.rawValue)", opaque && failure.ok, failure.info)
             }
             rig.cancel()
         }

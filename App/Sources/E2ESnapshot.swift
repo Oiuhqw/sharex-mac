@@ -87,7 +87,8 @@ extension E2E {
             guard let layer = child.layer,
                   let isolated = Imaging.context(width: ctx.width, height: ctx.height, flipped: true) else { return nil }
             isolated.scaleBy(x: scale, y: scale)
-            isolated.translateBy(x: child.frame.minX - root.bounds.minX, y: child.frame.minY - root.bounds.minY)
+            isolated.translateBy(x: child.frame.minX - root.bounds.minX - child.bounds.minX,
+                                 y: child.frame.minY - root.bounds.minY - child.bounds.minY)
             layer.render(in: isolated)
             guard let image = isolated.makeImage() else { return nil }
             Imaging.drawUpright(image, in: CGRect(origin: .zero, size: size), ctx: ctx)
