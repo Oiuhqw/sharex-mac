@@ -35,7 +35,7 @@ The performance gate requires Release hover p95 main-thread CPU below 2 ms and v
 
 Memory checks record repeated sessions, buffer limits, object release, current RSS, peak RSS, and idle CPU. A separate diagnostic process traces image-provider lifetime and context caches. A successful ownership check alone is not proof of a low memory footprint.
 
-The source security audit at `e8f9596` used explicit coverage and two independent coverage critics. All 47 source units were covered and no qualifying vulnerability was found. Audit-driven reliability changes receive separate review and native E2E before merge. See [the review index](reviews/README.md) for current evidence and historical reports.
+The source security audit at `e8f9596` used explicit coverage and two independent coverage critics. All 47 source units were covered and no qualifying vulnerability was found. Audit-driven reliability changes received separate source review. At `a5cb376`, both Intel and Apple silicon passed 97 core tests, 97 AddressSanitizer tests, and 483 native E2E checks, with six hardware-dependent checks explicitly unavailable. See [the review index](reviews/README.md) for current evidence and historical reports.
 
 ## Release limits and deferred features
 

@@ -1,6 +1,6 @@
 # Review evidence
 
-The current implementation assessment is [Security, resource use, and settings review](security-lightweight-0.1.2.md). Read its revision and validation status before using any result as a release decision.
+The current implementation assessment is [Security, resource use, and settings review](security-lightweight-0.1.2.md). The final implementation checkpoint `a5cb376` passed 483 native E2E checks on each architecture, with six hardware limits. Read the report for precise revisions, package checks, active memory, timing spikes, and the incomplete full fuzz campaign.
 
 The [completed source security audit](security-audit-2026-11-05/REPORT.md) covers revision `e8f9596`. It records 47 covered units, 85 source checks, and no confirmed vulnerability. It includes the exact coverage ledger and validation limits. The [post-audit source review](security-audit-2026-11-05/FOLLOW-UP.md) checks later production fixes at `acfa92f`. Native results remain separate in the implementation assessment.
 
