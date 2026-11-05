@@ -8,9 +8,8 @@ import ShareXCore
 /// The overlay view and the exporter both call this, so the copied image matches the screen.
 @MainActor
 final class Renderer {
-    let frame: CGImage
-    /// Frame pixels per point.
-    let scale: CGFloat
+    let source: DesktopImageSource
+    private(set) var scale: CGFloat
     private struct CachedPatch {
         let key: EffectKey
         let image: CGImage
@@ -50,32 +49,38 @@ final class Renderer {
     static func e2eClearContextCaches() { sharedCI.clearCaches() }
     #endif
 
-    init(frame: CGImage, scale: CGFloat) { (self.frame, self.scale) = (frame, scale) }
+    convenience init(frame: CGImage, scale: CGFloat) { self.init(source: DesktopImageSource(image: frame, scale: scale), scale: scale) }
+    init(source: DesktopImageSource, scale: CGFloat) { self.source = source; self.scale = scale }
 
-    var pointSize: CGSize { CGSize(width: CGFloat(frame.width) / scale, height: CGFloat(frame.height) / scale) }
+    var pointSize: CGSize { source.bounds.size }
+    var pixelWidth: Int { Int(ceil(pointSize.width * scale - 1e-6)) }
+    var pixelHeight: Int { Int(ceil(pointSize.height * scale - 1e-6)) }
 
-    func drawFrame(_ ctx: CGContext) {
-        ctx.interpolationQuality = smoothFrame ? .medium : .none
-        Imaging.drawUpright(frame, in: CGRect(origin: .zero, size: pointSize), ctx: ctx)
+    @discardableResult
+    func setScale(for crop: CGRect) -> Bool {
+        guard let next = source.scale(for: crop), next != scale else { return false }
+        scale = next
+        effectCache.removeAll(); cacheBytes = 0; liveCache = nil
+        failedRedactions.removeAll(); effectKeys.removeAll(); protections.removeAll()
+        redactionFailuresChanged?([])
+        return true
     }
 
-    /// Only the part of the frame under `area` (view points): a crop of the same pixels, not a full-screen raster.
+    func drawFrame(_ ctx: CGContext) { drawFrame(ctx, in: source.bounds) }
     func drawFrame(_ ctx: CGContext, in area: CGRect) {
-        let full = CGRect(origin: .zero, size: pointSize)
-        let a = area.intersection(full)
-        guard !a.isNull, !a.isEmpty else { return }
-        if a == full { return drawFrame(ctx) }
-        let px = CGRect(x: a.minX * scale, y: a.minY * scale, width: a.width * scale, height: a.height * scale).integral
-        guard let crop = frame.cropping(to: px) else { return }
         ctx.interpolationQuality = smoothFrame ? .medium : .none
-        Imaging.drawUpright(crop, in: CGRect(x: px.minX / scale, y: px.minY / scale, width: px.width / scale, height: px.height / scale), ctx: ctx)
+        source.draw(in: ctx, area: area)
     }
 
     /// `clip` skips marks that cannot touch the invalidated area (CG would clip them anyway, after paying for them).
     func draw(_ doc: EditorDocument, in ctx: CGContext, hide hiddenID: Int? = nil, skip: Int? = nil, clip: CGRect? = nil) {
-        synchronize(doc)
+        draw(doc.annotations, in: ctx, hide: hiddenID, skip: skip, clip: clip)
+    }
+
+    func draw(_ annotations: [Annotation], in ctx: CGContext, hide hiddenID: Int? = nil, skip: Int? = nil, clip: CGRect? = nil) {
+        synchronize(annotations)
         var step = 0
-        for a in doc.annotations {
+        for a in annotations {
             // Hidden and clipped marks still participate in the document's step numbering.
             if a.kind == .step { step += 1 }
             guard a.id != hiddenID && a.id != skip else { continue }
@@ -173,7 +178,7 @@ final class Renderer {
     }
 
     func pixelArea(_ rect: CGRect) -> PixelRect? {
-        Geometry.capturePixels(rect, scale: scale, width: frame.width, height: frame.height)
+        Geometry.capturePixels(rect, scale: scale, width: pixelWidth, height: pixelHeight)
     }
 
     func redactionBounds(_ a: Annotation) -> CGRect? { pixelArea(a.rect)?.points(scale: scale) }
@@ -181,14 +186,17 @@ final class Renderer {
     private func protectionBounds(_ a: Annotation) -> PixelRect? {
         if a.kind == .blur || a.kind == .pixelate { return pixelArea(a.rect) }
         guard a.kind == .rectangle, a.style.filled, a.style.color.a * a.style.opacity == 1 else { return nil }
-        return Geometry.fullyCoveredPixels(a.rect, scale: scale, width: frame.width, height: frame.height)
+        return Geometry.fullyCoveredPixels(a.rect, scale: scale, width: pixelWidth, height: pixelHeight)
     }
 
     @discardableResult
-    func synchronize(_ doc: EditorDocument) -> CGRect? {
+    func synchronize(_ doc: EditorDocument) -> CGRect? { synchronize(doc.annotations) }
+
+    @discardableResult
+    private func synchronize(_ annotations: [Annotation]) -> CGRect? {
         var prior: [Protection] = []
         var next: [Int: EffectKey] = [:]
-        for a in doc.annotations {
+        for a in annotations {
             guard let area = protectionBounds(a) else { continue }
             if a.kind == .blur || a.kind == .pixelate {
                 var intersections: [PixelRect] = []
@@ -295,13 +303,16 @@ final class Renderer {
 
     private func effectSource(_ key: EffectKey) -> CIImage? {
         let area = key.rect
-        let ciRect = area.flippedY(height: frame.height).cgRect
+        let ciRect = area.flippedY(height: pixelHeight).cgRect
         guard !key.exceeded, Imaging.allocationBytes(width: area.w, height: area.h, maximumPixels: Self.effectPixels) != nil,
-              let source = frame.cropping(to: area.cgRect),
               let ctx = Imaging.context(width: area.w, height: area.h, flipped: true) else { return nil }
         ctx.setShouldAntialias(false); ctx.interpolationQuality = .none
         ctx.setFillColor(CGColor(gray: 0, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: area.w, height: area.h))
-        Imaging.drawUpright(source, in: CGRect(x: 0, y: 0, width: area.w, height: area.h), ctx: ctx)
+        ctx.saveGState()
+        ctx.translateBy(x: -CGFloat(area.x), y: -CGFloat(area.y))
+        ctx.scaleBy(x: scale, y: scale)
+        source.draw(in: ctx, area: area.points(scale: scale))
+        ctx.restoreGState()
         ctx.setBlendMode(.copy)
         for covered in key.prior {
             ctx.fill(CGRect(x: covered.x - area.x, y: covered.y - area.y, width: covered.w, height: covered.h))
@@ -318,8 +329,8 @@ final class Renderer {
             setRedactionFailure(a.id, rect: nil); return (hit.image, rect)
         }
         guard let src = effectSource(key) else { setRedactionFailure(a.id, rect: rect); return nil }
-        let ciRect = px.flippedY(height: frame.height).cgRect
-        let anchor = EffectMath.pixelateCenter(yUp: px.flippedY(height: frame.height))
+        let ciRect = px.flippedY(height: pixelHeight).cgRect
+        let anchor = EffectMath.pixelateCenter(yUp: px.flippedY(height: pixelHeight))
         let out: CIImage = a.kind == .blur
             ? src.applyingGaussianBlur(sigma: EffectMath.blurSigma(strength: a.style.strength, scale: scale))
             : src.applyingFilter("CIPixellate", parameters: [kCIInputScaleKey: EffectMath.pixelateBlock(strength: a.style.strength, scale: scale),
@@ -328,7 +339,7 @@ final class Renderer {
         if e2eRejectEffectImage || e2eRejectedEffectIDs.contains(a.id) { setRedactionFailure(a.id, rect: rect); return nil }
         #endif
         guard let cg = ciContext.createCGImage(out.cropped(to: ciRect), from: ciRect, format: .RGBA8,
-                                               colorSpace: frame.colorSpace ?? Imaging.colorSpace),
+                                               colorSpace: source.colorSpace),
               Imaging.accepts(cg), let bytes = Imaging.retainedBytes(of: cg), bytes <= Self.effectPixels * 4 else {
             setRedactionFailure(a.id, rect: rect); return nil
         }
@@ -365,17 +376,17 @@ final class Renderer {
         #if SHAREX_E2E
         if e2eRejectEffectImage || e2eRejectedEffectIDs.contains(a.id) { return nil }
         #endif
-        let ciRect = px.flippedY(height: frame.height).cgRect
+        let ciRect = px.flippedY(height: pixelHeight).cgRect
         let k = 1 / f
-        let matte = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 1)).cropped(to: ciRect)
-        let small = ciFrame.cropped(to: ciRect).composited(over: matte).clampedToExtent()
+        guard let sampled = effectSource(key(for: a, area: px)) else { return nil }
+        let small = sampled
             .transformed(by: CGAffineTransform(scaleX: k, y: k))
             .applyingGaussianBlur(sigma: sigma / f)
         let sr = CGRect(x: ciRect.minX * k, y: ciRect.minY * k, width: ciRect.width * k, height: ciRect.height * k).integral
         guard let dimensions = Imaging.pixelDimensions(size: sr.size, scale: 1),
               Imaging.allocationBytes(width: dimensions.width, height: dimensions.height, maximumPixels: Self.liveBytesLimit / 4) != nil,
               let cg = ciContext.createCGImage(small.cropped(to: sr), from: sr, format: .RGBA8,
-                                               colorSpace: frame.colorSpace ?? Imaging.colorSpace),
+                                               colorSpace: source.colorSpace),
               let bytes = Imaging.retainedBytes(of: cg), bytes <= Self.liveBytesLimit else { return nil }
         return (cg, px.points(scale: scale))
     }
@@ -392,6 +403,5 @@ final class Renderer {
         return CIContext(options: opts)
     }()
     private var ciContext: CIContext { Self.sharedCI }
-    private lazy var ciFrame = CIImage(cgImage: frame)
 }
 

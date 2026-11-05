@@ -38,7 +38,7 @@ final class FrameView: PassThroughView {
 @MainActor
 final class AnnotationsView: PassThroughView {
     private let renderer: Renderer
-    private var doc: EditorDocument?
+    private var annotations: [Annotation]?
     private var hiddenID: Int?
     private var liveID: Int?
     private var previous: [Int: Annotation] = [:]
@@ -53,11 +53,6 @@ final class AnnotationsView: PassThroughView {
         super.init(frame: frame)
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         layer?.isOpaque = false
-        renderer.redactionFailuresNeedDisplay = { [weak self] rect in
-            self?.setNeedsDisplay(rect.integral)
-            // A transition can occur inside draw; request the full repaint again after that pass finishes.
-            DispatchQueue.main.async { [weak self] in self?.setNeedsDisplay(rect.integral) }
-        }
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("unused") }
 
@@ -69,12 +64,12 @@ final class AnnotationsView: PassThroughView {
         let privacyDirty = renderer.synchronize(doc)
         let now = doc.annotations.filter { $0.id != live }
         defer {
-            self.doc = doc; hiddenID = hide; liveID = live
+            annotations = doc.annotations; hiddenID = hide; liveID = live
             previous = Dictionary(uniqueKeysWithValues: now.map { ($0.id, $0) }); previousOrder = now.map(\.id)
         }
         let wantFrame = doc.annotations.contains { $0.kind == .highlighter && $0.id != live }
         if wantFrame != drawsFrame { drawsFrame = wantFrame; layer?.isOpaque = wantFrame; needsDisplay = true; return }
-        guard self.doc != nil else { needsDisplay = true; return }
+        guard annotations != nil else { needsDisplay = true; return }
         if hide != hiddenID { needsDisplay = true; return }
         var dirty = privacyDirty ?? .null
         var everything = false
@@ -101,10 +96,10 @@ final class AnnotationsView: PassThroughView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext, let doc else { return }
+        guard let ctx = NSGraphicsContext.current?.cgContext, let annotations else { return }
         let area = dirtyRect
         if drawsFrame { renderer.drawFrame(ctx, in: area) } else { ctx.clear(area) }
-        renderer.draw(doc, in: ctx, hide: hiddenID, skip: liveID, clip: area)
+        renderer.draw(annotations, in: ctx, hide: hiddenID, skip: liveID, clip: area)
     }
 }
 
@@ -115,7 +110,6 @@ final class AnnotationsView: PassThroughView {
 final class LiveMarkView: PassThroughView {
     private let stroke = CAShapeLayer(), head = CAShapeLayer(), highlight = CAShapeLayer(), patch = CALayer()
     private let failedMasks = CAShapeLayer()
-    private weak var observedRenderer: Renderer?
     private var shownFailureRects: [CGRect] = []
     static func supports(_ k: ShapeKind) -> Bool {
         switch k {
@@ -146,11 +140,6 @@ final class LiveMarkView: PassThroughView {
 
     func show(_ a: Annotation?, renderer: Renderer) {
         CATransaction.begin(); CATransaction.setDisableActions(true); defer { CATransaction.commit() }
-        if observedRenderer !== renderer {
-            observedRenderer?.redactionFailuresChanged = nil
-            observedRenderer = renderer
-            renderer.redactionFailuresChanged = { [weak self] in self?.showFailedMasks($0) }
-        }
         showFailedMasks(renderer.redactionFailureRects)
         for l in [stroke, head, highlight, patch] as [CALayer] { l.isHidden = true }
         patch.contents = nil; patch.backgroundColor = nil; patch.mask = nil
@@ -200,8 +189,6 @@ final class LiveMarkView: PassThroughView {
     }
 
     func releaseResources() {
-        observedRenderer?.redactionFailuresChanged = nil
-        observedRenderer = nil
         patch.contents = nil; patch.mask = nil; patch.backgroundColor = nil
         for l in [stroke, head, highlight, patch, failedMasks] as [CALayer] { l.isHidden = true }
         shownFailureRects = []; failedMasks.path = nil
@@ -214,7 +201,7 @@ final class LiveMarkView: PassThroughView {
     }
     #endif
 
-    private func showFailedMasks(_ rects: [CGRect]) {
+    func showFailedMasks(_ rects: [CGRect]) {
         guard rects != shownFailureRects else { return }
         shownFailureRects = rects
         CATransaction.begin(); CATransaction.setDisableActions(true); defer { CATransaction.commit() }
@@ -233,6 +220,8 @@ final class ChromeView: PassThroughView {
     private let crosshair = CAShapeLayer(), lasso = CAShapeLayer()
     private let sizeLabel = CATextLayer(), magnifier = CALayer(), magImage = CALayer(), magMid = CALayer(), magLabel = CATextLayer()
     private var magSize = CGSize.zero
+    private var magOrigin = CGPoint.zero
+    var reservedTop: CGFloat = 0
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -282,9 +271,9 @@ final class ChromeView: PassThroughView {
     }
 
     /// The frozen frame the loupe samples; set once per overlay.
-    func setMagnifierSource(_ image: CGImage) {
+    func setMagnifierSource(_ image: CGImage, originPixels: CGPoint = .zero) {
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        magImage.contents = image; magSize = CGSize(width: image.width, height: image.height)
+        magImage.contents = image; magSize = CGSize(width: image.width, height: image.height); magOrigin = originPixels
         CATransaction.commit()
     }
 
@@ -356,10 +345,10 @@ final class ChromeView: PassThroughView {
         var o = CGPoint(x: p.x + gap, y: p.y + gap)
         if o.x + side > b.width { o.x = p.x - gap - side }
         if o.y + side + label > b.height { o.y = p.y - gap - side - label }
-        o.x = min(max(o.x, 0), max(0, b.width - side)); o.y = min(max(o.y, 0), max(0, b.height - side - label))
+        o.x = min(max(o.x, 0), max(0, b.width - side)); o.y = min(max(o.y, reservedTop), max(0, b.height - side - label))
         magnifier.frame = CGRect(origin: o, size: CGSize(width: side, height: side))
         // Only the part of the source square inside the image is drawn; the rest stays black.
-        let src = Self.source(p, scale: s)
+        let src = Self.source(p, scale: s).offsetBy(dx: -magOrigin.x, dy: -magOrigin.y)
         let vis = src.intersection(CGRect(origin: .zero, size: magSize))
         if vis.isNull || vis.isEmpty || magSize.width == 0 { magImage.isHidden = true } else {
             magImage.isHidden = false

@@ -3,17 +3,56 @@ import Foundation
 import CoreGraphics
 #endif
 
-/// The last region, stored per display so it replays on the same monitor at the same spot.
+/// A saved area relative to an anchor display, with optional participating display geometry.
 public struct LastRegion: Codable, Equatable, Sendable {
     /// CGDirectDisplayID of the display the region was on.
     public var displayID: UInt32
-    /// Display top-left points.
+    /// Anchor display top-left points.
     public var rect: CGRect
     public init(displayID: UInt32, rect: CGRect) { (self.displayID, self.rect) = (displayID, rect) }
+
+    public struct Participant: Codable, Equatable, Sendable {
+        public let id: UInt32
+        public let relativeFrame: CGRect
+    }
+    /// Cocoa frames relative to the anchor. Nil is the original single-display format.
+    public var participants: [Participant]?
+
+    public init?(crop: CGRect, layout: DesktopLayout) {
+        let touched = layout.participants(in: crop)
+        guard let anchor = touched.first, let crop = layout.selection(crop) else { return nil }
+        displayID = anchor.id
+        let placement = layout.placement(anchor)
+        rect = crop.offsetBy(dx: -placement.minX, dy: -placement.minY)
+        participants = touched.map { Participant(id: $0.id, relativeFrame: $0.frame.offsetBy(dx: -anchor.frame.minX, dy: -anchor.frame.minY)) }
+    }
+
+    public func resolve(layout: DesktopLayout) -> CGRect? {
+        guard isValid, let anchor = layout.displays.first(where: { $0.id == displayID }) else { return nil }
+        let placement = layout.placement(anchor)
+        if let participants {
+            for saved in participants {
+                guard let current = layout.displays.first(where: { $0.id == saved.id }),
+                      current.frame.offsetBy(dx: -anchor.frame.minX, dy: -anchor.frame.minY) == saved.relativeFrame else { return nil }
+            }
+            let crop = rect.offsetBy(dx: placement.minX, dy: placement.minY)
+            return layout.selection(crop)
+        }
+        return resolve(displays: [(anchor.id, anchor.frame.size)])?.rect.offsetBy(dx: placement.minX, dy: placement.minY)
+    }
 
     var isValid: Bool {
         let values = [rect.origin.x, rect.origin.y, rect.size.width, rect.size.height,
                       rect.origin.x + rect.size.width, rect.origin.y + rect.size.height]
+        if let participants {
+            guard !participants.isEmpty, participants.count <= 64,
+                  participants.contains(where: { $0.id == displayID }),
+                  Set(participants.map(\.id)).count == participants.count,
+                  participants.allSatisfy({ p in
+                      [p.relativeFrame.minX, p.relativeFrame.minY, p.relativeFrame.maxX, p.relativeFrame.maxY].allSatisfy { $0.isFinite && abs($0) <= CGFloat(Int32.max) }
+                          && p.relativeFrame.width > 0 && p.relativeFrame.height > 0
+                  }) else { return false }
+        }
         return values.allSatisfy { $0.isFinite && abs($0) <= CGFloat(Int32.max) }
             && rect.size.width > 0 && rect.size.height > 0
     }

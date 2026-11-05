@@ -8,7 +8,7 @@ ShareX runs in the macOS menu bar. Use the camera icon to start a capture or ope
 2. Allow Screen Recording in **System Settings > Privacy & Security** when macOS requests it.
 3. Quit and reopen ShareX after you change that permission.
 4. Press **Control+Shift+1** and drag a rectangle around the area you want.
-5. Add annotations with the toolbar, or press **Return** to finish.
+5. Choose annotation tools from **Tool**. Click **Done** to finish.
 6. Paste the image into another app with **Command+V**.
 
 A new installation also saves a PNG in `~/Pictures/ShareX`. An update preserves your existing save preference and folder.
@@ -21,16 +21,18 @@ Choose a command from the ShareX menu, or use its assigned shortcut.
 
 | Command | What to capture | Default shortcut |
 | --- | --- | --- |
-| Region | Drag a rectangle on one display. | Control+Shift+1 |
-| Window… | Click a window. | Control+Shift+2 |
-| Fullscreen | Capture all connected displays in one image. | Control+Shift+3 |
-| Active Monitor | Capture the display under the pointer. | Control+Shift+4 |
-| Freehand | Draw around an area. The area outside the path is transparent. | Control+Shift+5 |
+| Region | Drag a rectangle across one or more displays. | Control+Shift+1 |
+| Window… | Click a window. | Unassigned |
+| Fullscreen | Capture all connected displays in one image. | Unassigned |
+| Active Monitor | Capture the display under the pointer. | Unassigned |
+| Freehand | Draw around an area. The area outside the path is transparent. | Unassigned |
 | Active Window | Capture the frontmost window. | Unassigned |
 | Monitor… | Click a display. | Unassigned |
 | Last Region | Capture the previous area again. | Unassigned |
 
-If no saved area is available, or the saved display is no longer connected, **Last Region** starts a new region selection. A region stays on one display. Use **Fullscreen** for several displays.
+The fixed top toolbar appears on every display. Before selection, its **Tool** menu offers Region, Freehand, Window, Monitor, and Full Desktop. Fullscreen editing stays on the original displays. A drag can cross a display boundary and remains one undo action.
+
+If a participating display moves, changes size, or disconnects, **Last Region** starts a new region selection. Common desktop translation, scale changes, and extra untouched displays preserve the saved area. Desktop gaps are transparent in the image.
 
 In **Settings… > Capture**, set a delay to capture a menu or another temporary view. You can also include the pointer, add a border or shadow, and enable **Open the editor for fixed-area captures**.
 
@@ -38,7 +40,7 @@ In **Settings… > Capture**, set a delay to capture a menu or another temporary
 
 Enable **Settings… > Capture > Show magnifier and crosshair**. Use the magnifier while you select a region or freehand area. The size label shows the crop dimensions in image pixels, before any border or shadow.
 
-After selection, press **C** for **Crop**. Drag a crop handle to resize the area, or drag elsewhere to replace it. Use these keys for small adjustments:
+After selection, choose **Tool > Crop**. Drag a crop handle to resize the area, or drag elsewhere to replace it. Use these keys for small adjustments:
 
 | Keys | Adjustment |
 | --- | --- |
@@ -52,7 +54,7 @@ The magnifier also works in **Crop**. It hides near protected areas to avoid sho
 
 ## Add or change annotations
 
-Select a toolbar tool or press its key. Drag to draw shapes and strokes. Click to place text or a step marker.
+Choose a tool from **Tool**. The keys below are optional. Drag to draw shapes and strokes. Click to place text or a step marker.
 
 | Tool | Key | Use |
 | --- | --- | --- |
@@ -69,20 +71,20 @@ Select a toolbar tool or press its key. Drag to draw shapes and strokes. Click t
 | Text | T | Add text. To edit existing text, select this tool and click the text. |
 | Step marker | I | Add a numbered marker. |
 
-Use the toolbar to change color, width or text size, opacity, fill, and effect strength. Hold **Shift** while you draw a shape to constrain it.
+Open **Style** to change color, width or text size, opacity, fill, and effect strength. Hold **Shift** while you draw a shape to constrain it.
 
 To move an annotation, press **V** and select it. Arrow keys move it by one point. **Shift+Arrow** moves it by ten points.
 
-Press **Delete** to remove the selected annotation. A right-click also deletes the annotation under the pointer. With no annotations, a right-click returns to area selection or cancels a fixed-area capture.
+Choose **More > Delete selected** to remove the selected annotation. A right-click also deletes the annotation under the pointer. With no annotations, a right-click returns to area selection or cancels a fixed-area capture.
 
-Press **Command+Z** to undo and **Shift+Command+Z** to redo. Use **Return**, **Command+C**, or the toolbar checkmark to finish.
+Choose **More > Undo** or **More > Redo**. Click **Done** to finish or **Cancel** to close the capture. Optional keys remain Command+Z, Shift+Command+Z, Return, and Command+C.
 
 ## Hide sensitive content
 
 Blur and pixelation obscure detail but do not guarantee that the content cannot be inferred. To cover sensitive content completely:
 
-1. Press **R** to select **Rectangle**.
-2. Select a color, such as black.
+1. Choose **Tool > Rectangle**.
+2. Open **Style** and select a color, such as black.
 3. Enable **Fill**.
 4. Move **Opacity** fully right to make the box opaque.
 5. Draw the box over the entire sensitive area.
@@ -102,7 +104,7 @@ Open **Settings… > Shortcuts**. Changes save automatically.
 
 If another ShareX command uses the combination, the app rejects it and names the conflict. Clear or change the other assignment, or choose another combination.
 
-Use the row's options menu to select **Clear Shortcut** or **Restore Default**. A per-command restore also checks for a conflict. Use **Restore All Defaults…** and confirm **Restore Defaults** to replace all eight assignments. The three commands without defaults become unassigned.
+Use the row's options menu to select **Clear Shortcut** or **Restore Default**. A per-command restore also checks for a conflict. Use **Restore All Defaults…** and confirm **Restore Defaults** to replace all eight assignments. Region receives Control+Shift+1. The other seven commands become unassigned. Existing valid bindings, including earlier factory defaults, remain assigned until you change or restore them.
 
 If a stored shortcut is damaged, the app recovers it at launch. Valid custom and disabled assignments stay unchanged. A recovered default that conflicts with a valid assignment stays unassigned.
 
@@ -117,3 +119,9 @@ If an output fails, read the alert to see which destination succeeded. **Retry**
 Keep the recovery dialog open until you have an output you need. **Done** dismisses the dialog when at least one output succeeded. **Discard** dismisses it when neither succeeded. The success sound plays only after every requested output succeeds.
 
 See [the review index](../reviews/README.md) for validation evidence and limits. Physical hotkeys, interactive permission prompts, and real Retina or mixed-display setups still need checks on a Mac.
+
+## Reduce a large capture
+
+If Done is disabled with a size message, choose **Tool > Crop** and reduce the selected area. The limit is 64 Mi pixels. The image uses the highest scale of the displays that the crop touches. The app does not reduce image detail to fit the limit.
+
+If the display layout changes while you edit, the session cancels. Start a new capture after the displays settle.

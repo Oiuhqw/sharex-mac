@@ -12,7 +12,7 @@ import ShareXCore
 @MainActor
 enum E2E {
     static let args = CommandLine.arguments
-    static var enabled: Bool { args.contains("--e2e") }
+    static var enabled: Bool { args.contains("--e2e") || args.contains("--e2e-multidisplay") }
     static func arg(after flag: String) -> String? { args.firstIndex(of: flag).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
 
     // MARK: helper processes
@@ -107,12 +107,15 @@ enum E2E {
 
     static func start(_ a: AppDelegate) {
         app = a
-        out = URL(fileURLWithPath: arg(after: "--e2e") ?? "/tmp/e2e")
+        out = URL(fileURLWithPath: arg(after: "--e2e-multidisplay") ?? arg(after: "--e2e") ?? "/tmp/e2e")
         try? FileManager.default.createDirectory(at: saved, withIntermediateDirectories: true)
         if let p = arg(after: "--pattern-pid"), let n = Int32(p) { patternPID = n }
         // Watchdog: a modal or a hang must not eat CI minutes.
         DispatchQueue.main.asyncAfter(deadline: .now() + 300) { record("watchdog", false, ["note": "timed out"]); finishRun() }
-        Task { @MainActor in await runAll(); finishRun() }
+        Task { @MainActor in
+            if args.contains("--e2e-multidisplay") { await E2EMultiDisplay.run() } else { await runAll() }
+            finishRun()
+        }
     }
 
     static func finishRun() {

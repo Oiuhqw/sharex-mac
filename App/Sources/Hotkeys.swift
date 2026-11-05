@@ -7,10 +7,10 @@ import ShareXCore
 /// Defaults avoid the system-owned ⌘⇧3/4/5.
 extension KeyboardShortcuts.Name {
     static let region = Self("captureRegion", initial: .init(.one, modifiers: [.control, .shift]))
-    static let window = Self("captureWindowPicker", initial: .init(.two, modifiers: [.control, .shift]))
-    static let fullscreen = Self("captureFullscreen", initial: .init(.three, modifiers: [.control, .shift]))
-    static let activeMonitor = Self("captureActiveMonitor", initial: .init(.four, modifiers: [.control, .shift]))
-    static let freehand = Self("captureFreehand", initial: .init(.five, modifiers: [.control, .shift]))
+    static let window = Self("captureWindowPicker")
+    static let fullscreen = Self("captureFullscreen")
+    static let activeMonitor = Self("captureActiveMonitor")
+    static let freehand = Self("captureFreehand")
     static let activeWindow = Self("captureActiveWindow")
     static let monitorPicker = Self("captureMonitorPicker")
     static let lastRegion = Self("captureLastRegion")
@@ -118,7 +118,8 @@ enum Hotkeys {
 
         func restoreAll() {
             KeyboardShortcuts.reset(commands.map(\.name))
-            feedback = .saved("All eight shortcut defaults restored.")
+            let count = commands.filter { $0.name.initialShortcut != nil }.count
+            feedback = .saved("All \(commands.count) commands reset. \(count) default shortcut assigned.")
         }
     }
 }

@@ -84,6 +84,7 @@ enum E2ERedaction {
         root.addSubview(committed)
         let live = LiveMarkView(frame: root.bounds)
         root.addSubview(live)
+        E2E.bindFailures(renderer, committed: committed, live: live)
         let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.sharingType = .readOnly; window.hasShadow = false
         defer {
@@ -206,6 +207,7 @@ enum E2ERedaction {
                     root.addSubview(FrameView(frame: root.bounds, image: image, smooth: false))
                     let live = LiveMarkView(frame: root.bounds)
                     root.addSubview(live)
+                    E2E.bindFailures(renderer, committed: committed, live: live)
                     let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
                     window.isReleasedWhenClosed = false
                     window.contentView = root
@@ -289,6 +291,7 @@ enum E2ERedaction {
             root.addSubview(committed)
             let live = LiveMarkView(frame: root.bounds)
             root.addSubview(live)
+            E2E.bindFailures(previewRenderer, committed: committed, live: live)
             let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false; window.contentView = root; window.orderFrontRegardless()
             previewRenderer.liveEffectID = second
@@ -326,6 +329,7 @@ enum E2ERedaction {
             root.addSubview(committed)
             let live = LiveMarkView(frame: root.bounds)
             root.addSubview(live)
+            E2E.bindFailures(renderer, committed: committed, live: live)
             let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false; window.sharingType = .readOnly; window.hasShadow = false
             window.contentView = root; window.orderFrontRegardless()
@@ -436,6 +440,7 @@ enum E2ERedaction {
                 let committed = AnnotationsView(frame: root.bounds, renderer: renderer)
                 root.addSubview(committed)
                 let live = LiveMarkView(frame: root.bounds); root.addSubview(live)
+                E2E.bindFailures(renderer, committed: committed, live: live)
                 let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false; window.contentView = root; window.orderFrontRegardless()
                 return (root, committed, live, window)

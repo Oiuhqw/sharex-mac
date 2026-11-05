@@ -63,7 +63,7 @@ enum E2ESettings {
                 .lastRegion: ("invalid-storage-type", ["carbonKeyCode": 18, "carbonModifiers": 4608]),
             ]
         case "collision":
-            invalid = [.activeMonitor: ("default-conflict-disabled", "{\"carbonKeyCode\":")]
+            invalid = [.activeMonitor: ("former-default-cleared", "{\"carbonKeyCode\":")]
         default:
             throw NSError(domain: "ShortcutRecovery", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unknown recovery scenario"])
         }
@@ -74,18 +74,17 @@ enum E2ESettings {
             : KeyboardShortcuts.Shortcut(.eight, modifiers: [.control, .option, .shift])
         return try Hotkeys.commands.map { command in
             if let (id, value) = invalid[command.style] {
-                let conflict = scenario == "collision"
                 return RecoveryCase(command: command, id: id, input: value,
-                                    expected: conflict ? nil : command.name.initialShortcut,
-                                    storage: conflict ? .disabled : .restored)
+                                    expected: command.name.initialShortcut, storage: .restored)
             }
             if command.style == .windowPicker {
                 return RecoveryCase(command: command, id: "disabled-preserved", input: false, expected: nil, storage: .preserved)
             }
             let custom = command.style == .region
-            let shortcut = custom ? customShortcut : command.name.initialShortcut
+            let shortcut = custom ? customShortcut : command.style == .fullscreen
+                ? KeyboardShortcuts.Shortcut(.three, modifiers: [.control, .shift]) : command.name.initialShortcut
             let encoded = try shortcut.map { String(decoding: try encoder.encode($0), as: UTF8.self) }
-            return RecoveryCase(command: command, id: custom ? "custom-preserved" : "default-preserved",
+            return RecoveryCase(command: command, id: custom ? "custom-preserved" : command.style == .fullscreen ? "explicit-former-default-preserved" : "default-preserved",
                                 input: encoded, expected: shortcut, storage: .preserved)
         }
     }
@@ -678,14 +677,15 @@ enum E2ESettings {
         let resetStillCustom = KeyboardShortcuts.getShortcut(for: .region) == custom
         let beforeResetFeedback = await feedback(in: window)
         let restoreAll = await restoreShortcuts(dismissing: "Restore Defaults", in: window)
-        let resetCompleted = await awaitShortcutFeedback("All eight shortcut defaults restored.",
+        let resetCompleted = await awaitShortcutFeedback("All 8 commands reset. 1 default shortcut assigned.",
                                                          after: beforeResetFeedback, in: window) {
             window.attachedSheet == nil && Hotkeys.commands.allSatisfy {
                 KeyboardShortcuts.getShortcut(for: $0.name) == $0.name.initialShortcut
             }
         }
         E2E.record("settings-shortcut-restore-all", resetFixture && resetStillCustom && restoreAll.shown
-                   && restoreAll.pressed && restoreAll.closed && resetCompleted && Hotkeys.commands.allSatisfy {
+                   && restoreAll.pressed && restoreAll.closed && resetCompleted
+                   && Hotkeys.commands.filter { KeyboardShortcuts.getShortcut(for: $0.name) != nil }.count == 1 && Hotkeys.commands.allSatisfy {
             KeyboardShortcuts.getShortcut(for: $0.name) == $0.name.initialShortcut
         })
 

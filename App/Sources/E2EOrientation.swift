@@ -12,8 +12,8 @@ import ShareXCore
 /// and an undimmed hole exactly where the selection is.
 @MainActor
 enum E2EOrientation {
-    static let size = CGSize(width: 300, height: 240), sc: CGFloat = 2
-    static let hole = CGRect(x: 20, y: 10, width: 120, height: 60)   // view points, top-left origin
+    static let size = CGSize(width: 600, height: 480), sc: CGFloat = 2
+    static let hole = CGRect(x: 20, y: 80, width: 120, height: 60)   // view points, top-left origin
 
     static func bands() -> CGImage? {
         let w = Int(size.width * sc), h = Int(size.height * sc)
@@ -30,7 +30,7 @@ enum E2EOrientation {
         let kx = Double(m.w) / size.width, ky = Double(m.h) / size.height
         func at(_ x: CGFloat, _ y: CGFloat) -> C { m.at(Int(Double(x) * kx), Int(Double(y) * ky)) }
         func fmt(_ c: C) -> [Double] { [c.r, c.g, c.b].map { ($0 * 100).rounded() / 100 } }
-        let inHole = at(hole.midX, hole.midY), topOut = at(220, 40), mid = at(220, 120), bottom = at(150, 210)
+        let inHole = at(hole.midX, hole.midY), topOut = at(220, 100), mid = at(220, 240), bottom = at(150, 420)
         // Undimmed red in the hole; red dimmed by the 35 % black scrim outside it; green middle; blue bottom.
         let holeBright = inHole.r > 0.85 && inHole.g < 0.2 && inHole.b < 0.2
         let topDim = topOut.r > 0.45 && topOut.r < 0.8 && topOut.g < 0.2 && topOut.b < 0.2

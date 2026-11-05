@@ -101,7 +101,7 @@ struct SettingsView: View {
             Button("Restore Defaults", role: .destructive) { shortcuts.restoreAll() }
                 .accessibilityIdentifier("settings.shortcuts.confirmRestore")
         } message: {
-            Text("This replaces all eight shortcut assignments. Commands without a default become unassigned.")
+            Text("This resets all eight commands. Region uses Control-Shift-1. The other seven commands become unassigned.")
         }
     }
 

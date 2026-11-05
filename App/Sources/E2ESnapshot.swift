@@ -3,6 +3,14 @@ import AppKit
 import ShareXCore
 
 extension E2E {
+    static func bindFailures(_ renderer: Renderer, committed: AnnotationsView, live: LiveMarkView) {
+        renderer.redactionFailuresChanged = { [weak live] in live?.showFailedMasks($0) }
+        renderer.redactionFailuresNeedDisplay = { [weak committed] rect in
+            committed?.setNeedsDisplay(rect.integral)
+            DispatchQueue.main.async { [weak committed] in committed?.setNeedsDisplay(rect.integral) }
+        }
+    }
+
     static func snapshotImageLayers(_ root: NSView, scale: CGFloat, name: String? = nil, display: Bool = true) -> Bitmap? {
         if display { root.window?.displayIfNeeded() }
         CATransaction.flush()

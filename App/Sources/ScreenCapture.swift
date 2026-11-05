@@ -6,7 +6,12 @@ struct FrozenScreen {
     let screen: NSScreen
     let displayID: CGDirectDisplayID
     let image: CGImage
-    var scale: CGFloat { screen.backingScaleFactor }
+    let frame: CGRect
+    let scale: CGFloat
+    init(screen: NSScreen, displayID: CGDirectDisplayID, image: CGImage) {
+        self.screen = screen; self.displayID = displayID; self.image = image
+        frame = screen.frame; scale = screen.backingScaleFactor
+    }
 }
 
 /// An on-screen window from the window server, in Cocoa global points.

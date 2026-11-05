@@ -115,6 +115,7 @@ enum E2EPrivacy {
         root.addSubview(FrameView(frame: crop, image: image, smooth: false))
         let committed = AnnotationsView(frame: crop, renderer: renderer), live = LiveMarkView(frame: crop)
         root.addSubview(committed); root.addSubview(live)
+        E2E.bindFailures(renderer, committed: committed, live: live)
         let window = OverlayWindow(contentRect: crop, styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = root; window.orderFrontRegardless()
         defer { live.releaseResources(); renderer.releaseTransientResources(); window.orderOut(nil); window.contentView = nil }

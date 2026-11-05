@@ -20,31 +20,35 @@ enum E2EEditing {
 
     @discardableResult
     static func tool(_ tip: String, in s: Session) -> Bool {
-        guard let control = views(s.view).compactMap({ $0 as? NSSegmentedControl }).first,
-              let index = (0..<control.segmentCount).first(where: { control.toolTip(forSegment: $0) == tip }) else { return false }
-        control.selectedSegment = index
-        return control.sendAction(control.action, to: control.target)
+        let title = tip.components(separatedBy: " (")[0]
+        guard let menu = s.view.e2eToolbar.e2eTools.menu, let item = menu.items.first(where: { $0.title == title }),
+              let action = item.action else { return false }
+        return NSApp.sendAction(action, to: item.target, from: item)
     }
+
+    private static func styleViews(_ s: Session) -> [NSView] { views(s.view.e2eToolbar.e2eStyleContents) }
 
     @discardableResult
     static func button(_ tip: String, in s: Session) -> Bool {
-        guard let control = views(s.view).compactMap({ $0 as? NSButton }).first(where: { $0.toolTip == tip || $0.title == tip }),
+        let title = tip.components(separatedBy: " (")[0]
+        if let item = s.view.e2eToolbar.e2eMore.menu?.items.first(where: { $0.title == title }), item.isEnabled, let action = item.action {
+            return NSApp.sendAction(action, to: item.target, from: item)
+        }
+        guard let control = (views(s.view) + styleViews(s)).compactMap({ $0 as? NSButton }).first(where: { $0.title == title }),
               control.isEnabled else { return false }
-        control.performClick(nil)
-        return true
+        control.performClick(nil); return true
     }
 
     @discardableResult
     static func color(_ color: RGBA, in s: Session) -> Bool {
         guard let index = RGBA.palette.firstIndex(of: color),
-              let control = views(s.view).compactMap({ $0 as? NSButton }).first(where: { !$0.isBordered && $0.tag == index }) else { return false }
-        control.performClick(nil)
-        return true
+              let control = styleViews(s).compactMap({ $0 as? NSButton }).first(where: { $0.tag == index && $0.title == ["Red", "Yellow", "Green", "Blue", "Black", "White"][index] }) else { return false }
+        control.performClick(nil); return true
     }
 
     @discardableResult
     static func slider(_ tip: String, value: Double, in s: Session) -> Bool {
-        guard let control = views(s.view).compactMap({ $0 as? NSSlider }).first(where: { $0.toolTip == tip }),
+        guard let control = styleViews(s).compactMap({ $0 as? NSSlider }).first(where: { $0.accessibilityLabel() == tip }),
               control.isEnabled else { return false }
         control.doubleValue = value
         return control.sendAction(control.action, to: control.target)
@@ -73,8 +77,7 @@ enum E2EEditing {
         }
         E2E.drag(from ?? E2E.C.origin, to ?? CGPoint(x: E2E.C.maxX, y: E2E.C.maxY))
         guard surface.view.phase == .editing, surface.view.doc.state.crop == E2E.C,
-              let frame = surface.view.renderer.frame.cropping(to: CGRect(x: E2E.C.minX * E2E.scale, y: E2E.C.minY * E2E.scale,
-                                                                          width: E2E.C.width * E2E.scale, height: E2E.C.height * E2E.scale)) else {
+              let frame = surface.view.renderer.source.sample(E2E.C, scale: E2E.scale, maximumPixels: Imaging.maximumPixels) else {
             E2E.record(name, false, ["error": "drag did not select the expected rectangle"])
             surface.view.cancel(); _ = await E2E.until({ !E2E.coord.busy }); return nil
         }

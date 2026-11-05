@@ -7,7 +7,7 @@ See the [user guide](docs/USER-GUIDE.md) for capture, editing, shortcuts, and ou
 
 ## Latest built package
 
-Version **0.1.2, build 3** is built for Intel and Apple Silicon. Download the `ShareX-dmg` artifact from the [successful main build](https://github.com/Oiuhqw/sharex-mac/actions/runs/42038241966), then extract `ShareX.dmg` and `ShareX.dmg.sha256`. GitHub may require sign-in to download Actions artifacts.
+The last published build artifact is **0.1.2, build 3**. It is built for Intel and Apple Silicon. Download the `ShareX-dmg` artifact from the [successful main build](https://github.com/Oiuhqw/sharex-mac/actions/runs/42038241966), then extract `ShareX.dmg` and `ShareX.dmg.sha256`. GitHub may require sign-in to download Actions artifacts.
 
 The package was built from merge commit `65a3e36433b3d2262d35c19ae69a21eae7b11316` on 5 November 2026. The DMG is 1,942,657 bytes. Its SHA-256 is:
 
@@ -29,24 +29,19 @@ Unsigned builds (`CODE_SIGNING_ALLOWED=NO`, as in CI) skip the Local.xcconfig ma
 ## Features
 - **Capture styles:** Region, Freehand (lasso), Window picker, Active window, Monitor picker, Active monitor, Fullscreen and Last region.
 - **Before capture (menu › Before capture, or Settings):** delay 0/1/2/3/5/10 s with a countdown that never appears in the shot, show cursor, magnifier and crosshair, border, drop shadow, and "open editor for fixed-area captures".
-- **Editor:** the screen freezes and you annotate in place. Tools and their keys:
-  - Select/move/resize `V`
-  - Rectangle `R`, Ellipse `E`, Line `L`, Arrow `A`
-  - Highlighter `H`, Blur `B`, Pixelate `P`, Spotlight `S`
-  - Pen `F`, Text `T`, Numbered step `I`
-  - Crop `C`
-- **Editor controls:** colour, width, opacity, strength and fill. Delete removes the selected mark, arrow keys nudge it (⇧ moves 10 pt), ⌘Z undoes and ⇧⌘Z redoes. Shift-drag constrains a shape. With Crop selected, arrow keys move the crop by one image pixel, ⇧ moves ten pixels, and ⌥ adjusts the right or bottom edge. The size label shows the crop dimensions in image pixels. Border and shadow can increase the final image size.
-- **Finish:** Enter (or ⌘C, or Done) copies PNG + TIFF to the clipboard. Esc cancels. A right-click deletes the mark under the cursor; with no marks it resets the selection (or cancels a fixed-area capture). Blur and pixelate are burned into the pixels.
+- **Editor:** the desktop freezes and you annotate on the original displays. A fixed top toolbar on each display has **Tool**, **Style**, **More**, **Done**, and **Cancel**. Region and freehand drags can cross display boundaries. Every panel shares the same undo history.
+- **Tools:** Select, Crop, Rectangle, Ellipse, Line, Arrow, Highlighter, Blur, Pixelate, Spotlight, Freehand, Text, and Step marker. **Style** controls color, width or text size, opacity, strength, and fill. **More** offers Undo, Redo, and Delete. Optional editing keys are listed in the [user guide](docs/USER-GUIDE.md).
+- **Finish:** **Done** copies PNG and TIFF to the clipboard. **Cancel** closes the capture. A right-click deletes the mark under the pointer. With no marks it resets the selection or cancels a fixed-area capture. Border and shadow can increase the final image size.
 - **Local copy:** new installations also save the PNG to `~/Pictures/ShareX`. Existing save preferences are preserved. Clipboard and file writes are independent. If an output fails, Retry attempts only the failed destination and Save As lets you keep the PNG elsewhere. The success sound plays only after every requested output succeeds.
-- **Default hotkeys** (rebindable in Settings › Shortcuts): ⌃⇧1 region, ⌃⇧2 window, ⌃⇧3 fullscreen, ⌃⇧4 active monitor, ⌃⇧5 freehand.
+- **Default shortcut:** Control-Shift-1 opens Region. The top **Tool** menu also offers Freehand, Window, Monitor, and Full Desktop before selection. All eight commands can have custom shortcuts in Settings.
 - **Settings:** Capture, Shortcuts, and Output pages. Search all eight capture commands, record a shortcut, clear it, or restore defaults. Conflicting assignments show an explanation. Damaged shortcut preferences recover at launch while preserving valid custom assignments. Choose the PNG destination with the native folder picker.
 
 ## Layout
 ```
 Packages/ShareXCore/     platform-free logic + tests (builds on Linux): Geometry (CGRect points vs PixelRect pixels),
-                         Capture options/styles, Annotation model, EditorDocument (undo), EffectMath/StitchLayout, Settings
+                         Capture options/styles, Annotation model, EditorDocument (undo), EffectMath, DesktopLayout, Settings
 App/Sources/             AppKit app: Main, CaptureCoordinator, ScreenCapture (SCK), OverlayController,
-                         EditorView, ToolbarView, Renderer (CoreImage blur/pixelate), Export, Countdown, Permissions, Hotkeys, Settings*
+                         EditorSession, EditorView, ToolbarView, DesktopImageSource, Renderer (CoreImage blur/pixelate), Export, Countdown, Permissions, Hotkeys, Settings*
 project.yml              XcodeGen project (app target + local ShareXCore + pinned KeyboardShortcuts 3.1.0)
 reviews/                 macOS Developer review request / feedback
 ```
@@ -83,12 +78,13 @@ gh workflow run macos.yml --repo Oiuhqw/sharex-mac --ref main -f runner=macos-15
 - CI defaults to `macos-15-intel`; manual runs can select the Apple Silicon `macos-15` pool. The package job uses the selected runner and still builds both architectures.
 - The hover performance gate requires Release p95 main-thread CPU below 2 ms and verifies that the events updated the loupe. Debug elapsed time, Release wall time, and the next display-link callback are recorded separately. Hosted-runner display callbacks do not measure physical screen presentation.
 
-## Known limitations
-- Window picker and active window capture the window live with ScreenCaptureKit (`desktopIndependentWindow`), so covered windows come out whole, with transparent corners, no cursor, and the app-drawn shadow and border around the window itself (the system shadow is dropped until its sizing is verified on a Mac). The window is captured when you click it, not at the moment the overlay opened.
-- Fullscreen on several displays stitches them into one image; with "open editor" on it is edited in a window (scaled to fit), otherwise copied directly.
-- A region cannot span two displays: each display has its own overlay and the selection stays on one of them. Use Fullscreen for a multi-display shot.
-- Blur and pixelate are visual obscuring tools. Use a fully opaque filled rectangle for content that must be completely hidden.
-- Other screen-recording or screen-sharing apps may capture the editor, including the frozen image before you finish redacting it. `NSWindow.sharingType` does not provide a supported capture-exclusion guarantee on current macOS. See [Apple's window sharing documentation](https://developer.apple.com/documentation/appkit/nswindow/sharingtype-swift.enum/none).
+## Capture behavior and privacy
+
+- Window picker takes a fresh still image when you click the window. Active Window also takes a fresh still image. Both use ScreenCaptureKit and open a titled canvas when editing is enabled. Covered windows are captured whole, with transparent corners and app-drawn border and shadow. The pointer is omitted from window captures.
+- Fullscreen editing stays on the original displays. Direct fullscreen capture exports one image. Region and freehand selections can span displays. Empty desktop gaps stay transparent.
+- Blur and pixelate obscure detail. Use a fully opaque filled rectangle when content must be completely hidden. Check the final image before sharing it.
+- The system window shadow is omitted until its sizing is verified on a Mac.
+- Other screen-recording or screen-sharing apps may capture the editor before redaction is complete. `NSWindow.sharingType` does not guarantee capture exclusion. See [Apple's window sharing documentation](https://developer.apple.com/documentation/appkit/nswindow/sharingtype-swift.enum/none).
 
 ## Founder's Mac checklist
 **Setup**
@@ -147,3 +143,15 @@ ShareX with **−**, add the new `/Applications/ShareX.app` with **+** (or toggl
 and reopen ShareX. `tccutil reset ScreenCapture com.sharexmac.ShareX` clears the stale entry from Terminal.
 
 Verify the download first: `shasum -a 256 ShareX.dmg` must match `ShareX.dmg.sha256` from the same CI run.
+
+## Multi-display editing in 0.1.3
+
+Version 0.1.3, build 4 keeps fullscreen editing on the original displays. Region and freehand gestures can cross display boundaries. Every display has a fixed top toolbar with Tool, Style, More, Done, and Cancel. All panels share one document, text editor, undo history, and effect cache. Window capture still opens a titled editor around a fresh still image.
+
+The output uses the highest scale among the displays touched by the crop. An unrelated Retina display does not increase the scale of a small 1x crop. Desktop gaps stay transparent. The editor retains native display tiles and allocates only bounded effect samples and the final crop. If a fullscreen output exceeds 64 Mi pixels, editing remains available. Done stays disabled until Crop reduces the area. There is no silent downsampling.
+
+Last Region supports areas across displays. It accepts common desktop translation, backing-scale changes, and extra untouched displays. A moved, resized, or missing participating display starts a fresh Region selection. Old single-display settings still decode and clamp. The saved region changes only after an output succeeds.
+
+A fresh installation assigns only Control-Shift-1. Updates preserve valid stored assignments, including old defaults and explicit disabled values. Restore All resets eight commands and assigns one shortcut. KeyboardShortcuts 3.1.0 stores initial bindings as explicit preferences, so an upgrade cannot distinguish an old default from a custom binding.
+
+This source change requires native macOS validation before a new package is published. The existing artifact and signing status above still apply. See [multi-display validation](docs/MULTI-DISPLAY.md) for the driver and remaining hardware checks.
