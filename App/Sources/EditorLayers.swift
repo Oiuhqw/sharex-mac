@@ -240,9 +240,6 @@ final class ChromeView: PassThroughView {
         }
         sizeLabel.backgroundColor = CGColor(gray: 0, alpha: 0.6)
         magLabel.backgroundColor = CGColor(gray: 0, alpha: 0.7)
-        // Container (black where the source runs off the image, white border) holding the image layer and the
-        // centre-cell marker. The frozen frame is the image layer's contents once per session; a move changes only
-        // its contentsRect and frame, so hover never crops or allocates an image.
         magnifier.backgroundColor = CGColor(gray: 0, alpha: 1); magnifier.masksToBounds = true
         magImage.magnificationFilter = .nearest; magImage.minificationFilter = .nearest
         magImage.contentsGravity = .resize
@@ -270,7 +267,6 @@ final class ChromeView: PassThroughView {
         for t in [sizeLabel, magLabel] { t.contentsScale = s }
     }
 
-    /// The frozen frame the loupe samples; set once per overlay.
     func setMagnifierSource(_ image: CGImage, originPixels: CGPoint = .zero) {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         magImage.contents = image; magSize = CGSize(width: image.width, height: image.height); magOrigin = originPixels

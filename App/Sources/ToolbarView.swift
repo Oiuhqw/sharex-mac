@@ -46,7 +46,7 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
         row.addArrangedSubview(actions)
         row.orientation = .horizontal; row.spacing = 4; actions.spacing = 4
         stack.orientation = .vertical; stack.alignment = .centerX; stack.spacing = 4
-        stack.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         stack.addArrangedSubview(row); stack.addArrangedSubview(statusLabel)
         statusLabel.font = .systemFont(ofSize: 11); statusLabel.textColor = .labelColor
         statusLabel.preferredMaxLayoutWidth = 300

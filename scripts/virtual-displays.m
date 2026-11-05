@@ -108,27 +108,81 @@ static CGVirtualDisplay *CreateDisplay(DisplaySpec spec, unsigned int serialNumb
     return display;
 }
 
-static BOOL SelectMode(CGDirectDisplayID displayID, DisplaySpec spec) {
-    CFArrayRef modes = CGDisplayCopyAllDisplayModes(displayID, NULL);
-    CGError result = kCGErrorFailure;
+static BOOL ModeMatches(CGDisplayModeRef mode, DisplaySpec spec) {
+    return mode && CGDisplayModeGetWidth(mode) == spec.width &&
+        CGDisplayModeGetHeight(mode) == spec.height &&
+        CGDisplayModeGetPixelWidth(mode) == spec.width * spec.scale &&
+        CGDisplayModeGetPixelHeight(mode) == spec.height * spec.scale;
+}
+
+static NSDictionary *ModeJSON(CGDisplayModeRef mode) {
+    if (!mode) return @{};
+    return @{ @"id": @(CGDisplayModeGetIODisplayModeID(mode)),
+              @"width": @(CGDisplayModeGetWidth(mode)), @"height": @(CGDisplayModeGetHeight(mode)),
+              @"pixelWidth": @(CGDisplayModeGetPixelWidth(mode)), @"pixelHeight": @(CGDisplayModeGetPixelHeight(mode)),
+              @"refreshRate": @(CGDisplayModeGetRefreshRate(mode)), @"flags": @(CGDisplayModeGetIOFlags(mode)),
+              @"usableForDesktop": @(CGDisplayModeIsUsableForDesktopGUI(mode)) };
+}
+
+static void LogDisplayModes(CGDirectDisplayID displayID, CGDisplayModeRef current, CFArrayRef modes) {
+    NSMutableArray<NSDictionary *> *available = [NSMutableArray array];
     if (modes) {
         for (CFIndex index = 0; index < CFArrayGetCount(modes); index++) {
-            CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, index);
-            if (CGDisplayModeGetWidth(mode) == spec.width &&
-                CGDisplayModeGetHeight(mode) == spec.height &&
-                CGDisplayModeGetPixelWidth(mode) == spec.width * spec.scale &&
-                CGDisplayModeGetPixelHeight(mode) == spec.height * spec.scale) {
-                result = CGDisplaySetDisplayMode(displayID, mode, NULL);
-                break;
+            [available addObject:ModeJSON((CGDisplayModeRef)CFArrayGetValueAtIndex(modes, index))];
+        }
+    }
+    NSLog(@"Display %u mode state %@", displayID,
+          @{ @"online": @(CGDisplayIsOnline(displayID)), @"active": @(CGDisplayIsActive(displayID)),
+             @"inMirrorSet": @(CGDisplayIsInMirrorSet(displayID)), @"mirrorOf": @(CGDisplayMirrorsDisplay(displayID)),
+             @"bounds": FrameJSON(CGDisplayBounds(displayID)), @"current": ModeJSON(current),
+             @"enumerationAvailable": @(modes != NULL), @"available": available });
+}
+
+static BOOL SelectMode(CGDirectDisplayID displayID, DisplaySpec spec, NSTimeInterval deadline) {
+    BOOL loggedInitialState = NO;
+    while (!stopRequested) {
+        CGDisplayModeRef current = CGDisplayCopyDisplayMode(displayID);
+        CFArrayRef modes = CGDisplayCopyAllDisplayModes(displayID, NULL);
+        BOOL matchesCurrent = ModeMatches(current, spec);
+        CGDisplayModeRef selected = NULL;
+        if (!matchesCurrent && modes) {
+            for (CFIndex index = 0; index < CFArrayGetCount(modes); index++) {
+                CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, index);
+                if (ModeMatches(mode, spec)) {
+                    selected = mode;
+                    break;
+                }
             }
         }
-        CFRelease(modes);
+        BOOL timedOut = NSProcessInfo.processInfo.systemUptime >= deadline;
+        BOOL finished = matchesCurrent || selected || timedOut;
+        if (!loggedInitialState || finished) {
+            LogDisplayModes(displayID, current, modes);
+            loggedInitialState = YES;
+        }
+        if (finished) {
+            BOOL success = matchesCurrent;
+            if (matchesCurrent) {
+                NSLog(@"Display %u already uses the requested %ux%u at %ux mode.",
+                      displayID, spec.width, spec.height, spec.scale);
+            } else if (selected) {
+                CGError result = CGDisplaySetDisplayMode(displayID, selected, NULL);
+                success = result == kCGErrorSuccess;
+                NSLog(@"CGDisplaySetDisplayMode for display %u, mode %@, returned %d.",
+                      displayID, ModeJSON(selected), result);
+            } else {
+                NSLog(@"No exact %ux%u at %ux mode for display %u before the 15-second setup deadline. No mode-setting call was made.",
+                      spec.width, spec.height, spec.scale, displayID);
+            }
+            if (current) CGDisplayModeRelease(current);
+            if (modes) CFRelease(modes);
+            return success;
+        }
+        if (current) CGDisplayModeRelease(current);
+        if (modes) CFRelease(modes);
+        PumpRunLoop();
     }
-    if (result != kCGErrorSuccess) {
-        NSLog(@"Cannot select %ux%u at %ux for display %u. Core Graphics error %d.",
-              spec.width, spec.height, spec.scale, displayID, result);
-    }
-    return result == kCGErrorSuccess;
+    return NO;
 }
 
 static BOOL ArrangeDisplays(NSArray<CGVirtualDisplay *> *displays, const DisplaySpec *specs) {
@@ -240,7 +294,7 @@ static int RunDisplays(NSString *readyPath, NSString *layout) {
     }
     if (stopRequested) return 0;
     for (NSUInteger index = 0; index < displays.count; index++) {
-        if (!SelectMode(displays[index].displayID, specs[index])) return 1;
+        if (!SelectMode(displays[index].displayID, specs[index], deadline)) return stopRequested ? 0 : 1;
     }
     if (!ArrangeDisplays(displays, specs)) return 1;
 
