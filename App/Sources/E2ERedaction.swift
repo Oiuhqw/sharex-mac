@@ -19,28 +19,6 @@ enum E2ERedaction {
         return true
     }
 
-    private static func snapshot(_ view: NSView, scale: CGFloat, name: String? = nil) -> E2E.Bitmap? {
-        view.window?.displayIfNeeded()
-        CATransaction.flush()
-        guard let ctx = Imaging.context(width: Int(size.width * scale), height: Int(size.height * scale), flipped: true) else { return nil }
-        ctx.scaleBy(x: scale, y: scale)
-        // NSView-backed layers can call draw into render(in:)'s destination. A transparent view's
-        // clear must affect only its own surface, as it does in WindowServer, not erase earlier siblings.
-        for child in view.subviews {
-            guard !child.isHidden else { continue }
-            guard let layer = child.layer,
-                  let isolated = Imaging.context(width: Int(size.width * scale), height: Int(size.height * scale), flipped: true) else { return nil }
-            isolated.scaleBy(x: scale, y: scale)
-            isolated.translateBy(x: child.frame.minX, y: child.frame.minY)
-            layer.render(in: isolated)
-            guard let image = isolated.makeImage() else { return nil }
-            Imaging.drawUpright(image, in: CGRect(origin: .zero, size: size), ctx: ctx)
-        }
-        guard let image = ctx.makeImage() else { return nil }
-        if let name { E2EOrientation.writePNG(image, name) }
-        return E2E.bitmap(image)
-    }
-
     /// Native 2x-to-1x snapshots must not depend on which texel nearest-neighbor sampling
     /// chooses at a half-pixel boundary. Replicate each logical pixel without filtering. The
     /// original high-frequency 2x fixture still exercises the software move/export path below.
@@ -115,9 +93,9 @@ enum E2ERedaction {
         window.contentView = root; window.orderFrontRegardless()
         committed.sync(doc, hide: nil, live: mark.id)
         live.show(mark, renderer: renderer)
-        _ = snapshot(root, scale: scale)
+        _ = E2E.snapshotImageLayers(root, scale: scale)
         await E2E.wait(20)
-        let source = snapshot(root, scale: scale, name: "source-\(name)")
+        let source = E2E.snapshotImageLayers(root, scale: scale, name: "source-\(name)")
         let result = await windowSnapshot(window, name: name)
         return (result, source)
     }
@@ -232,10 +210,10 @@ enum E2ERedaction {
                     window.isReleasedWhenClosed = false
                     window.contentView = root
                     window.orderFrontRegardless()
-                    let previewBase = snapshot(root, scale: scale)
+                    let previewBase = E2E.snapshotImageLayers(root, scale: scale)
                     renderer.liveEffectID = id
                     live.show(mark, renderer: renderer)
-                    let failedPreview = snapshot(root, scale: scale)
+                    let failedPreview = E2E.snapshotImageLayers(root, scale: scale)
                     let previewOK = previewBase.flatMap { baseline in
                         failedPreview.map { matchesMask($0, baseline: baseline, area: area) }
                     } ?? false
@@ -243,7 +221,7 @@ enum E2ERedaction {
 
                     renderer.e2eRejectEffectImage = false
                     live.show(mark, renderer: renderer)
-                    let recoveredPreview = snapshot(root, scale: scale)
+                    let recoveredPreview = E2E.snapshotImageLayers(root, scale: scale)
                     var recovered = false
                     if let previewBase, let recoveredPreview {
                         if let area {
@@ -316,7 +294,7 @@ enum E2ERedaction {
             previewRenderer.liveEffectID = second
             committed.sync(doc, hide: nil, live: second)
             live.show(liveMark, renderer: previewRenderer)
-            let preview = snapshot(root, scale: scale)
+            let preview = E2E.snapshotImageLayers(root, scale: scale)
             let covered = preview.map { image in
                 image.frac(area.cgRect) { $0.r == 0 && $0.g == 0 && $0.b == 0 && $0.a == 1 } == 1
             } ?? false
@@ -326,7 +304,7 @@ enum E2ERedaction {
             doc.selectedID = first; doc.deleteSelected()
             committed.sync(doc, hide: nil, live: second)
             live.show(liveMark, renderer: previewRenderer)
-            _ = snapshot(root, scale: scale)
+            _ = E2E.snapshotImageLayers(root, scale: scale)
             E2E.record("redaction-overlap-delete-clears-mask-\(name)", previewRenderer.redactionFailureRects.isEmpty)
             window.orderOut(nil); window.contentView = nil
         }
@@ -351,7 +329,7 @@ enum E2ERedaction {
             let window = OverlayWindow(contentRect: root.bounds, styleMask: .borderless, backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false; window.sharingType = .readOnly; window.hasShadow = false
             window.contentView = root; window.orderFrontRegardless()
-            let baseline = snapshot(root, scale: scale, name: "redaction-move-\(name)-baseline.png")
+            let baseline = E2E.snapshotImageLayers(root, scale: scale, name: "redaction-move-\(name)-baseline.png")
             // Keep the original high-frequency native check on real Retina displays. Only
             // mismatched display scales need the separate sampling-invariant fixture.
             let captureNative = !nativeRequiresMatchingScale || abs(scale - window.backingScaleFactor) < 0.001
@@ -361,22 +339,22 @@ enum E2ERedaction {
             }
             committed.sync(doc, hide: nil)
             live.show(nil, renderer: renderer)
-            _ = snapshot(root, scale: scale, name: "redaction-move-\(name)-committed.png")
+            _ = E2E.snapshotImageLayers(root, scale: scale, name: "redaction-move-\(name)-committed.png")
             renderer.liveEffectID = id
             committed.sync(doc, hide: nil, live: id)
             live.show(doc.selected, renderer: renderer)
-            _ = snapshot(root, scale: scale, name: "redaction-move-\(name)-drag-start.png")
+            _ = E2E.snapshotImageLayers(root, scale: scale, name: "redaction-move-\(name)-drag-start.png")
 
             doc.move(id, by: Offset(dx: 130, dy: 100))
             committed.sync(doc, hide: nil, live: id)
             live.show(doc.selected, renderer: renderer)
-            let moved = snapshot(root, scale: scale, name: "redaction-move-\(name)-moved-immediate.png")
+            let moved = E2E.snapshotImageLayers(root, scale: scale, name: "redaction-move-\(name)-moved-immediate.png")
             let area = doc.selected.flatMap {
                 Geometry.pixelRect($0.rect, scale: scale).clamped(width: image.width, height: image.height)
             }
             let moveOK = baseline.flatMap { base in moved.map { matchesMask($0, baseline: base, area: area) } } ?? false
             await E2E.wait(20)
-            let movedSettled = snapshot(root, scale: scale, name: "redaction-move-\(name)-moved-settled.png")
+            let movedSettled = E2E.snapshotImageLayers(root, scale: scale, name: "redaction-move-\(name)-moved-settled.png")
             let settledMoveOK = baseline.flatMap { base in movedSettled.map { matchesMask($0, baseline: base, area: area) } } ?? false
             E2E.record("redaction-failed-move-clears-old-\(name)", moveOK && settledMoveOK && area != nil,
                        ["immediate": differences(moved, expected: baseline, mask: area),
@@ -389,7 +367,7 @@ enum E2ERedaction {
             }
             if captureNative {
                 let nativeMoved = await windowSnapshot(window, name: "redaction-move-\(name)-native-moved.png")
-                let composedMoved = snapshot(root, scale: nativeScale, name: "redaction-move-\(name)-composed-native-scale.png")
+                let composedMoved = E2E.snapshotImageLayers(root, scale: nativeScale, name: "redaction-move-\(name)-composed-native-scale.png")
                 let nativeMoveOK: Bool
                 if let nativeMoved, let nativeBaseline, let nativeArea {
                     nativeMoveOK = matchesMask(nativeMoved, baseline: nativeBaseline, area: nativeArea)
@@ -403,11 +381,11 @@ enum E2ERedaction {
 
             renderer.e2eRejectEffectImage = false
             live.show(doc.selected, renderer: renderer)
-            let recovered = snapshot(root, scale: scale, name: "redaction-move-\(name)-recovered-immediate.png")
+            let recovered = E2E.snapshotImageLayers(root, scale: scale, name: "redaction-move-\(name)-recovered-immediate.png")
             let flat = Export.flatten(renderer: renderer, doc: doc, crop: CGRect(origin: .zero, size: size), lasso: nil)
             if let flat { E2EOrientation.writePNG(flat, "redaction-move-\(name)-export.png") }
             await E2E.wait(20)
-            let recoveredSettled = snapshot(root, scale: scale, name: "redaction-move-\(name)-recovered-settled.png")
+            let recoveredSettled = E2E.snapshotImageLayers(root, scale: scale, name: "redaction-move-\(name)-recovered-settled.png")
             let recoveryOK: Bool
             if let recovered, let recoveredSettled, let flat, let baseline, let area {
                 let exported = E2E.bitmap(flat)
@@ -421,7 +399,7 @@ enum E2ERedaction {
                         "failureRects": renderer.redactionFailureRects.map { [$0.minX, $0.minY, $0.width, $0.height] }])
             if captureNative {
                 let nativeRecovered = await windowSnapshot(window, name: "redaction-move-\(name)-native-recovered.png")
-                let composedRecovered = snapshot(root, scale: nativeScale, name: "redaction-move-\(name)-recovered-composed-native-scale.png")
+                let composedRecovered = E2E.snapshotImageLayers(root, scale: nativeScale, name: "redaction-move-\(name)-recovered-composed-native-scale.png")
                 let reference = await freshNativePreview(image: image, doc: doc, scale: scale,
                                                          name: "redaction-move-\(name)-native-fresh-reference.png")
                 let referenceColors = nativeColorComparison(nativeRecovered, expected: reference.native)
@@ -464,22 +442,22 @@ enum E2ERedaction {
             }
             let current = scene(renderer)
             current.committed.sync(doc, hide: nil); current.live.show(nil, renderer: renderer)
-            _ = snapshot(current.root, scale: scale)
+            _ = E2E.snapshotImageLayers(current.root, scale: scale)
             await E2E.wait(20)
-            _ = snapshot(current.root, scale: scale)
+            _ = E2E.snapshotImageLayers(current.root, scale: scale)
 
             renderer.e2eRejectedEffectIDs = []
             let small = doc.addShape(.rectangle, at: CGPoint(x: 60, y: 70))
             doc.extendShape(small, to: CGPoint(x: 80, y: 90))
             current.committed.sync(doc, hide: nil)
-            _ = snapshot(current.root, scale: scale)
+            _ = E2E.snapshotImageLayers(current.root, scale: scale)
             await E2E.wait(20)
-            let recovered = snapshot(current.root, scale: scale)
+            let recovered = E2E.snapshotImageLayers(current.root, scale: scale)
 
             let freshRenderer = Renderer(frame: image, scale: scale)
             let reference = scene(freshRenderer)
             reference.committed.sync(doc, hide: nil); reference.live.show(nil, renderer: freshRenderer)
-            let expected = snapshot(reference.root, scale: scale)
+            let expected = E2E.snapshotImageLayers(reference.root, scale: scale)
             let same = recovered.flatMap { actual in expected.map { actual.px == $0.px } } ?? false
             E2E.record("redaction-partial-redraw-recovery-\(name)", same && renderer.redactionFailureRects.isEmpty)
             current.window.orderOut(nil); current.window.contentView = nil

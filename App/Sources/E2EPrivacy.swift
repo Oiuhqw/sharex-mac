@@ -53,22 +53,6 @@ enum E2EPrivacy {
         Export.flatten(renderer: renderer, doc: doc, crop: crop, lasso: nil).map(E2E.bitmap)
     }
 
-    private static func snapshot(_ root: NSView, scale: CGFloat, display: Bool = true) -> E2E.Bitmap? {
-        if display { root.window?.displayIfNeeded() }
-        CATransaction.flush()
-        guard let ctx = Imaging.context(width: Int(root.bounds.width * scale), height: Int(root.bounds.height * scale), flipped: true) else { return nil }
-        ctx.scaleBy(x: scale, y: scale)
-        for child in root.subviews where !child.isHidden {
-            guard child is FrameView || child is AnnotationsView || child is LiveMarkView else { continue }
-            guard let layer = child.layer,
-                  let isolated = Imaging.context(width: ctx.width, height: ctx.height, flipped: true) else { return nil }
-            isolated.scaleBy(x: scale, y: scale); layer.render(in: isolated)
-            guard let image = isolated.makeImage() else { return nil }
-            Imaging.drawUpright(image, in: root.bounds, ctx: ctx)
-        }
-        return ctx.makeImage().map(E2E.bitmap)
-    }
-
     static func run() {
         for scale in [CGFloat(1), CGFloat(2)] {
             for first in [ShapeKind.blur, .pixelate, .rectangle] {
@@ -140,12 +124,12 @@ enum E2EPrivacy {
             E2E.record("privacy-live-guard-\(name)", false); return
         }
         live.show(mark, renderer: renderer)
-        let preview = snapshot(root, scale: scale), area = Geometry.pixelRect(guardRect, scale: scale)
+        let preview = E2E.snapshotImageLayers(root, scale: scale), area = Geometry.pixelRect(guardRect, scale: scale)
         E2E.record("privacy-live-guard-\(name)", preview.map { value in
             value.frac(area.cgRect) { $0.r == 0 && $0.g == 0 && $0.b == 0 && $0.a == 1 } == 1
         } ?? false)
         committed.sync(doc, hide: nil); committed.displayIfNeeded(); live.show(nil, renderer: renderer)
-        let final = snapshot(root, scale: scale)
+        let final = E2E.snapshotImageLayers(root, scale: scale)
         E2E.record("privacy-live-commit-\(name)", final?.px == expected.px && renderer.e2eLiveBytes == 0 && live.e2eRetainedPatchBytes == 0)
     }
 
@@ -302,13 +286,13 @@ enum E2EPrivacy {
         view.setTool(.shape(.pixelate))
         E2E.mouse(.leftMouseDown, CGPoint(x: 280, y: 220), in: surface)
         E2E.mouse(.leftMouseDragged, CGPoint(x: 580, y: 440), in: surface)
-        let preview = snapshot(view, scale: 1)
+        let preview = E2E.snapshotImageLayers(view, scale: 1)
         let liveArea = CGRect(x: 280, y: 220, width: 300, height: 220)
         E2E.record("privacy-editor-drag-guard", preview.map {
             $0.frac(liveArea) { $0.r == 0 && $0.g == 0 && $0.b == 0 && $0.a == 1 } == 1
         } ?? false)
         E2E.mouse(.leftMouseUp, CGPoint(x: 580, y: 440), in: surface)
-        let committed = snapshot(view, scale: 1, display: false)
+        let committed = E2E.snapshotImageLayers(view, scale: 1, display: false)
         let exported = Export.flatten(renderer: renderer, doc: view.doc, crop: bounds, lasso: nil).map(E2E.bitmap)
         E2E.record("privacy-editor-commit-export", view.doc.annotations.count == 2
                    && committed.flatMap { actual in exported.map { actual.px == $0.px } } == true

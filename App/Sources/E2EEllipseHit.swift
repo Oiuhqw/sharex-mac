@@ -46,20 +46,13 @@ enum E2EEllipseHit {
         func exported() -> E2E.Bitmap? {
             Export.flatten(renderer: view.renderer, doc: view.doc, crop: frame, lasso: nil).map(E2E.bitmap)
         }
-        func displayed(_ suffix: String) -> E2E.Bitmap? {
-            window.displayIfNeeded()
-            CATransaction.flush()
-            guard let layer = view.layer,
-                  let output = Imaging.context(width: width, height: height, flipped: false) else { return nil }
-            output.translateBy(x: 0, y: CGFloat(height))
-            output.scaleBy(x: scale, y: -scale)
-            layer.render(in: output)
-            guard let image = output.makeImage() else { return nil }
-            E2EOrientation.writePNG(image, "\(name)-\(suffix).png")
-            return E2E.bitmap(image)
+        func isOpaqueWhite(_ color: (r: Double, g: Double, b: Double, a: Double)) -> Bool {
+            color.r > 0.95 && color.g > 0.95 && color.b > 0.95 && color.a == 1
         }
         let point = CGPoint(x: 1100, y: 121)
         let px = Int(point.x * scale), py = Int(point.y * scale)
+        let background = CGPoint(x: 50, y: 200)
+        let backgroundX = Int(background.x * scale), backgroundY = Int(background.y * scale)
         key(14, "e")
         E2E.mouse(.leftMouseDown, CGPoint(x: 100, y: 100), in: surface)
         E2E.mouse(.leftMouseDragged, CGPoint(x: 1100, y: 104), in: surface)
@@ -69,24 +62,31 @@ enum E2EEllipseHit {
             && view.doc.selected?.style.width == 40
         let id = view.doc.selectedID
         key(9, "v")
-        click(CGPoint(x: 50, y: 200))
+        click(background)
         let deselected = view.doc.selectedID == nil
         await E2E.wait(80)
         let exportPainted = exported().map { E2E.isRed($0.at(px, py)) } ?? false
-        let viewPainted = displayed("painted").map { E2E.isRed($0.at(px, py)) } ?? false
+        let painted = E2E.snapshotImageLayers(view, scale: scale, name: "\(name)-painted.png")
+        let paintedBackground = painted.map { isOpaqueWhite($0.at(backgroundX, backgroundY)) } ?? false
+        let viewPainted = painted.map {
+            let color = $0.at(px, py)
+            return E2E.isRed(color) && color.a == 1
+        } ?? false
         click(point)
         let selected = id != nil && view.doc.selectedID == id
         key(51, "\u{7f}")
         let deleted = view.doc.annotations.isEmpty && view.doc.selectedID == nil
         let exportRestored = exported()?.px == E2E.bitmap(image).px
         await E2E.wait(80)
-        let viewRestored = displayed("deleted").map {
-            let color = $0.at(px, py)
-            return color.r > 0.95 && color.g > 0.95 && color.b > 0.95
-        } ?? false
-        E2E.record(name, drawn && deselected && exportPainted && viewPainted && selected && deleted && exportRestored && viewRestored,
+        let restored = E2E.snapshotImageLayers(view, scale: scale, name: "\(name)-deleted.png")
+        let restoredBackground = restored.map { isOpaqueWhite($0.at(backgroundX, backgroundY)) } ?? false
+        let viewRestored = restored.map { isOpaqueWhite($0.at(px, py)) } ?? false
+        E2E.record(name, drawn && deselected && exportPainted && paintedBackground && viewPainted
+                   && selected && deleted && exportRestored && restoredBackground && viewRestored,
                    ["fixture": "solid-white", "nativeWindowEvents": true, "scale": scale,
+                    "previewObservation": "isolated image layers; physical compositor not proven",
                     "drawn": drawn, "deselectedBeforeClick": deselected, "exportPixelPainted": exportPainted,
+                    "paintedBackgroundOpaqueWhite": paintedBackground, "deletedBackgroundOpaqueWhite": restoredBackground,
                     "layerPixelPainted": viewPainted, "selectedByPaintedPixel": selected, "deletedByKey": deleted,
                     "exportRestored": exportRestored, "layerPixelRestored": viewRestored])
     }
