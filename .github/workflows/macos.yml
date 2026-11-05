@@ -63,6 +63,7 @@ jobs:
           swift test --sanitize=address --parallel 2>&1 | tee ../../core-asan.log
 
       - name: Build app (unsigned)
+        id: debug-build
         run: |
           set -o pipefail
           xcodebuild build \
@@ -95,6 +96,7 @@ jobs:
         run: scripts/e2e.sh
 
       - name: E2E across mixed-scale virtual displays
+        if: ${{ !cancelled() && steps.debug-build.outcome == 'success' }}
         timeout-minutes: 12
         run: scripts/e2e-multidisplay.sh
 

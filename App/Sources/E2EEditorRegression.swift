@@ -52,18 +52,24 @@ enum E2EEditorRegression {
         }
         let bar = surfaces[0].view.e2eToolbar
         var controlsFit = true
+        var transitions: [[String: Any]] = []
         let widths: [CGFloat] = [292, 412, 292, 412, 292]
         for maximum in widths {
-            bar.fit(maxWidth: maximum); bar.setFrameSize(bar.fittingSize); bar.layoutSubtreeIfNeeded()
-            let controls: [NSView] = [bar.e2eTools, bar.e2eMore, bar.e2eStyle, bar.e2eDone, bar.e2eCancel]
-            controlsFit = controlsFit && bar.frame.width <= maximum && controls.allSatisfy {
-                let rect = bar.convert($0.bounds, from: $0)
-                return !$0.isHiddenOrHasHiddenAncestor && rect.width > 0 && rect.height > 0 && bar.bounds.contains(rect)
-            }
+            bar.fit(maxWidth: maximum)
+            let fitted = bar.fittingSize
+            bar.setFrameSize(fitted); bar.layoutSubtreeIfNeeded()
+            let measured = toolbarGeometry(bar, maximum: maximum)
+            controlsFit = measured.ok && controlsFit
+            await E2E.wait(20)
+            surfaces[0].window.displayIfNeeded(); CATransaction.flush()
+            transitions.append(["maximumWidth": maximum, "requestedSize": NSStringFromSize(fitted),
+                                "immediate": measured.info, "settled": toolbarGeometry(bar, maximum: maximum).info])
         }
         surfaces[0].view.refresh()
-        E2E.record("editor-compact-toolbar-transitions-\(tag)", controlsFit && !bar.e2eDone.isEnabled && bar.e2eCancel.isEnabled,
-                   ["transitions": 4, "fixture": "two native windows on one display"])
+        let doneDisabled = !bar.e2eDone.isEnabled, cancelEnabled = bar.e2eCancel.isEnabled
+        E2E.record("editor-compact-toolbar-transitions-\(tag)", controlsFit && doneDisabled && cancelEnabled,
+                   ["transitions": transitions, "controlsFit": controlsFit, "doneDisabled": doneDisabled, "cancelEnabled": cancelEnabled,
+                    "fixture": "two native windows on one display"])
 
         let start = CGPoint(x: 460, y: 120)
         let points = mode == .rectangle ? [CGPoint(x: 140, y: 240)]
@@ -75,21 +81,35 @@ enum E2EEditorRegression {
         send(.leftMouseDown, start)
         for point in points { send(.leftMouseDragged, point) }
         if mode == .rectangle {
-            E2E.record("editor-rectangle-drag-projections", session.selectionHole == crop && previewsMatch(surfaces, name: "rectangle-drag"))
+            let preview = previewsMatch(surfaces, name: "rectangle-drag")
+            E2E.record("editor-rectangle-drag-projections", session.selectionHole == crop && preview.ok,
+                       ["selectionHole": session.selectionHole.map(NSStringFromRect) ?? "nil", "expectedCrop": NSStringFromRect(crop),
+                        "cropMatches": session.selectionHole == crop, "preview": preview.info])
         } else {
-            E2E.record("editor-lasso-drag-points", session.lasso == [start] + points)
+            E2E.record("editor-lasso-drag-points", session.lasso == [start] + points,
+                       ["actual": session.lasso?.map { NSStringFromPoint($0) } ?? [], "expected": ([start] + points).map { NSStringFromPoint($0) }])
         }
         send(.leftMouseUp, points.last!)
         let flattened = Export.flatten(renderer: session.renderer, doc: session.doc, crop: crop, lasso: session.lasso)
+        var outputInfo: [String: Any] = ["available": flattened != nil]
         let outputMatches = flattened.map {
             let pixels = E2E.bitmap($0), left = pixels.at(50, 60), right = pixels.at(250, 60)
+            outputInfo["size"] = [pixels.w, pixels.h]; outputInfo["expectedSize"] = [320, 120]
+            outputInfo["leftRGBA"] = rgba(left); outputInfo["rightRGBA"] = rgba(right)
             return pixels.w == 320 && pixels.h == 120 && left.r > 0.98 && left.b < 0.02 && left.a > 0.98
                 && right.b > 0.98 && right.r < 0.02 && right.a > 0.98
         } ?? false
-        E2E.record("editor-\(tag)-selection-projections", session.phase == .editing && session.doc.state.crop == crop
-                   && surfaces.allSatisfy { $0.view.e2eSizeLabel == "320 × 120" }
-                   && previewsMatch(surfaces, name: tag) && outputMatches)
-        E2E.snapshotNativeView(surfaces[0].view, name: "editor-\(tag)-compact-toolbar")
+        let preview = previewsMatch(surfaces, name: tag)
+        let phaseMatches = session.phase == .editing, cropMatches = session.doc.state.crop == crop
+        let labels = surfaces.map { $0.view.e2eSizeLabel }, labelsMatch = labels.allSatisfy { $0 == "320 × 120" }
+        E2E.record("editor-\(tag)-selection-projections", phaseMatches && cropMatches && labelsMatch && preview.ok && outputMatches,
+                   ["phaseMatches": phaseMatches, "phase": String(describing: session.phase), "cropMatches": cropMatches,
+                    "crop": session.doc.state.crop.map(NSStringFromRect) ?? "nil", "expectedCrop": NSStringFromRect(crop),
+                    "labelsMatch": labelsMatch, "labels": labels, "preview": preview.info,
+                    "outputMatches": outputMatches, "output": outputInfo])
+        let native = await E2E.snapshotNativeWindow(surfaces[0].window, name: "editor-\(tag)-compact-toolbar")
+        let nativeCheck = native.map { projection($0, index: 0) }
+        E2E.record("editor-\(tag)-native-projection", nativeCheck?.ok == true, nativeCheck?.info ?? ["error": "no native window image"])
         let posted = E2E.postClick(mode == .rectangle ? bar.e2eCancel : bar.e2eDone)
         let completed = await E2E.until { !outcomes.isEmpty }
         let expectedOutcome = outcomes.first.map {
@@ -101,24 +121,54 @@ enum E2EEditorRegression {
             case .pickedWindow: return false
             }
         } ?? false
-        E2E.record("editor-compact-mouse-\(mode == .rectangle ? "cancel" : "done")", posted && completed && outcomes.count == 1 && expectedOutcome)
+        E2E.record("editor-compact-mouse-\(mode == .rectangle ? "cancel" : "done")", posted && completed && outcomes.count == 1 && expectedOutcome,
+                   ["posted": posted, "completed": completed, "outcomes": outcomes.count, "expectedOutcome": expectedOutcome])
     }
 
-    private static func previewsMatch(_ surfaces: [Surface], name: String) -> Bool {
-        var valid = true
-        for (index, surface) in surfaces.enumerated() {
-            surface.window.displayIfNeeded(); CATransaction.flush()
-            guard let context = Imaging.context(width: Int(size.width), height: Int(size.height), flipped: true),
-                  let layer = surface.view.layer else { return false }
-            layer.render(in: context)
-            guard let image = context.makeImage() else { return false }
-            E2EOrientation.writePNG(image, "editor-\(name)-projection-\(index).png")
-            let pixels = E2E.bitmap(image)
-            let inside = pixels.at(index == 0 ? 200 : 100, 180), outside = pixels.at(index == 0 ? 200 : 100, 280)
-            let bright = index == 0 ? inside.r : inside.b, dim = index == 0 ? outside.r : outside.b
-            valid = valid && bright > 0.95 && dim > 0.60 && dim < 0.70
+    private static func toolbarGeometry(_ bar: ToolbarView, maximum: CGFloat) -> (ok: Bool, info: [String: Any]) {
+        let controls: [(String, NSControl)] = [("Tool", bar.e2eTools), ("More", bar.e2eMore), ("Style", bar.e2eStyle),
+                                              ("Done", bar.e2eDone), ("Cancel", bar.e2eCancel)]
+        var valid = bar.frame.width <= maximum
+        let geometry: [[String: Any]] = controls.map { name, control in
+            let rect = bar.convert(control.bounds, from: control), visible = !control.isHiddenOrHasHiddenAncestor
+            let contained = bar.bounds.contains(rect), nonempty = rect.width > 0 && rect.height > 0
+            let center = CGPoint(x: rect.midX, y: rect.midY)
+            let hit = bar.hitTest(bar.convert(center, to: bar.superview))
+            let hitsControl = hit.map { $0 === control || $0.isDescendant(of: control) } ?? false
+            valid = visible && contained && nonempty && valid
+            return ["name": name, "frameInToolbar": NSStringFromRect(rect), "visibleRect": NSStringFromRect(control.visibleRect),
+                    "visible": visible, "contained": contained, "nonempty": nonempty, "enabled": control.isEnabled,
+                    "hitPointInToolbar": NSStringFromPoint(center), "hitsControl": hitsControl,
+                    "hitView": hit.map { String(describing: type(of: $0)) } ?? "nil"]
         }
-        return valid
+        return (valid, ["fits": valid, "frame": NSStringFromRect(bar.frame), "bounds": NSStringFromRect(bar.bounds),
+                        "fittingSize": NSStringFromSize(bar.fittingSize), "visibleRect": NSStringFromRect(bar.visibleRect), "controls": geometry])
+    }
+
+    private static func rgba(_ pixel: E2EOrientation.C) -> [Double] { [pixel.r, pixel.g, pixel.b, pixel.a] }
+
+    private static func projection(_ pixels: E2E.Bitmap, index: Int) -> (ok: Bool, info: [String: Any]) {
+        let x = Int(CGFloat(index == 0 ? 200 : 100) * CGFloat(pixels.w) / size.width)
+        let inside = pixels.at(x, Int(180 * CGFloat(pixels.h) / size.height))
+        let outside = pixels.at(x, Int(280 * CGFloat(pixels.h) / size.height))
+        let bright = index == 0 ? inside.r : inside.b, dim = index == 0 ? outside.r : outside.b
+        let brightMatches = bright > 0.95, dimMatches = dim > 0.60 && dim < 0.70
+        return (brightMatches && dimMatches, ["index": index, "size": [pixels.w, pixels.h],
+                                              "insideRGBA": rgba(inside), "outsideRGBA": rgba(outside),
+                                              "brightMatches": brightMatches, "dimMatches": dimMatches])
+    }
+
+    private static func previewsMatch(_ surfaces: [Surface], name: String) -> (ok: Bool, info: [String: Any]) {
+        var valid = true
+        var samples: [[String: Any]] = []
+        for (index, surface) in surfaces.enumerated() {
+            guard let pixels = E2E.snapshotImageLayers(surface.view, scale: 1, name: "editor-\(name)-projection-\(index).png", includeChrome: true) else {
+                valid = false; samples.append(["index": index, "error": "no isolated layer image"]); continue
+            }
+            let result = projection(pixels, index: index)
+            samples.append(result.info); valid = result.ok && valid
+        }
+        return (valid, ["matches": valid, "source": "isolated image and chrome layers", "surfaces": samples])
     }
 }
 #endif

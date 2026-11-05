@@ -201,7 +201,7 @@ enum E2EMultiDisplay {
         let selected = command("Rectangle", menu: bar.e2eTools)
         bar.layoutSubtreeIfNeeded()
         E2E.record("multidisplay-toolbar-bounds-\(tag)", controlsFit(bar) && view.bounds.contains(bar.frame))
-        E2E.snapshotNativeView(view, name: "multidisplay-full-ui-\(tag)")
+        await E2E.snapshotNativeWindow(surface.window, name: "multidisplay-full-ui-\(tag)")
         E2E.snapshotNativeView(bar, name: "multidisplay-toolbar-\(tag)")
         let posted = E2E.postClick(bar.e2eStyle)
         let shown = await E2E.until {

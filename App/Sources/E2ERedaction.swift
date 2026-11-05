@@ -1,6 +1,5 @@
 #if SHAREX_E2E
 import AppKit
-@preconcurrency import ScreenCaptureKit
 import ShareXCore
 
 @MainActor
@@ -53,17 +52,8 @@ enum E2ERedaction {
     }
 
     private static func windowSnapshot(_ window: NSWindow, name: String) async -> E2E.Bitmap? {
-        window.displayIfNeeded(); CATransaction.flush()
-        await E2E.wait(40)
         do {
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-            guard let target = content.windows.first(where: { $0.windowID == CGWindowID(window.windowNumber) }) else { return nil }
-            let config = SCStreamConfiguration()
-            config.width = Int(size.width * window.backingScaleFactor)
-            config.height = Int(size.height * window.backingScaleFactor)
-            config.showsCursor = false; config.ignoreShadowsSingleWindow = true
-            config.colorSpaceName = CGColorSpace.sRGB
-            let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: target), configuration: config)
+            let image = try await E2E.windowImage(window)
             E2EOrientation.writePNG(image, name)
             return E2E.bitmap(image)
         } catch {
