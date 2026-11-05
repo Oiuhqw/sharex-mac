@@ -347,6 +347,7 @@ enum E2E {
 
         if args.contains("--perf") {
             await E2EResources.run()
+            await E2EEditorRegression.run()
             await E2EPerf.run()
             return
         }
@@ -460,6 +461,7 @@ enum E2E {
 
         await combined()
         await E2EOrientation.run()
+        await E2EEditorRegression.run()
         await E2ELoupe.run()
         await E2EResize.run()
         await copyPaths()

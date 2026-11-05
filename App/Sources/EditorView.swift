@@ -150,17 +150,17 @@ final class EditorView: NSView {
         var state = ChromeView.State()
         switch phase {
         case .selecting(let mode):
-            let hole = session.selectionHole.map(local)
+            let hole = session.selectionHole.map { self.local($0) }
             state.dimEverything = true; state.dimHole = hole.map { CGPath(rect: $0, transform: nil) }
             if let hole { state.outline = hole; state.sizeLabel = (hole, sizeText(session.selectionHole!)) }
-            if mode == .lasso { state.lasso = lasso?.map(local) }
+            if mode == .lasso { state.lasso = lasso?.map { self.local($0) } }
             if mode == .rectangle || mode == .lasso, let mouse = session.mouse, viewport.contains(mouse) {
                 state.crosshair = local(mouse); setMagnifier(mouse, state: &state)
             }
         case .editing:
             let crop = doc.state.crop ?? bounds0, localCrop = local(crop)
             let hole = CGMutablePath()
-            if let points = lasso { hole.addLines(between: points.map(local)); hole.closeSubpath() } else { hole.addRect(localCrop) }
+            if let points = lasso { hole.addLines(between: points.map { self.local($0) }); hole.closeSubpath() } else { hole.addRect(localCrop) }
             state.dimEverything = true; state.dimHole = hole; state.outline = localCrop
             if doc.tool == .crop { state.cropHandles = localCrop }
             if let selected = doc.selected { state.selection = local(selected.bounds) }

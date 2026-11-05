@@ -83,9 +83,10 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
     func fit(maxWidth: CGFloat) {
         let narrow = maxWidth < 355
         if narrow != compact {
-            compact = narrow
-            actions.removeFromSuperview(); row.removeArrangedSubview(actions); stack.removeArrangedSubview(actions)
+            let owner = compact ? stack : row
+            owner.removeArrangedSubview(actions); actions.removeFromSuperview()
             if narrow { stack.insertArrangedSubview(actions, at: 1) } else { row.addArrangedSubview(actions) }
+            compact = narrow
         }
         statusLabel.preferredMaxLayoutWidth = max(160, min(300, maxWidth - 20))
     }
@@ -159,6 +160,7 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
     @objc private func cancel() { editor.cancel() }
     #if SHAREX_E2E
     var e2eDone: NSButton { doneButton }
+    var e2eCancel: NSButton { cancelButton }
     var e2eTools: NSPopUpButton { toolMenu }
     var e2eMore: NSPopUpButton { moreMenu }
     var e2eStyle: NSButton { styleButton }

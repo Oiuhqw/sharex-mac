@@ -28,7 +28,6 @@ enum E2EPerf {
         let w = OverlayWindow(contentRect: CGRect(origin: CGPoint(x: 0, y: 0), size: ptSize), styleMask: .borderless, backing: .buffered, defer: false)
         w.isReleasedWhenClosed = false; w.acceptsMouseMovedEvents = true
         w.contentView = view
-        NSLog("E2E TRACE perf window attached")
         w.orderFrontRegardless(); w.makeKey(); w.makeFirstResponder(view)
         return w
     }
@@ -110,9 +109,7 @@ enum E2EPerf {
                 let t0 = Perf.now()
                 let v = EditorView(frame: CGRect(origin: .zero, size: ptSize), renderer: Renderer(frame: img, scale: sc), mode: .rectangle,
                                    initialCrop: nil, styles: [:], showMagnifier: true, pickRects: [], finishOnPick: false)
-                NSLog("E2E TRACE perf editor ready %d", index)
                 let w = window(for: v)
-                NSLog("E2E TRACE perf window shown %d", index)
                 defer { close(v, w) }
                 w.displayIfNeeded(); CATransaction.flush()
                 return Perf.now() - t0
