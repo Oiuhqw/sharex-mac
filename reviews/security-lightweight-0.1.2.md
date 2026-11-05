@@ -29,7 +29,7 @@ Blur and pixelation obscure content; they do not guarantee that sensitive text i
 
 ## Post-audit correctness review
 
-The full source audit stays pinned to `e8f9596`. Follow-up source review covers later changes separately.
+The full source audit stays pinned to `e8f9596`. The [independent follow-up](security-audit-2026-11-05/FOLLOW-UP.md) checks 11 changed source, test, and script paths at `acfa92f`, with ten source checks mapped to 20 existing coverage IDs. It found no qualifying security candidate or source blocker.
 
 - Last Region now requires its saved display ID. If that display is absent, capture requests a new region selection. The focused native run [42020909475](https://github.com/Oiuhqw/sharex-mac/actions/runs/42020909475) passed 418 E2E checks with no failures and six unverifiable checks.
 - Shortcut registration checks the eight owned preferences before the dependency reads them. Encoded values have a 1 KiB limit and must fit native integer widths. Valid custom strings, disabled assignments, and unrelated preferences remain unchanged.
@@ -37,7 +37,7 @@ The full source audit stays pinned to `e8f9596`. Follow-up source review covers 
 - Final independent review found that a flat ellipse with a thick outline could paint pixels outside its selectable area. Hit testing now uses a portable edge-distance calculation with a bounding-box rejection and at most 64 bisections. Ten core tests and two native pixel, selection, and deletion scenarios cover the correction. This path runs on clicks, not pointer-only hover.
 - The test driver retries only failed Accessibility reads within its original three-second operation deadline. It does not repeat actions or relax final-state checks. The earlier failure came from two read errors before mutations. The cause of the macOS messaging delay is unproven. Apple documents these messaging failures in [AXUIElement.h](https://developer.apple.com/documentation/applicationservices/axuielement_h).
 
-The integrated native result is recorded after the final fix and review. The historical measurements below remain tied to their stated revisions.
+The first integrated `acfa92f` runs passed all 63 shortcut recovery checks on both architectures. Normal E2E recorded 418 passes, two failures in the new ellipse snapshot checks, and six unverifiable checks. Selection, deletion, and restored export passed. The snapshot omitted the frame background, leaving transparent pixels where the test expected white. The failures remain recorded. A separately reviewed test-only correction now shares one isolated-layer compositor across the privacy, redaction, and ellipse suites. It removes both old helpers and requires opaque background pixels before checking ellipse deletion. This models separate layer backing bitmaps as described in Apple's [Core Animation guide](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/CoreAnimation_guide/SettingUpLayerObjects/SettingUpLayerObjects.html); it does not prove physical compositor behavior. Fresh integrated native runs remain required. The historical measurements below remain tied to their stated revisions.
 
 ## Settings and dependencies
 
