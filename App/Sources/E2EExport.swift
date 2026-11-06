@@ -131,7 +131,6 @@ enum E2EExport {
         E2E.coord.capture(.region)
         if await E2E.until({ E2E.surface() != nil }) {
             E2E.drag(CGPoint(x: 120, y: 120), CGPoint(x: 320, y: 280))
-            E2E.ret()
         }
         let idle = await E2E.until({ !E2E.coord.busy })
         E2E.record("export-coordinator-partial-failure", idle && files(target).count == 1

@@ -173,46 +173,62 @@ enum E2EMultiDisplay {
             let p = CGPoint(x: a.view.viewport.midX - 100, y: a.view.viewport.midY - 70)
             let q = CGPoint(x: b.view.viewport.midX + 100, y: b.view.viewport.midY + 70)
             let toolbarFrames = rig.surfaces.map { $0.view.e2eToolbar.frame }
-            drag(p, q, from: a)
             let crop = Geometry.rect(from: p, to: q), tag = reversed ? "reverse" : "forward"
-            E2E.record("multidisplay-selection-\(tag)", rig.session.doc.state.crop == crop
-                       && rig.surfaces.allSatisfy { $0.view.phase == .editing && !$0.window.ignoresMouseEvents }
-                       && a.view.session === b.view.session && a.view.renderer === b.view.renderer)
             let chosen = command("Rectangle", menu: b.view.e2eToolbar.e2eTools)
             b.view.changeStyle { $0.filled = true; $0.color = .blue }
             let before = rig.session.doc.history.undoStates.count
             drag(q, p, from: b)
             E2E.record("multidisplay-annotation-one-transaction-\(tag)", chosen && rig.session.doc.annotations.count == 1
+                       && rig.session.phase == .annotating && rig.session.doc.state.crop == nil && rig.outcomes.isEmpty
                        && rig.session.doc.history.undoStates.count == before + 1
                        && rig.session.doc.annotations.first?.rect == crop)
+            E2E.record("multidisplay-annotation-capture-controls-\(tag)", rig.surfaces.allSatisfy {
+                let bar = $0.view.e2eToolbar
+                return bar.e2eDone.isHidden && !bar.e2eDone.isEnabled
+                    && bar.e2eTools.menu?.items.first(where: { $0.title == "Window" })?.isEnabled == false
+                    && bar.e2eTools.menu?.items.contains(where: { $0.title == "Crop" }) == false
+            })
             let undo = command("Undo", menu: a.view.e2eToolbar.e2eMore)
             let empty = rig.session.doc.annotations.isEmpty
             let redo = command("Redo", menu: b.view.e2eToolbar.e2eMore)
             E2E.record("multidisplay-shared-undo-\(tag)", undo && redo && empty && rig.session.doc.annotations.count == 1)
+            let region = command("Region", menu: a.view.e2eToolbar.e2eTools)
+            event(.leftMouseDown, p, from: a); event(.leftMouseDragged, q, from: a)
+            E2E.record("multidisplay-selection-\(tag)", region && rig.session.selectionHole == crop
+                       && rig.session.doc.annotations.count == 1 && rig.outcomes.isEmpty
+                       && rig.surfaces.allSatisfy { $0.view.phase == .selecting(.rectangle) && !$0.window.ignoresMouseEvents }
+                       && a.view.session === b.view.session && a.view.renderer === b.view.renderer)
             let preview = await previewMatches(rig, crop: crop, name: "seam-\(tag)")
             E2E.record("multidisplay-seam-preview-\(tag)", preview.ok, preview.info)
             E2E.record("multidisplay-toolbar-stays-top-\(tag)", toolbarFrames == rig.surfaces.map { $0.view.e2eToolbar.frame }
                        && rig.surfaces.allSatisfy { $0.view.e2eToolbar.frame.minY == $0.view.safeTop })
-            let posted = E2E.postClick(b.view.e2eToolbar.e2eDone)
-            let mouseFinished = await E2E.until { !rig.outcomes.isEmpty }
-            E2E.record("multidisplay-mouse-done-once-\(tag)", posted && mouseFinished && rig.outcomes.count == 1 && rig.result != nil
+            let expected = Export.flatten(renderer: rig.session.renderer, doc: rig.session.doc, crop: crop, lasso: nil).map(E2E.bitmap)
+            event(.leftMouseUp, q, from: a)
+            E2E.record("multidisplay-mouse-release-once-\(tag)", rig.session.phase == .ended && rig.outcomes.count == 1 && rig.result != nil
                        && !a.window.isVisible && !b.window.isVisible)
-            if mouseFinished, rig.result != nil {
-                a.view.finish(); b.view.cancel()
-                E2E.record("multidisplay-terminal-commands-once-\(tag)", rig.outcomes.count == 1)
-            }
+            event(.leftMouseUp, q, from: a); a.view.finish(); b.view.cancel()
+            E2E.record("multidisplay-terminal-commands-once-\(tag)", rig.outcomes.count == 1)
             if let result = rig.result {
+                let mark = E2E.markClipboard()
                 let copied = Export.copyToClipboard(result.image, scale: result.scale)
-                let png = NSPasteboard.general.data(forType: .png).flatMap(E2E.decode)
                 let saved = Export.savePNG(result.image, scale: result.scale, folder: E2E.saved.path)
-                E2E.record("multidisplay-output-\(tag)", copied && saved != nil && png.map { E2E.bitmap($0).px == E2E.bitmap(result.image).px } == true
-                           && result.lastRegion?.resolve(layout: a.view.renderer.source.layout!) == crop)
+                if let clip = E2E.checkClipboard("multidisplay-output-\(tag)", since: mark, w: result.image.width, h: result.image.height) {
+                    E2E.record("multidisplay-output-\(tag)", copied && saved != nil && clip.ok
+                               && expected?.px == E2E.bitmap(result.image).px && clip.png.px == E2E.bitmap(result.image).px
+                               && result.lastRegion?.resolve(layout: a.view.renderer.source.layout!) == crop, clip.info)
+                }
             }
             rig.cancel()
+            let fullscreen = Rig(frozen, fullscreen: true), panels = fullscreen.surfaces
+            let posted = E2E.postClick(panels[reversed ? 0 : 1].view.e2eToolbar.e2eDone)
+            let mouseFinished = await E2E.until { !fullscreen.outcomes.isEmpty }
+            E2E.record("multidisplay-mouse-done-once-\(tag)", posted && mouseFinished && fullscreen.outcomes.count == 1
+                       && fullscreen.result != nil && panels.allSatisfy { !$0.window.isVisible })
+            fullscreen.cancel()
         }
         await effects(frozen)
         await textAndToolbar(frozen)
-        sparseAndScale()
+        await sparseAndScale()
         await coordinatorFullscreen()
         await E2ELastRegion.run()
         E2E.record("multidisplay-separate-spaces-physical-input", false,
@@ -221,13 +237,15 @@ enum E2EMultiDisplay {
 
     private static func effects(_ frozen: [FrozenScreen]) async {
         for kind in [ShapeKind.blur, .pixelate, .highlighter, .spotlight] {
-            let rig = Rig(frozen, fullscreen: true), surfaces = rig.surfaces
+            let rig = Rig(frozen), surfaces = rig.surfaces
             guard surfaces.count == 2 else { rig.cancel(); continue }
             let a = surfaces[0], b = surfaces[1]
             let p = CGPoint(x: a.view.viewport.midX - 60, y: a.view.viewport.midY - 60)
             let q = CGPoint(x: b.view.viewport.midX + 60, y: b.view.viewport.midY + 60)
             a.view.setTool(.shape(kind)); drag(p, q, from: a)
             let crop = Geometry.rect(from: p, to: q)
+            E2E.record("multidisplay-effect-before-selection-\(kind.rawValue)", rig.session.phase == .annotating
+                       && rig.session.doc.state.crop == nil && rig.session.doc.annotations.count == 1 && rig.outcomes.isEmpty)
             let preview = await previewMatches(rig, crop: crop, name: "effect-\(kind.rawValue)")
             E2E.record("multidisplay-effect-preview-\(kind.rawValue)", preview.ok, preview.info)
             if kind == .blur || kind == .pixelate {
@@ -238,6 +256,12 @@ enum E2EMultiDisplay {
                 let failure = await previewMatches(rig, crop: crop, name: "failure-\(kind.rawValue)")
                 E2E.record("multidisplay-effect-failure-opaque-\(kind.rawValue)", opaque && failure.ok, failure.info)
             }
+            let expected = Export.flatten(renderer: a.view.renderer, doc: a.view.doc, crop: crop, lasso: nil).map(E2E.bitmap)
+            let region = command("Region", menu: b.view.e2eToolbar.e2eTools)
+            drag(q, p, from: b)
+            E2E.record("multidisplay-effect-release-\(kind.rawValue)", region && rig.session.phase == .ended
+                       && rig.outcomes.count == 1 && rig.result.map { E2E.bitmap($0.image).px == expected?.px } == true
+                       && surfaces.allSatisfy { !$0.window.isVisible })
             rig.cancel()
         }
     }
@@ -265,14 +289,18 @@ enum E2EMultiDisplay {
         let bar = a.view.e2eToolbar
         bar.fit(maxWidth: 280); bar.setFrameSize(bar.fittingSize); bar.layoutSubtreeIfNeeded()
         E2E.record("multidisplay-narrow-toolbar-done-visible", bar.bounds.width <= 280 && controlsFit(bar)
-                   && !bar.e2eDone.isHidden && bar.e2eTools.menu!.items.count == 14)
+                   && !bar.e2eDone.isHidden && ["Select", "Crop", "Rectangle", "Ellipse", "Line", "Arrow", "Highlighter", "Blur",
+                                               "Pixelate", "Spotlight", "Pen", "Text", "Step marker"].allSatisfy { title in
+                       bar.e2eTools.menu?.items.contains { $0.title == title } == true
+                   })
         E2E.snapshotNativeView(bar, name: "multidisplay-toolbar-narrow")
         rig.cancel()
         let selection = Rig(frozen), chooser = selection.surfaces[0].view.e2eToolbar.e2eTools
         let modes = ["Region", "Freehand", "Window", "Monitor", "Full Desktop"]
         E2E.record("multidisplay-selection-mouse-modes", modes.allSatisfy { title in chooser.menu?.items.contains { $0.title == title } == true })
         _ = command("Full Desktop", menu: chooser)
-        E2E.record("multidisplay-full-desktop-by-mouse", selection.session.doc.state.crop == selection.session.bounds0)
+        E2E.record("multidisplay-full-desktop-by-mouse", selection.session.phase == .ended && selection.outcomes.count == 1
+                   && selection.result?.crop == selection.session.bounds0)
         selection.cancel()
         await E2E.wait(20)
     }
@@ -353,15 +381,57 @@ enum E2EMultiDisplay {
         E2E.record("multidisplay-style-restores-responder-\(tag)", restored)
     }
 
-    private static func sparseAndScale() {
+    private static func sparseAndScale() async {
         guard let one = E2E.checker(800, 600), let two = E2E.checker(1600, 1200),
               let layout = DesktopLayout(displays: [.init(id: 1, frame: CGRect(x: 0, y: 0, width: 800, height: 600), scale: 1),
                                                    .init(id: 2, frame: CGRect(x: 100_000, y: 0, width: 800, height: 600), scale: 2)]),
               let source = DesktopImageSource(layout: layout, images: [one, two]) else { E2E.record("multidisplay-sparse-source", false); return }
         let renderer = Renderer(source: source, scale: 2)
-        let session = EditorSession(renderer: renderer, mode: .rectangle, initialCrop: source.bounds, styles: [:], pickRects: [], finishOnPick: false)
-        E2E.record("multidisplay-oversized-editable-feedback", session.phase == .editing && !session.canFinish && session.status?.contains("Use Crop") == true
+        let session = EditorSession(renderer: renderer, mode: .rectangle, initialCrop: nil, styles: [:], pickRects: [], finishOnPick: false)
+        let view = EditorView(frame: CGRect(x: 0, y: 0, width: 800, height: 600), session: session,
+                              viewport: source.tiles[0].rect, image: one, showMagnifier: false)
+        let window = OverlayWindow(contentRect: CGRect(origin: E2E.screen.frame.origin, size: view.bounds.size),
+                                   styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = view; window.orderFrontRegardless()
+        let surface: Surface = (window, view)
+        var outcomes: [EditorOutcome] = []
+        session.completion = { outcomes.append($0); window.orderOut(nil) }
+        defer {
+            session.cancel(); view.releaseResources(); window.orderOut(nil)
+            window.contentView = nil; window.close()
+        }
+        view.setTool(.shape(.pixelate))
+        drag(CGPoint(x: 120, y: 330), CGPoint(x: 220, y: 390), from: surface)
+        let annotation = session.doc.annotations.first, history = session.doc.history.undoStates.count
+        session.chooseSelection(.rectangle)
+        drag(CGPoint(x: 50, y: 150), CGPoint(x: 100_750, y: 550), from: surface)
+        E2E.record("multidisplay-oversized-editable-feedback", session.phase == .editing && !session.canFinish
+                   && session.status?.contains("Use Crop") == true && outcomes.isEmpty && annotation != nil
+                   && session.doc.annotations.first == annotation && session.doc.history.undoStates.count == history
                    && Export.flatten(renderer: renderer, doc: session.doc, crop: source.bounds, lasso: nil) == nil)
+        session.undo()
+        let uncropped = session.phase == .annotating && session.doc.state.crop == nil && session.doc.annotations.isEmpty
+        session.redo()
+        E2E.record("multidisplay-oversized-undo-redo", uncropped && session.phase == .editing && !session.canFinish
+                   && session.doc.annotations.first == annotation && outcomes.isEmpty)
+        view.setTool(.crop)
+        let recovered = CGRect(x: 100, y: 300, width: 200, height: 120)
+        drag(recovered.origin, CGPoint(x: recovered.maxX, y: recovered.maxY), from: surface)
+        let retryReady = session.phase == .editing && session.canFinish && session.doc.state.crop == recovered
+            && session.doc.annotations.first == annotation && outcomes.isEmpty
+        let expected = Export.flatten(renderer: renderer, doc: session.doc, crop: recovered, lasso: nil).map(E2E.bitmap)
+        let posted = E2E.postClick(view.e2eToolbar.e2eDone)
+        let finished = await E2E.until { !outcomes.isEmpty }
+        let delivered = outcomes.first.map { outcome in
+            if case .finished(let result) = outcome {
+                return result.crop == recovered && result.image.width == 200 && result.image.height == 120
+                    && E2E.bitmap(result.image).px == expected?.px
+            }
+            return false
+        } ?? false
+        session.finish(); session.cancel()
+        E2E.record("multidisplay-oversized-crop-done-recovery", retryReady && posted && finished && delivered
+                   && session.phase == .ended && outcomes.count == 1 && !window.isVisible)
         let crop = CGRect(x: 50, y: 50, width: 200, height: 120)
         renderer.setScale(for: crop)
         let small = Export.flatten(renderer: renderer, doc: EditorDocument(), crop: crop, lasso: nil)
@@ -407,12 +477,15 @@ enum E2EMultiDisplay {
             let a = participating[0], b = participating[1]
             let p = CGPoint(x: a.view.viewport.midX - 80, y: a.view.viewport.midY - 50)
             let q = CGPoint(x: b.view.viewport.midX + 80, y: b.view.viewport.midY + 50)
-            drag(p, q, from: a)
-            let area = a.view.doc.state.crop.flatMap(a.view.renderer.pixelArea)
-            b.view.e2eToolbar.e2eDone.performClick(nil)
+            a.view.setTool(.shape(.pixelate)); drag(p, q, from: a)
+            let region = command("Region", menu: b.view.e2eToolbar.e2eTools)
+            let crop = Geometry.rect(from: p, to: q)
+            drag(q, p, from: b)
+            let area = a.view.renderer.pixelArea(crop)
             let delivered = await E2E.until(15_000) { !E2E.coord.busy }
             if let area, let clip = E2E.checkClipboard("multidisplay-coordinator-delivery", since: clipboard, w: area.w, h: area.h) {
-                E2E.record("multidisplay-coordinator-delivery", delivered && clip.ok
+                E2E.record("multidisplay-coordinator-delivery", region && delivered && clip.ok
+                           && a.view.phase == .ended && all.allSatisfy { !$0.window.isVisible }
                            && (E2E.app.settings.value.lastRegion?.participants?.count ?? 0) >= 2, clip.info)
             } else { E2E.record("multidisplay-coordinator-delivery", false) }
         } else { E2E.record("multidisplay-coordinator-region", false) }

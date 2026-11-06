@@ -62,8 +62,6 @@ enum E2EKeyboard {
         let m2 = E2E.markClipboard()
         o = await open()
         guard o.ok, let s = E2E.surface() else { E2E.record("keyboard-text-enter-other-app-front", false, ["error": "no overlay"]); return }
-        E2E.drag(CGPoint(x: E2E.C.minX, y: E2E.C.minY), CGPoint(x: E2E.C.maxX, y: E2E.C.maxY))
-        await E2E.wait(150)
         await post(15)                                            // R
         let rect = s.view.tool == .shape(.rectangle)
         await post(17)                                            // T
@@ -74,7 +72,8 @@ enum E2EKeyboard {
         await E2E.wait(150)
         let text = s.view.doc.annotations.first { $0.kind == .text }?.text ?? "<none>"
         let before = state()
-        await post(36)                                            // Return finishes the capture
+        await post(48)                                            // Tab returns to final Region selection
+        E2E.drag(E2E.C.origin, CGPoint(x: E2E.C.maxX, y: E2E.C.maxY))
         let finished = await E2E.until(3000) { !E2E.coord.busy }
         if !finished { E2E.esc(); _ = await E2E.until({ !E2E.coord.busy }) }
         let clip = E2E.checkClipboard("keyboard-text-enter-other-app-front", since: m2, w: E2E.cw, h: E2E.ch)
@@ -96,7 +95,6 @@ enum E2EClipboardOrder {
         await E2E.wait(150)
         let frameCS = (s.view.renderer.source.colorSpace.name as String?) ?? "<unnamed>"
         E2E.drag(CGPoint(x: E2E.C.minX, y: E2E.C.minY), CGPoint(x: E2E.C.maxX, y: E2E.C.maxY))
-        E2E.ret()
         // Sample every main-loop turn; the first turn busy is false must already see the new pasteboard.
         var writtenWhenIdle: Bool?
         for _ in 0..<4000 {

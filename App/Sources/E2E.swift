@@ -284,15 +284,34 @@ enum E2E {
     static func px(_ p: CGFloat) -> Int { Int(p * scale) }
     static var baseline: Bitmap?
 
-    /// Region capture through the real overlay: select C, run `edit`, then Return (or a custom finish).
     static var copyWasKey = false, copyHandled = true
-    static func regionCapture(_ name: String, w: Int? = nil, h: Int? = nil, finish: () -> Void = { ret() },
-                              edit: () async -> Void) async -> Clip? {
+    static func regionCapture(_ name: String, crop: CGRect = C, edit: () async -> Void) async -> Clip? {
         let m = markClipboard()
         coord.capture(.region)
         guard await until({ surface() != nil }) else { record(name, false, ["error": "no overlay"]); return nil }
         await wait(150)
-        drag(CGPoint(x: C.minX, y: C.minY), CGPoint(x: C.maxX, y: C.maxY))
+        await edit()
+        let unchanged = NSPasteboard.general.changeCount == m.change && savedFiles() == m.files
+        record("\(name)-no-intermediate-output", unchanged && coord.busy && surface() != nil)
+        surface()?.view.session.chooseSelection(.rectangle)
+        drag(crop.origin, CGPoint(x: crop.maxX, y: crop.maxY))
+        guard await until({ !coord.busy }) else { record(name, false, ["error": "stuck busy"]); return nil }
+        return checkClipboard(name, since: m, w: px(crop.width), h: px(crop.height))
+    }
+
+    static func preparePreset() {
+        setOpts {
+            $0.lastRegion = LastRegion(displayID: ScreenCapture.displayID(of: screen), rect: C)
+            $0.options.openEditor = true
+        }
+    }
+
+    static func presetCapture(_ name: String, w: Int? = nil, h: Int? = nil, finish: () -> Void = { ret() },
+                              edit: () async -> Void) async -> Clip? {
+        preparePreset()
+        let m = markClipboard()
+        coord.capture(.lastRegion)
+        guard await until({ surface()?.view.phase == .editing }) else { record(name, false, ["error": "no preset editor"]); return nil }
         await edit()
         finish()
         guard await until({ !coord.busy }) else { record(name, false, ["error": "stuck busy"]); return nil }
@@ -368,7 +387,6 @@ enum E2E {
         let sel = CGPoint(x: 150, y: 150), sel2 = CGPoint(x: 300, y: 250)
         let o = { (p: CGPoint) in (px(p.x - C.minX), px(p.y - C.minY)) }   // display pt -> output px
 
-        // Each annotation tool, copied from the editor with Return.
         let tools: [(ShapeKind, String)] = [(.rectangle, "r"), (.ellipse, "e"), (.line, "l"), (.arrow, "a"), (.highlighter, "h"),
                                             (.blur, "b"), (.pixelate, "p"), (.spotlight, "s"), (.pen, "f"), (.text, "t"), (.step, "i")]
         for (k, ch) in tools {
@@ -460,6 +478,7 @@ enum E2E {
         }
 
         await combined()
+        await E2EAnnotateFirst.run()
         await E2EOrientation.run()
         await E2EEditorRegression.run()
         await E2ELoupe.run()
@@ -493,11 +512,10 @@ enum E2E {
         return Double(k) / Double(max(n, 1))
     }
 
-    /// Rectangle (styled blue/8 to test style persistence) + blur + arrow, undo/redo, then crop tool shrinks the output.
     static func combined() async {
         var counts: [Int] = []
         let crop2 = CGRect(x: 120, y: 120, width: 300, height: 200)
-        guard let c = await regionCapture("combined-rect-blur-arrow-crop-undo", w: px(300), h: px(200), edit: {
+        guard let c = await regionCapture("combined-rect-blur-arrow-crop-undo", crop: crop2, edit: {
             guard let v = surface()?.view else { return }
             key(0, "r"); v.changeStyle { $0.color = .blue; $0.width = 8 }
             drag(CGPoint(x: 140, y: 140), CGPoint(x: 260, y: 220))
@@ -507,7 +525,6 @@ enum E2E {
             key(6, "z", flags: .command); counts.append(v.doc.annotations.count)
             key(6, "z", flags: [.command, .shift]); counts.append(v.doc.annotations.count)
             v.undo(); v.redo(); counts.append(v.doc.annotations.count)
-            key(0, "c"); drag(CGPoint(x: crop2.minX, y: crop2.minY), CGPoint(x: crop2.maxX, y: crop2.maxY))
         }) else { return }
         let b = c.png
         // Rect left edge at display x=140 -> output (140-120)*s.
@@ -519,8 +536,8 @@ enum E2E {
 
     /// Copy from the editor by ⌘C key and by the Edit-menu copy: action, and repeated copies replace.
     static func copyPaths() async {
-        if let c = await regionCapture("copy-cmdC", finish: { key(8, "c", flags: .command) }, edit: {}) { record("copy-cmdC", c.ok, c.info) }
-        if let c = await regionCapture("copy-menu-action", finish: {
+        if let c = await presetCapture("copy-cmdC", finish: { key(8, "c", flags: .command) }, edit: {}) { record("copy-cmdC", c.ok, c.info) }
+        if let c = await presetCapture("copy-menu-action", finish: {
             // Edit > Copy goes through the key window's responder chain; on the runner ShareX may not be the
             // active app, so make the overlay key first (as a click on it would) and report whether it was.
             copyWasKey = surface()?.window.isKeyWindow ?? false
@@ -532,7 +549,7 @@ enum E2E {
         }, edit: {}) {
             record("copy-menu-action", c.ok, c.info.merging(["overlayWasKey": copyWasKey, "handled": copyHandled]) { $1 }) }
         else { key(53, "\u{1b}"); _ = await until({ !coord.busy }) }
-        if let c = await regionCapture("copy-double-click", finish: {
+        if let c = await presetCapture("copy-double-click", finish: {
             if let s = surface() { mouse(.leftMouseDown, CGPoint(x: 480, y: 380), in: s, clicks: 2); mouse(.leftMouseUp, CGPoint(x: 480, y: 380), in: s, clicks: 2) }
         }, edit: { key(0, "r") }) { record("copy-double-click", c.ok, c.info) }
         // Replace, not append: copy twice without clearing; one item, newest image.
@@ -540,7 +557,7 @@ enum E2E {
         let pb = NSPasteboard.general, before = pb.changeCount, files = savedFiles()
         coord.capture(.region)
         _ = await until({ surface() != nil }); await wait(100)
-        drag(CGPoint(x: 10, y: 10), CGPoint(x: 110, y: 60)); ret()
+        drag(CGPoint(x: 10, y: 10), CGPoint(x: 110, y: 60))
         _ = await until({ !coord.busy })
         let items = pb.pasteboardItems?.count ?? 0
         let size = pb.data(forType: .png).flatMap(decode).map { [$0.width, $0.height] } ?? []
@@ -621,7 +638,7 @@ enum E2E {
                 for i in 1...10 { tri.append(CGPoint(x: 100 + CGFloat(i) * 40, y: 100)) }
                 for i in 1...10 { tri.append(CGPoint(x: 500 - CGFloat(i) * 20, y: 100 + CGFloat(i) * 30)) }
                 drag(tri)
-                await wait(50); ret() }
+            }
             _ = await until({ !coord.busy })
             if let c = checkClipboard("freehand-lasso", since: m, w: cw, h: ch) {
                 // Sample a grid: points clearly inside the triangle must be opaque, points clearly outside transparent.
@@ -752,12 +769,11 @@ enum E2E {
         let (fw, fh) = full
         if let c = await autoCapture("countdown-completes", .fullscreen, w: fw, h: fh) { record("countdown-completes", c.ok, c.info) }
         setOpts { $0.options.delaySeconds = 0; $0.options.openEditor = true }
-        // Esc in selection, Esc in editing with marks, right-click in selection, close button on canvas editor.
         m = markClipboard(); coord.capture(.region); _ = await until({ surface() != nil }); esc(); _ = await until({ !coord.busy })
         unchanged("overlay-esc-selecting", m)
         m = markClipboard(); coord.capture(.region); _ = await until({ surface() != nil }); await wait(100)
-        drag(CGPoint(x: C.minX, y: C.minY), CGPoint(x: C.maxX, y: C.maxY)); key(0, "r"); drag(CGPoint(x: 150, y: 150), CGPoint(x: 200, y: 200)); esc()
-        _ = await until({ !coord.busy }); unchanged("overlay-esc-editing", m)
+        key(0, "r"); drag(CGPoint(x: 150, y: 150), CGPoint(x: 200, y: 200)); esc()
+        _ = await until({ !coord.busy }); unchanged("overlay-esc-annotating", m)
         m = markClipboard(); coord.capture(.fullscreen); _ = await until({ surface() != nil }); await wait(100)
         if let s = surface() { mouse(.rightMouseDown, CGPoint(x: 50, y: 50), in: s) }
         _ = await until({ !coord.busy }); unchanged("overlay-rightclick-fixed-cancels", m)

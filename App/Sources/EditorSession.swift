@@ -11,7 +11,7 @@ struct EditorResult {
 
 @MainActor
 final class EditorSession: NSObject, NSTextFieldDelegate {
-    enum Phase: Equatable { case selecting(SelectionMode), editing, ended }
+    enum Phase: Equatable { case selecting(SelectionMode), annotating, editing, ended }
     private enum Drag {
         case none, region(start: CGPoint), lasso, newShape(Int), move(Int, last: CGPoint)
         case resize(Int, Handle, start: CGPoint), cropNew(start: CGPoint), cropResize(Handle, original: CGRect, start: CGPoint)
@@ -39,6 +39,11 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
     var completion: ((EditorOutcome) -> Void)?
     private var failureMessage: String?
     var bounds0: CGRect { renderer.source.bounds }
+    var canChooseSelection: Bool {
+        switch phase { case .selecting, .annotating: return true; case .editing, .ended: return false }
+    }
+    var canPickWindow: Bool { canChooseSelection && doc.annotations.isEmpty && editingTextID == nil }
+    var canAnnotate: Bool { phase != .ended }
     var canFinish: Bool {
         guard phase == .editing, let crop = doc.state.crop, let area = renderer.pixelArea(crop) else { return false }
         return Imaging.allocationBytes(width: area.w, height: area.h) != nil
@@ -82,20 +87,35 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
         eachView { $0.refresh() }
     }
     func setTool(_ tool: Tool) {
-        guard phase != .ended else { return }
-        commitText(); doc.tool = tool
+        guard canAnnotate, gestureOwner == nil, tool != .crop || phase == .editing else { return }
+        commitText()
+        if canChooseSelection { phase = .annotating; hover = nil; lasso = nil }
+        doc.tool = tool
         if tool != .select { doc.selectedID = nil }
         restoreResponder(); refresh()
     }
     func chooseSelection(_ mode: SelectionMode) {
-        guard case .selecting = phase else { return }
-        commitText(); selectionMode = mode; phase = .selecting(mode)
+        guard canChooseSelection, gestureOwner == nil else { return }
+        commitText()
+        guard mode != .pickWindow || canPickWindow else { return }
+        selectionMode = mode; phase = .selecting(mode); doc.selectedID = nil
         hover = nil; lasso = nil
         restoreResponder(); refresh()
     }
-    func selectDesktop() { commitText(); enterEditing(crop: bounds0); refresh() }
-    func undo() { commitText(); doc.undo(); restoreResponder(); refresh() }
-    func redo() { commitText(); doc.redo(); restoreResponder(); refresh() }
+    func selectDesktop() {
+        guard canChooseSelection, gestureOwner == nil else { return }
+        commitText(); completeArea(bounds0)
+    }
+    func undo() {
+        commitText(); doc.undo()
+        if phase == .editing, doc.state.crop == nil { phase = .annotating; lasso = nil }
+        restoreResponder(); refresh()
+    }
+    func redo() {
+        commitText(); doc.redo()
+        if phase == .annotating, doc.state.crop != nil { phase = .editing }
+        restoreResponder(); refresh()
+    }
     func deleteSelection() { commitText(); doc.deleteSelected(); restoreResponder(); refresh() }
     var styleTarget: ShapeKind? {
         if let selected = doc.selected { return selected.kind }
@@ -125,7 +145,7 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
         guard phase != .ended else { return }
         phase = .ended
         textField?.delegate = nil; textField?.removeFromSuperview(); textField = nil; editingTextID = nil
-        gestureOwner = nil; drag = .none; liveID = nil
+        gestureOwner = nil; drag = .none; liveID = nil; renderer.liveEffectID = nil
         let callback = completion; completion = nil
         renderer.releaseTransientResources()
         callback?(outcome)
@@ -159,7 +179,7 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
         case .selecting(.rectangle): drag = .region(start: p)
         case .selecting(.lasso): lasso = [p]; drag = .lasso
         case .selecting: drag = .none
-        case .editing: editingMouseDown(p)
+        case .annotating, .editing: editingMouseDown(p)
         case .ended: return
         }
         refresh()
@@ -173,29 +193,37 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
     func pointerUp(_ point: CGPoint, shift: Bool, from view: EditorView) {
         guard gestureOwner === view else { return }
         let p = clamped(point); renderer.fastLivePreview = false
+        if case .region(let start) = drag, p != start { dragMoved = true }
+        if case .lasso = drag, lasso?.last != p { dragMoved = true }
         if dragMoved { updateDrag(to: p, constrain: shift) }
         mouse = p
-        switch (phase, drag) {
+        let completedDrag = drag
+        gestureOwner = nil; drag = .none; liveID = nil; renderer.liveEffectID = nil
+        switch (phase, completedDrag) {
         case (.selecting, .region(let start)):
-            if let r = dragMoved ? Geometry.rect(from: start, to: p) : pickTarget(at: p) { enterEditing(crop: r) }
+            if let r = dragMoved ? Geometry.rect(from: start, to: p) : pickTarget(at: p) { completeArea(r) }
         case (.selecting, .lasso):
-            if let points = lasso, points.count >= 3 { enterEditing(crop: Geometry.bounds(of: points)) }
+            if let points = lasso, points.count >= 3,
+               points.dropFirst(2).contains(where: {
+                   (points[1].x - points[0].x) * ($0.y - points[0].y) != (points[1].y - points[0].y) * ($0.x - points[0].x)
+               }) {
+                completeArea(Geometry.bounds(of: points))
+            }
             else { lasso = nil }
         case (.selecting(.pickWindow), _):
             if let i = pickIndex(at: p), windows.indices.contains(i) { end(.pickedWindow(windows[i])); return }
         case (.selecting(.pickMonitor), _):
             if let r = pickTarget(at: p) { enterEditing(crop: r); if finishOnPick { finish() } }
-        case (.editing, .none): break
-        case (.editing, _): doc.endDrag(); renderer.liveEffectID = nil
+        case (.annotating, .none), (.editing, .none): break
+        case (.annotating, _), (.editing, _): doc.endDrag()
         default: break
         }
-        gestureOwner = nil; drag = .none; liveID = nil
         refresh()
     }
     func secondary(_ p: CGPoint, from view: EditorView) {
         guard gestureOwner == nil, phase != .ended else { return }
         activate(view); commitText()
-        guard phase == .editing else { cancel(); return }
+        guard phase == .editing || phase == .annotating else { cancel(); return }
         if !doc.annotations.isEmpty {
             if let a = doc.hitTest(p) { doc.selectedID = a.id; deleteSelection() }
             return
@@ -211,6 +239,10 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
     private func enterEditing(crop: CGRect) {
         guard let crop = renderer.source.selection(crop) else { return }
         setCropLive(crop); phase = .editing
+    }
+    private func completeArea(_ crop: CGRect) {
+        enterEditing(crop: crop)
+        if phase == .editing { finish() } else { refresh() }
     }
     var selectionHole: CGRect? {
         if case .region(let start) = drag, dragMoved, let mouse { return Geometry.rect(from: start, to: mouse) }
@@ -235,6 +267,9 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         switch selector {
         case #selector(NSResponder.cancelOperation(_:)), #selector(NSResponder.insertNewline(_:)): commitText(); return true
+        case #selector(NSResponder.insertTab(_:)):
+            if canChooseSelection { chooseSelection(.rectangle); return true }
+            return false
         default: return false
         }
     }
@@ -300,7 +335,7 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
     }
 
     func nudge(_ key: UInt16, by n: Int, resizing: Bool) {
-        guard phase == .editing else { return }
+        guard phase == .editing || phase == .annotating else { return }
         commitText()
         let dx = key == 123 ? -n : key == 124 ? n : 0
         let dy = key == 126 ? -n : key == 125 ? n : 0

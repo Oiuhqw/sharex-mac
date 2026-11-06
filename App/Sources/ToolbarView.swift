@@ -109,17 +109,20 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
     func sync() {
         if !trackingMenu {
         toolMenu.removeAllItems(); toolMenu.addItem(withTitle: "Tool")
-        if case .selecting = editor.phase {
+        toolMenu.menu?.autoenablesItems = false
+        if editor.session.canChooseSelection {
             for (index, title) in ["Region", "Freehand", "Window", "Monitor", "Full Desktop"].enumerated() {
-                toolMenu.menu?.addItem(item(title, action: #selector(selectionChanged(_:)), tag: index))
-            }
-        } else {
-            for (index, tool) in tools.enumerated() {
-                let entry = item(tool.2, action: #selector(toolChanged(_:)), tag: index)
-                entry.state = tool.0 == editor.tool ? .on : .off
-                entry.image = NSImage(systemSymbolName: tool.1, accessibilityDescription: tool.2)
+                let entry = item(title, action: #selector(selectionChanged(_:)), tag: index)
+                entry.isEnabled = index != 2 || editor.session.canPickWindow
                 toolMenu.menu?.addItem(entry)
             }
+            toolMenu.menu?.addItem(.separator())
+        }
+        for (index, tool) in tools.enumerated() where tool.0 != .crop || editor.phase == .editing {
+            let entry = item(tool.2, action: #selector(toolChanged(_:)), tag: index)
+            entry.state = (editor.phase == .annotating || editor.phase == .editing) && tool.0 == editor.tool ? .on : .off
+            entry.image = NSImage(systemSymbolName: tool.1, accessibilityDescription: tool.2)
+            toolMenu.menu?.addItem(entry)
         }
         moreMenu.removeAllItems(); moreMenu.addItem(withTitle: "More")
         let undo = item("Undo", action: #selector(undo)), redo = item("Redo", action: #selector(redo)), delete = item("Delete selected", action: #selector(deleteSel))
@@ -128,8 +131,10 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
         for entry in [undo, redo, delete] { moreMenu.menu?.addItem(entry) }
         }
         doneButton.isEnabled = editor.session.canFinish
-        statusLabel.stringValue = editor.session.status ?? ""
-        statusLabel.isHidden = editor.session.status == nil
+        doneButton.isHidden = editor.session.canChooseSelection
+        let status = editor.session.status ?? (editor.session.canChooseSelection ? "Annotate, then choose Region or press Tab. Drag and release to copy." : nil)
+        statusLabel.stringValue = status ?? ""
+        statusLabel.isHidden = status == nil
         styleButton.isEnabled = editor.styleTarget != nil
         if let kind = editor.styleTarget {
             let style = editor.doc.selected?.style ?? editor.doc.style(for: kind)

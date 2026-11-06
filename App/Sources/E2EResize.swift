@@ -30,7 +30,7 @@ enum E2EResize {
         let name = corner ? "crop-corner-cross-reverse" : "crop-edge-cross-reverse"
         var checks = false
         let w = E2E.px(480), h = E2E.px(corner ? 380 : 300)
-        if let clip = await E2E.regionCapture(name, w: w, h: h, edit: {
+        if let clip = await E2E.presetCapture(name, w: w, h: h, edit: {
             guard let s = E2E.surface(), let original = s.view.doc.state.crop else { return }
             s.view.setTool(.crop)
             let start = handle.point(on: original)
@@ -137,7 +137,7 @@ enum E2EResize {
         }
 
         var cropped = false
-        if let clip = await E2E.regionCapture("release-endpoint-crop", w: E2E.px(80), h: E2E.px(80), edit: {
+        if let clip = await E2E.presetCapture("release-endpoint-crop", w: E2E.px(80), h: E2E.px(80), edit: {
             guard let s = E2E.surface() else { return }
             s.view.setTool(.crop)
             E2E.mouse(.leftMouseDown, CGPoint(x: 200, y: 200), in: s)
@@ -160,12 +160,11 @@ enum E2EResize {
         E2E.mouse(.leftMouseDown, points[0], in: s)
         E2E.mouse(.leftMouseDragged, points[1], in: s)
         E2E.mouse(.leftMouseUp, points[2], in: s)
-        guard s.view.phase == .editing, s.view.lasso == points else {
+        guard s.view.phase == .ended, s.view.lasso == points else {
             E2E.esc()
             _ = await E2E.until({ !E2E.coord.busy })
             E2E.record(name, false, ["error": "release vertex was dropped"]); return
         }
-        E2E.ret()
         guard await E2E.until({ !E2E.coord.busy }) else {
             E2E.record(name, false, ["error": "stuck busy"]); return
         }
