@@ -14,14 +14,14 @@ Verify the DMG against the checksum attached to that same release. The release n
 
 Open the camera icon in the menu bar and choose a capture command. ShareX has eight capture modes: Region, Freehand, Window, Active Window, Monitor, Active Monitor, Fullscreen, and Last Region.
 
-For Region or Freehand, draw or redact before selecting the final area. Choose **Tool > Region** or press **Tab**, then drag the area and release to copy automatically. For a plain screenshot, drag immediately. No **Done** click is needed. Drawing and tool changes do not copy or save intermediate images.
+For Region or Freehand, draw or redact before selecting the final area. Choose **Region** or press **Tab**, then drag the area and release to copy automatically. For a plain screenshot, drag immediately. No **Done** click is needed. Drawing and tool changes do not copy or save intermediate images.
 
-Fullscreen editing stays on the original displays. Region and freehand selections can cross display boundaries. Each display has a fixed top toolbar with **Tool**, **Style**, **More**, and **Cancel**. Fixed-area editors also show **Done**. All panels share one document and undo history.
+Fullscreen editing stays on the original displays. Region and freehand selections can cross display boundaries. Each display has a fixed top toolbar with visible tool icons, **Style**, **Undo**, **Redo**, **Delete selected**, and **Cancel**. Hover over an icon to see its name and shortcut. The selected tool is highlighted and named below the buttons. Buttons wrap on narrow displays. Fixed-area editors also show **Done**. All panels share one document and undo history.
 
-- **Tool** offers annotation tools before selection, alongside Region, Freehand, Window, Monitor, and Full Desktop. Crop is available in fixed-area editors.
+- Annotation buttons are available before selection, alongside Region, Freehand, Window, Monitor, and Full Desktop. Crop is available in fixed-area editors.
 - **Style** changes color, width or text size, opacity, fill, and blur or pixelation strength.
-- **More** offers Undo, Redo, and Delete selected.
-- Releasing a Region or Freehand selection exports the image. **Done** exports from a fixed-area editor. **Cancel** closes the capture without export.
+- **Undo**, **Redo**, and **Delete selected** are separate icon buttons.
+- Releasing a Region or Freehand selection exports the image. **Done** exports from a fixed-area editor. **Cancel** or one press of **Esc** closes every capture window without export, including during text entry, a drag, or an open Style popover.
 
 The editor includes Select, Crop, Rectangle, Ellipse, Line, Arrow, Highlighter, Blur, Pixelate, Spotlight, Pen, Text, and Step marker. Optional editing keys are listed in the [user guide](docs/USER-GUIDE.md).
 
@@ -29,13 +29,15 @@ A new installation assigns only **Control-Shift-1** for Region. The other seven 
 
 New installations copy PNG and TIFF to the clipboard and save a PNG in `~/Pictures/ShareX`. Updates preserve existing output preferences. Clipboard and file writes have separate results. If an output fails, **Retry** repeats only the failed destination. **Save As** saves the PNG elsewhere. The success sound plays only after every requested output succeeds.
 
-Capture settings include a delay, cursor inclusion, a magnifier and crosshair, a border, a shadow, and an option to open the editor for fixed-area captures. Border and shadow can increase the final image size.
+Capture settings include a delay, cursor inclusion, a magnifier, a border, a shadow, and an option to open the editor for fixed-area captures. Border and shadow can increase the final image size.
+
+ShareX enables **Launch ShareX at login** on its first normal launch after this update. It uses the macOS login-item service. Settings shows whether registration is active or needs approval in System Settings. Turning it off in either Settings app remains effective after relaunch. Start ShareX once from Applications to register it. The capture pointer is a compact, symmetric crosshair with an open centre and a black outline.
 
 ## Multi-display behavior
 
 The editor retains frozen native display tiles. The output uses the highest scale among the displays that the crop touches. An unrelated Retina display does not increase a small 1x crop's scale. Empty desktop gaps remain transparent.
 
-Output is limited to 64 Mi pixels. If a fullscreen output exceeds that limit, editing remains available. **Done** stays disabled until **Tool > Crop** reduces the area. The app does not reduce image detail to fit the limit.
+Output is limited to 64 Mi pixels. If a fullscreen output exceeds that limit, editing remains available. **Done** stays disabled until **Crop** reduces the area. The app does not reduce image detail to fit the limit.
 
 Last Region supports areas across displays. Common desktop translation, scale changes, and extra untouched displays preserve the saved area. A moved, resized, or missing participating display starts a new Region selection. Old single-display settings still decode and clamp. The saved region changes only after an output succeeds.
 
@@ -115,7 +117,7 @@ The following checks require physical hardware or interactive macOS behavior:
 - Grant and deny Screen Recording on a clean account. Check the Settings link, then quit and reopen the app.
 - Drag rectangular and freehand selections across physical displays in both directions. Include mixed scale, negative origins, and separate Spaces.
 - Annotate before region selection on each display. Choose Region or press Tab, then release the final selection and check the clipboard.
-- Edit fullscreen captures on each original display. Click Tool, Style, More, Done, and Cancel on every panel.
+- Edit fullscreen captures on each original display. Click tool icons, Style, Undo, Redo, Delete selected, Done, and Cancel on every panel.
 - Move, resize, or disconnect a participating display before and during capture. Check fresh Last Region selection and safe session cancellation.
 - Paste captures into Preview and another app. Check dimensions, transparent gaps, freehand edges, and redaction coverage.
 - Use the assigned global shortcut while another app is active. Check custom bindings after relaunch.

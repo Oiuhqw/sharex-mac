@@ -79,6 +79,7 @@ final class EditorView: NSView {
     func rememberStyle(_ style: ShapeStyle, for kind: ShapeKind) { session.rememberStyle(style, for: kind) }
     func finish() { session.activate(self); session.finish() }
     func cancel() { session.cancel() }
+    override func cancelOperation(_ sender: Any?) { cancel() }
     @objc func undo(_ sender: Any?) { undo() }
     @objc func redo(_ sender: Any?) { redo() }
     @objc func copy(_ sender: Any?) { if phase == .editing { finish() } }
@@ -89,7 +90,11 @@ final class EditorView: NSView {
     override func mouseDragged(with event: NSEvent) { session.pointerDragged(desktopPoint(for: event), shift: event.modifierFlags.contains(.shift), from: self) }
     override func mouseUp(with event: NSEvent) { session.pointerUp(desktopPoint(for: event), shift: event.modifierFlags.contains(.shift), from: self) }
     override func rightMouseDown(with event: NSEvent) { session.secondary(desktopPoint(for: event), from: self) }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair); addCursorRect(toolbar.frame, cursor: .arrow) }
+    override func resetCursorRects() {
+        let cursor: NSCursor = (phase == .annotating || phase == .editing) && tool == .select ? .arrow : CaptureCursor.crosshair
+        addCursorRect(bounds, cursor: cursor)
+        addCursorRect(toolbar.frame, cursor: .arrow)
+    }
 
     override func keyDown(with e: NSEvent) {
         let cmd = e.modifierFlags.contains(.command), shift = e.modifierFlags.contains(.shift)
@@ -157,7 +162,7 @@ final class EditorView: NSView {
             if let hole { state.outline = hole; state.sizeLabel = (hole, sizeText(session.selectionHole!)) }
             if mode == .lasso { state.lasso = lasso?.map { self.local($0) } }
             if mode == .rectangle || mode == .lasso, let mouse = session.mouse, viewport.contains(mouse) {
-                state.crosshair = local(mouse); setMagnifier(mouse, state: &state)
+                setMagnifier(mouse, state: &state)
             }
         case .annotating:
             if let selected = doc.selected { state.selection = local(selected.bounds) }

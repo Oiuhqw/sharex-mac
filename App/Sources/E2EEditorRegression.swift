@@ -5,8 +5,8 @@ import ShareXCore
 @MainActor
 enum E2EEditorRegression {
     private typealias Surface = (window: NSWindow, view: EditorView)
-    private static let size = CGSize(width: 300, height: 320)
-    private static let crop = CGRect(x: 140, y: 120, width: 320, height: 120)
+    private static let size = CGSize(width: 300, height: 420)
+    private static let crop = CGRect(x: 140, y: 200, width: 320, height: 120)
 
     static func run() async {
         let screen = E2E.screen.frame
@@ -72,16 +72,16 @@ enum E2EEditorRegression {
                    ["transitions": transitions, "controlsFit": controlsFit, "doneHidden": doneHidden, "cancelEnabled": cancelEnabled,
                     "fixture": "two native windows on one display"])
 
-        let start = CGPoint(x: 460, y: 120)
-        let points = mode == .rectangle ? [CGPoint(x: 140, y: 240)]
-            : [CGPoint(x: 140, y: 120), CGPoint(x: 140, y: 240), CGPoint(x: 460, y: 240), start]
+        let start = CGPoint(x: 460, y: crop.minY)
+        let points = mode == .rectangle ? [CGPoint(x: 140, y: crop.maxY)]
+            : [CGPoint(x: 140, y: crop.minY), CGPoint(x: 140, y: crop.maxY), CGPoint(x: 460, y: crop.maxY), start]
         let owner = surfaces[1]
         func send(_ type: NSEvent.EventType, _ point: CGPoint) {
             E2E.mouse(type, CGPoint(x: point.x - 300, y: point.y), in: owner)
         }
         owner.view.setTool(.shape(.rectangle)); owner.view.changeStyle { $0.filled = true; $0.color = .black }
-        send(.leftMouseDown, CGPoint(x: 340, y: 150)); send(.leftMouseDragged, CGPoint(x: 260, y: 170))
-        send(.leftMouseUp, CGPoint(x: 260, y: 170))
+        send(.leftMouseDown, CGPoint(x: 340, y: 220)); send(.leftMouseDragged, CGPoint(x: 260, y: 240))
+        send(.leftMouseUp, CGPoint(x: 260, y: 240))
         E2E.record("editor-\(tag)-annotate-before-selection", session.phase == .annotating
                    && session.doc.state.crop == nil && session.doc.annotations.count == 1 && outcomes.isEmpty)
         session.chooseSelection(mode)
@@ -156,8 +156,7 @@ enum E2EEditorRegression {
     }
 
     private static func toolbarGeometry(_ bar: ToolbarView, maximum: CGFloat) -> (ok: Bool, info: [String: Any]) {
-        let controls: [(String, NSControl)] = [("Tool", bar.e2eTools), ("More", bar.e2eMore), ("Style", bar.e2eStyle),
-                                              ("Done", bar.e2eDone), ("Cancel", bar.e2eCancel)]
+        let controls: [(String, NSControl)] = bar.e2eButtons.map { ($0.title, $0) }
         var valid = bar.frame.width <= maximum
         let geometry: [[String: Any]] = controls.map { name, control in
             let rect = bar.convert(control.bounds, from: control), visible = !control.isHiddenOrHasHiddenAncestor
@@ -165,7 +164,7 @@ enum E2EEditorRegression {
             let center = CGPoint(x: rect.midX, y: rect.midY)
             let hit = bar.hitTest(bar.convert(center, to: bar.superview))
             let hitsControl = hit.map { $0 === control || $0.isDescendant(of: control) } ?? false
-            valid = valid && ((visible && contained && nonempty) || (name == "Done" && !visible && !control.isEnabled))
+            valid = valid && visible && contained && nonempty && hitsControl
             return ["name": name, "frameInToolbar": NSStringFromRect(rect), "visibleRect": NSStringFromRect(control.visibleRect),
                     "visible": visible, "contained": contained, "nonempty": nonempty, "enabled": control.isEnabled,
                     "hitPointInToolbar": NSStringFromPoint(center), "hitsControl": hitsControl,
@@ -179,8 +178,8 @@ enum E2EEditorRegression {
 
     private static func projection(_ pixels: E2E.Bitmap, index: Int, brightInside: Bool) -> (ok: Bool, info: [String: Any]) {
         let x = Int(CGFloat(index == 0 ? 200 : 100) * CGFloat(pixels.w) / size.width)
-        let inside = pixels.at(x, Int(180 * CGFloat(pixels.h) / size.height))
-        let outside = pixels.at(x, Int(280 * CGFloat(pixels.h) / size.height))
+        let inside = pixels.at(x, Int(crop.midY * CGFloat(pixels.h) / size.height))
+        let outside = pixels.at(x, Int((crop.maxY + 40) * CGFloat(pixels.h) / size.height))
         let bright = index == 0 ? inside.r : inside.b, dim = index == 0 ? outside.r : outside.b
         let brightMatches = brightInside ? bright > 0.95 : bright > 0.60 && bright < 0.70
         let dimMatches = dim > 0.60 && dim < 0.70

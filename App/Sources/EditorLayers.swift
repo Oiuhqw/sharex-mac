@@ -3,7 +3,7 @@ import QuartzCore
 import ShareXCore
 
 /// Views under EditorView, back to front: the frozen frame (layer contents, never re-rasterised), the annotations
-/// (redrawn only in dirty rects), and the chrome (dim, outline, handles, crosshair, magnifier as shape/text layers,
+/// (redrawn only in dirty rects), and the chrome (dim, outline, handles, magnifier as shape/text layers,
 /// so a mouse move changes a few paths instead of repainting a Retina screen). None take events.
 class PassThroughView: NSView {
     override var isFlipped: Bool { true }
@@ -217,7 +217,7 @@ final class LiveMarkView: PassThroughView {
 final class ChromeView: PassThroughView {
     private let dim = CAShapeLayer(), outlineW = CAShapeLayer(), outlineB = CAShapeLayer()
     private let handles = CAShapeLayer(), selection = CAShapeLayer(), selHandles = CAShapeLayer()
-    private let crosshair = CAShapeLayer(), lasso = CAShapeLayer()
+    private let lasso = CAShapeLayer()
     private let sizeLabel = CATextLayer(), magnifier = CALayer(), magImage = CALayer(), magMid = CALayer(), magLabel = CATextLayer()
     private var magSize = CGSize.zero
     private var magOrigin = CGPoint.zero
@@ -232,7 +232,6 @@ final class ChromeView: PassThroughView {
         for l in [handles, selHandles] { l.fillColor = .white; l.strokeColor = CGColor(gray: 0, alpha: 1); l.lineWidth = 1 }
         selection.fillColor = nil; selection.strokeColor = CGColor(srgbRed: 0.2, green: 0.55, blue: 1, alpha: 1)
         selection.lineWidth = 1; selection.lineDashPattern = [3, 3]
-        crosshair.strokeColor = CGColor(gray: 1, alpha: 0.6); crosshair.lineWidth = 1; crosshair.fillColor = nil
         lasso.strokeColor = .white; lasso.lineWidth = 1.5; lasso.lineDashPattern = [5, 3]; lasso.fillColor = nil
         for t in [sizeLabel, magLabel] {
             t.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
@@ -252,7 +251,7 @@ final class ChromeView: PassThroughView {
         }
         // Above every other chrome layer.
         magnifier.zPosition = 1000; magLabel.zPosition = 1000
-        for l in [dim, outlineW, outlineB, handles, selection, selHandles, crosshair, lasso, sizeLabel, magnifier, magLabel] as [CALayer] {
+        for l in [dim, outlineW, outlineB, handles, selection, selHandles, lasso, sizeLabel, magnifier, magLabel] as [CALayer] {
             l.actions = ["position": NSNull(), "bounds": NSNull(), "path": NSNull(), "contents": NSNull(), "hidden": NSNull(),
                          "string": NSNull(), "frame": NSNull(), "contentsRect": NSNull()]
             l.isHidden = true
@@ -284,7 +283,6 @@ final class ChromeView: PassThroughView {
         var cropHandles: CGRect?
         var selection: CGRect?
         var lasso: [CGPoint]?
-        var crosshair: CGPoint?
         var magnifier: (point: CGPoint, scale: CGFloat)?
         var sizeLabel: (rect: CGRect, text: String)?
         var dimEverything = false
@@ -312,13 +310,6 @@ final class ChromeView: PassThroughView {
         if let pts = s.lasso, pts.count > 1 {
             let p = CGMutablePath(); p.addLines(between: pts); lasso.path = p; lasso.isHidden = false
         } else { lasso.isHidden = true }
-
-        if let c = s.crosshair {
-            let p = CGMutablePath()
-            p.addLines(between: [CGPoint(x: 0, y: c.y), CGPoint(x: b.width, y: c.y)])
-            p.addLines(between: [CGPoint(x: c.x, y: 0), CGPoint(x: c.x, y: b.height)])
-            crosshair.path = p; crosshair.isHidden = false
-        } else { crosshair.isHidden = true }
 
         if let l = s.sizeLabel {
             let text = " \(l.text) "

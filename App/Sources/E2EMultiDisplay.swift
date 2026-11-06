@@ -38,9 +38,9 @@ enum E2EMultiDisplay {
         }
         event(.leftMouseUp, end, from: surface)
     }
-    private static func command(_ title: String, menu: NSPopUpButton) -> Bool {
-        guard let item = menu.menu?.items.first(where: { $0.title == title }), item.isEnabled, let action = item.action else { return false }
-        return NSApp.sendAction(action, to: item.target, from: item)
+    private static func command(_ title: String, toolbar: ToolbarView) -> Bool {
+        guard let button = toolbar.e2eButton(title), button.isEnabled else { return false }
+        button.performClick(nil); return true
     }
     private static func seamPoints(from a: CGRect, to b: CGRect, offset: CGSize) -> (CGPoint, CGPoint) {
         let vertical = a.maxY == b.minY || b.maxY == a.minY
@@ -180,7 +180,7 @@ enum E2EMultiDisplay {
             let (p, q) = seamPoints(from: a.view.viewport, to: b.view.viewport, offset: CGSize(width: 100, height: 70))
             let toolbarFrames = rig.surfaces.map { $0.view.e2eToolbar.frame }
             let crop = Geometry.rect(from: p, to: q), tag = reversed ? "reverse" : "forward"
-            let chosen = command("Rectangle", menu: b.view.e2eToolbar.e2eTools)
+            let chosen = command("Rectangle", toolbar: b.view.e2eToolbar)
             b.view.changeStyle { $0.filled = true; $0.color = .blue }
             let before = rig.session.doc.history.undoStates.count
             drag(q, p, from: b)
@@ -191,14 +191,14 @@ enum E2EMultiDisplay {
             E2E.record("multidisplay-annotation-capture-controls-\(tag)", rig.surfaces.allSatisfy {
                 let bar = $0.view.e2eToolbar
                 return bar.e2eDone.isHidden && !bar.e2eDone.isEnabled
-                    && bar.e2eTools.menu?.items.first(where: { $0.title == "Window" })?.isEnabled == false
-                    && bar.e2eTools.menu?.items.contains(where: { $0.title == "Crop" }) == false
+                    && bar.e2eButton("Window")?.isEnabled == false
+                    && bar.e2eButton("Crop") == nil
             })
-            let undo = command("Undo", menu: a.view.e2eToolbar.e2eMore)
+            let undo = command("Undo", toolbar: a.view.e2eToolbar)
             let empty = rig.session.doc.annotations.isEmpty
-            let redo = command("Redo", menu: b.view.e2eToolbar.e2eMore)
+            let redo = command("Redo", toolbar: b.view.e2eToolbar)
             E2E.record("multidisplay-shared-undo-\(tag)", undo && redo && empty && rig.session.doc.annotations.count == 1)
-            let region = command("Region", menu: a.view.e2eToolbar.e2eTools)
+            let region = command("Region", toolbar: a.view.e2eToolbar)
             event(.leftMouseDown, p, from: a); event(.leftMouseDragged, q, from: a)
             E2E.record("multidisplay-selection-\(tag)", region && rig.session.selectionHole == crop
                        && rig.session.doc.annotations.count == 1 && rig.outcomes.isEmpty
@@ -265,7 +265,7 @@ enum E2EMultiDisplay {
                 E2E.record("multidisplay-effect-failure-opaque-\(kind.rawValue)", opaque && failure.ok, failure.info)
             }
             let expected = Export.flatten(renderer: a.view.renderer, doc: a.view.doc, crop: crop, lasso: nil).map(E2E.bitmap)
-            let region = command("Region", menu: b.view.e2eToolbar.e2eTools)
+            let region = command("Region", toolbar: b.view.e2eToolbar)
             drag(q, p, from: b)
             E2E.record("multidisplay-effect-release-\(kind.rawValue)", region && rig.session.phase == .ended
                        && rig.outcomes.count == 1 && rig.result.map { E2E.bitmap($0.image).px == expected?.px } == true
@@ -278,11 +278,11 @@ enum E2EMultiDisplay {
         let rig = Rig(frozen, fullscreen: true), surfaces = rig.surfaces
         guard surfaces.count == 2 else { rig.cancel(); return }
         let a = surfaces[0], b = surfaces[1], p = CGPoint(x: a.view.viewport.midX, y: a.view.viewport.midY)
-        _ = command("Text", menu: a.view.e2eToolbar.e2eTools)
+        _ = command("Text", toolbar: a.view.e2eToolbar)
         event(.leftMouseDown, p, from: a); event(.leftMouseUp, p, from: a)
         let fields = surfaces.flatMap { E2EEditing.views($0.view).compactMap { $0 as? NSTextField }.filter { $0.isEditable } }
         fields.first?.stringValue = "One shared text transaction"
-        _ = command("Crop", menu: b.view.e2eToolbar.e2eTools)
+        _ = command("Crop", toolbar: b.view.e2eToolbar)
         E2E.record("multidisplay-one-text-host-commit", fields.count == 1 && rig.session.doc.annotations.first?.text == "One shared text transaction"
                    && surfaces.allSatisfy { E2EEditing.views($0.view).compactMap { $0 as? NSTextField }.allSatisfy { !$0.isEditable } }
                    && b.window.firstResponder === b.view)
@@ -299,14 +299,14 @@ enum E2EMultiDisplay {
         E2E.record("multidisplay-narrow-toolbar-done-visible", bar.bounds.width <= 280 && controlsFit(bar)
                    && !bar.e2eDone.isHidden && ["Select", "Crop", "Rectangle", "Ellipse", "Line", "Arrow", "Highlighter", "Blur",
                                                "Pixelate", "Spotlight", "Pen", "Text", "Step marker"].allSatisfy { title in
-                       bar.e2eTools.menu?.items.contains { $0.title == title } == true
+                       bar.e2eButton(title) != nil
                    })
         E2E.snapshotNativeView(bar, name: "multidisplay-toolbar-narrow")
         rig.cancel()
-        let selection = Rig(frozen), chooser = selection.surfaces[0].view.e2eToolbar.e2eTools
+        let selection = Rig(frozen), chooser = selection.surfaces[0].view.e2eToolbar
         let modes = ["Region", "Freehand", "Window", "Monitor", "Full Desktop"]
-        E2E.record("multidisplay-selection-mouse-modes", modes.allSatisfy { title in chooser.menu?.items.contains { $0.title == title } == true })
-        _ = command("Full Desktop", menu: chooser)
+        E2E.record("multidisplay-selection-mouse-modes", modes.allSatisfy { title in chooser.e2eButton(title) != nil })
+        _ = command("Full Desktop", toolbar: chooser)
         E2E.record("multidisplay-full-desktop-by-mouse", selection.session.phase == .ended && selection.outcomes.count == 1
                    && selection.result?.crop == selection.session.bounds0)
         selection.cancel()
@@ -324,7 +324,7 @@ enum E2EMultiDisplay {
 
     private static func styleUI(_ surface: Surface, tag: String) async {
         let view = surface.view, bar = view.e2eToolbar
-        let selected = command("Rectangle", menu: bar.e2eTools)
+        let selected = command("Rectangle", toolbar: bar)
         bar.layoutSubtreeIfNeeded()
         E2E.record("multidisplay-toolbar-bounds-\(tag)", controlsFit(bar) && view.bounds.contains(bar.frame))
         await E2E.snapshotNativeWindow(surface.window, name: "multidisplay-full-ui-\(tag)")
@@ -373,7 +373,7 @@ enum E2EMultiDisplay {
         bar.closePopover()
         _ = await E2E.until { contents.window?.isVisible != true }
 
-        let blurSelected = command("Blur", menu: bar.e2eTools)
+        let blurSelected = command("Blur", toolbar: bar)
         let blurPosted = E2E.postClick(bar.e2eStyle)
         let blurShown = await E2E.until { contents.window?.isVisible == true }
         if let strength = sliders.first(where: { $0.accessibilityLabel() == "Effect strength" }), blurShown {
@@ -486,7 +486,7 @@ enum E2EMultiDisplay {
             let p = CGPoint(x: a.view.viewport.midX - 80, y: a.view.viewport.midY - 50)
             let q = CGPoint(x: b.view.viewport.midX + 80, y: b.view.viewport.midY + 50)
             a.view.setTool(.shape(.pixelate)); drag(p, q, from: a)
-            let region = command("Region", menu: b.view.e2eToolbar.e2eTools)
+            let region = command("Region", toolbar: b.view.e2eToolbar)
             let crop = Geometry.rect(from: p, to: q)
             drag(q, p, from: b)
             let area = a.view.renderer.pixelArea(crop)

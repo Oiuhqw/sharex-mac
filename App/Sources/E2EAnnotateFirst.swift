@@ -84,7 +84,7 @@ enum E2EAnnotateFirst {
         checks = E2EEditing.tool("Crop", in: fixture) && checks
         checks = view.tool == .crop && E2EEditing.button("Undo", in: fixture) && checks
         let restored = view.phase == .annotating && view.doc.state == annotated && view.tool == .select
-            && !view.e2eToolbar.e2eTools.itemTitles.contains("Crop") && view.e2eToolbar.e2eDone.isHidden
+            && view.e2eToolbar.e2eButton("Crop") == nil && view.e2eToolbar.e2eDone.isHidden
         E2E.drag(CGPoint(x: 340, y: 280), CGPoint(x: 400, y: 340))
         let noHiddenCrop = view.doc.state == annotated && view.doc.history.canRedo && unchanged(mark)
             && surface.window.isVisible && E2E.coord.busy
@@ -115,13 +115,13 @@ enum E2EAnnotateFirst {
         let view = surface.view, session = view.session
         let fixture = E2EEditing.Session(mark: mark, window: surface.window, view: view, original: E2E.bitmap(frame))
         var checks = view.phase == .selecting(.rectangle) && view.e2eToolbar.e2eDone.isHidden
-            && !view.e2eToolbar.e2eTools.itemTitles.contains("Crop")
+            && view.e2eToolbar.e2eButton("Crop") == nil
         checks = E2EEditing.tool("Blur", in: fixture) && checks
         E2E.drag(CGPoint(x: 80, y: 140), CGPoint(x: 220, y: 220))
         checks = view.phase == .annotating && view.doc.state.crop == nil && unchanged(mark) && checks
         session.chooseSelection(.pickWindow)
         checks = view.phase == .annotating && !session.canPickWindow
-            && view.e2eToolbar.e2eTools.menu?.items.first(where: { $0.title == "Window" })?.isEnabled == false && checks
+            && view.e2eToolbar.e2eButton("Window")?.isEnabled == false && checks
         checks = E2EEditing.tool("Pixelate", in: fixture) && checks
         E2E.drag(CGPoint(x: 260, y: 140), CGPoint(x: 390, y: 220))
         checks = E2EEditing.tool("Rectangle", in: fixture) && checks

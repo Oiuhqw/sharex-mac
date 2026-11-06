@@ -491,6 +491,9 @@ enum E2ESettings {
         let retainedFocus = NSApp.isActive && window.isKeyWindow
         E2E.record("settings-focus-after-accessibility", retainedFocus, ["before": focusBefore, "after": focusAfter])
         E2E.record("settings-initial-capture-page", capture)
+        let startupToggle = await element("settings.startup.enabled", in: window) != nil
+        let startupStatus = await element("settings.startup.status", in: window) != nil
+        E2E.record("settings-startup-controls-visible", startupToggle && startupStatus)
         guard retainedFocus else { return }
         let cursor = E2E.app.settings.value.options.showCursor
         let toggledCursor = await press("settings.capture.cursor", in: window)
