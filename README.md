@@ -6,7 +6,7 @@ Use the [user guide](docs/USER-GUIDE.md) for capture, editing, shortcuts, and ou
 
 ## Latest built package
 
-Version **0.1.3, build 4** supports **Apple Silicon Macs running macOS 14 or later**. The app contains arm64 code only. **Intel Macs are unsupported.** Download `ShareX.dmg`, `ShareX.dmg.sha256`, and `INSTALL.txt` from the [0.1.3 GitHub release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.3).
+Version **0.1.4, build 5** supports **Apple Silicon Macs running macOS 14 or later**. The app contains arm64 code only. **Intel Macs are unsupported.** Download `ShareX.dmg`, `ShareX.dmg.sha256`, and `INSTALL.txt` from the [0.1.4 GitHub release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.4).
 
 Verify the DMG against the checksum attached to that same release. The release notes identify the merged source and package build. The app is ad-hoc signed with Hardened Runtime and is not Apple-notarized. Read the [installation instructions](INSTALL.txt) before opening it.
 
@@ -14,12 +14,14 @@ Verify the DMG against the checksum attached to that same release. The release n
 
 Open the camera icon in the menu bar and choose a capture command. ShareX has eight capture modes: Region, Freehand, Window, Active Window, Monitor, Active Monitor, Fullscreen, and Last Region.
 
-Fullscreen editing stays on the original displays. Region and freehand selections can cross display boundaries. Each display has a fixed top toolbar with **Tool**, **Style**, **More**, **Done**, and **Cancel**. All panels share one document and undo history.
+For Region or Freehand, draw or redact before selecting the final area. Choose **Tool > Region** or press **Tab**, then drag the area and release to copy automatically. For a plain screenshot, drag immediately. No **Done** click is needed. Drawing and tool changes do not copy or save intermediate images.
 
-- **Tool** selects an annotation or crop tool. Before selection, it offers Region, Freehand, Window, Monitor, and Full Desktop.
+Fullscreen editing stays on the original displays. Region and freehand selections can cross display boundaries. Each display has a fixed top toolbar with **Tool**, **Style**, **More**, and **Cancel**. Fixed-area editors also show **Done**. All panels share one document and undo history.
+
+- **Tool** offers annotation tools before selection, alongside Region, Freehand, Window, Monitor, and Full Desktop. Crop is available in fixed-area editors.
 - **Style** changes color, width or text size, opacity, fill, and blur or pixelation strength.
 - **More** offers Undo, Redo, and Delete selected.
-- **Done** exports the image. **Cancel** closes the capture without export.
+- Releasing a Region or Freehand selection exports the image. **Done** exports from a fixed-area editor. **Cancel** closes the capture without export.
 
 The editor includes Select, Crop, Rectangle, Ellipse, Line, Arrow, Highlighter, Blur, Pixelate, Spotlight, Pen, Text, and Step marker. Optional editing keys are listed in the [user guide](docs/USER-GUIDE.md).
 
@@ -79,7 +81,7 @@ Keep the signing team and bundle ID, `com.sharexmac.ShareX`, stable. Screen Reco
 
 ## Build and verification
 
-The [0.1.3 assessment](reviews/multidisplay-0.1.3.md) records the diagnostic source, native results, screenshots, resource checks, and coverage limits. The final PR records the independent review and native run for its final documentation head. The release notes identify the separate package built from merged main. `INSTALL.txt` is part of the DMG, so an earlier diagnostic package does not establish the final package identity.
+The [0.1.3 assessment](reviews/multidisplay-0.1.3.md) records that version's diagnostic source, native results, screenshots, resource checks, and coverage limits. Each release's notes identify its source and validation run. `INSTALL.txt` is part of the DMG, so an earlier diagnostic package does not establish the final package identity.
 
 The `macOS` workflow runs script tests, core XCTest cases, AddressSanitizer, native app E2E, shortcut recovery, two virtual-display layouts, and Release resource checks. Artifacts contain result JSON, native window images, clipboard and file checks, logs, process RSS, and CPU samples.
 
@@ -112,6 +114,7 @@ The following checks require physical hardware or interactive macOS behavior:
 
 - Grant and deny Screen Recording on a clean account. Check the Settings link, then quit and reopen the app.
 - Drag rectangular and freehand selections across physical displays in both directions. Include mixed scale, negative origins, and separate Spaces.
+- Annotate before region selection on each display. Choose Region or press Tab, then release the final selection and check the clipboard.
 - Edit fullscreen captures on each original display. Click Tool, Style, More, Done, and Cancel on every panel.
 - Move, resize, or disconnect a participating display before and during capture. Check fresh Last Region selection and safe session cancellation.
 - Paste captures into Preview and another app. Check dimensions, transparent gaps, freehand edges, and redaction coverage.
@@ -122,7 +125,7 @@ Developer ID signing and notarization require the owner's Apple credentials. The
 
 ## Install the DMG
 
-Download the DMG and checksum from the [same 0.1.3 release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.3). In the download folder, verify the file:
+Download the DMG and checksum from the [same 0.1.4 release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.4). In the download folder, verify the file:
 
 ```sh
 shasum -a 256 -c ShareX.dmg.sha256
