@@ -2,7 +2,7 @@ import AppKit
 import ShareXCore
 
 @MainActor
-final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
+final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
     private unowned let editor: EditorView
     private let tools: [(Tool, String, String)] = [
         (.select, "cursorarrow", "Select"), (.crop, "crop", "Crop"),
@@ -14,42 +14,67 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
         (.shape(.step), "1.circle", "Step marker"),
     ]
 
-    private let toolMenu = NSPopUpButton(frame: .zero, pullsDown: true)
-    private let moreMenu = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let selections = [("Region", "viewfinder", "Tab"), ("Freehand", "lasso", ""),
+                              ("Window", "macwindow", ""), ("Monitor", "display", ""),
+                              ("Full Desktop", "rectangle.on.rectangle", "")]
+    private var toolButtons: [NSButton] = []
+    private var selectionButtons: [NSButton] = []
+    private let undoButton = NSButton(title: "Undo", target: nil, action: nil)
+    private let redoButton = NSButton(title: "Redo", target: nil, action: nil)
+    private let deleteButton = NSButton(title: "Delete selected", target: nil, action: nil)
     private let styleButton = NSButton(title: "Style", target: nil, action: nil)
     private let doneButton = NSButton(title: "Done", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
-    private let statusLabel = NSTextField(wrappingLabelWithString: "")
-    private let stack = NSStackView(), row = NSStackView(), actions = NSStackView()
+    private let statusLabel = NSTextField(labelWithString: "")
     private let popover = NSPopover()
     private let width = NSSlider(value: 4, minValue: 1, maxValue: 40, target: nil, action: nil)
     private let opacity = NSSlider(value: 1, minValue: 0.1, maxValue: 1, target: nil, action: nil)
     private let strength = NSSlider(value: 12, minValue: 2, maxValue: 90, target: nil, action: nil)
     private let fill = NSButton(checkboxWithTitle: "Fill", target: nil, action: nil)
     private var colorButtons: [NSButton] = []
-    private var compact = false
-    private var trackingMenu = false
+    private var preferredSize = NSSize.zero
+    override var fittingSize: NSSize { preferredSize }
+    override var isFlipped: Bool { true }
+
+    private var groups: [[NSButton]] {
+        [selectionButtons, toolButtons, [styleButton], [undoButton, redoButton, deleteButton], [doneButton, cancelButton]]
+    }
 
     init(editor: EditorView) {
         self.editor = editor
         super.init(frame: .zero)
         material = .hudWindow; blendingMode = .withinWindow; state = .active
         wantsLayer = true; layer?.cornerRadius = 8
-        for (button, action) in [(styleButton, #selector(openStyle)), (doneButton, #selector(done)), (cancelButton, #selector(cancel))] {
-            button.target = self; button.action = action; button.bezelStyle = .rounded
+        for (index, entry) in selections.enumerated() {
+            let button = NSButton(title: entry.0, target: self, action: #selector(selectionChanged(_:)))
+            configure(button, symbol: entry.1, shortcut: entry.2, selectable: index != 4)
+            button.tag = index; selectionButtons.append(button)
         }
-        doneButton.setAccessibilityLabel("Done"); cancelButton.setAccessibilityLabel("Cancel")
-        toolMenu.setAccessibilityLabel("Tool"); moreMenu.setAccessibilityLabel("More")
-        toolMenu.menu?.delegate = self; moreMenu.menu?.delegate = self
-        for view in [toolMenu, styleButton, moreMenu] { row.addArrangedSubview(view) }
-        for view in [doneButton, cancelButton] { actions.addArrangedSubview(view) }
-        row.addArrangedSubview(actions)
-        row.orientation = .horizontal; row.spacing = 4; actions.spacing = 4
-        stack.orientation = .vertical; stack.alignment = .centerX; stack.spacing = 4
-        stack.addArrangedSubview(row); stack.addArrangedSubview(statusLabel)
+        for (index, entry) in tools.enumerated() {
+            let shortcut: String
+            switch entry.0 { case .select: shortcut = "V"; case .crop: shortcut = "C"; case .shape(let kind): shortcut = String(kind.key).uppercased() }
+            let button = NSButton(title: entry.2, target: self, action: #selector(toolChanged(_:)))
+            configure(button, symbol: entry.1, shortcut: shortcut, selectable: true)
+            button.tag = index; toolButtons.append(button)
+        }
+        for (button, action, symbol, shortcut) in [
+            (styleButton, #selector(openStyle), "slider.horizontal.3", ""),
+            (undoButton, #selector(undo), "arrow.uturn.backward", "⌘Z"),
+            (redoButton, #selector(redo), "arrow.uturn.forward", "⇧⌘Z"),
+            (deleteButton, #selector(deleteSel), "trash", "Delete"),
+            (doneButton, #selector(done), "checkmark", "Return"),
+            (cancelButton, #selector(cancel), "xmark", "Esc")
+        ] {
+            button.target = self; button.action = action
+            configure(button, symbol: symbol, shortcut: shortcut)
+        }
+        for button in [styleButton, doneButton, cancelButton] { button.imagePosition = .imageLeading }
+        doneButton.toolTip = "Copy screenshot (Return)"
+        cancelButton.toolTip = "Cancel capture (Esc)"
         statusLabel.font = .systemFont(ofSize: 11); statusLabel.textColor = .labelColor
-        statusLabel.preferredMaxLayoutWidth = 300
-        Self.embed(stack, in: self, padding: NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12))
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.setAccessibilityIdentifier("capture.toolbar.status")
+        addSubview(statusLabel)
         buildStyle()
         sync()
     }
@@ -63,9 +88,17 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
             view.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -padding.bottom),
         ])
     }
-    private func item(_ title: String, action: Selector, tag: Int = 0) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-        item.target = self; item.tag = tag; return item
+    private func configure(_ button: NSButton, symbol: String, shortcut: String, selectable: Bool = false) {
+        button.bezelStyle = .regularSquare
+        button.setButtonType(selectable ? .pushOnPushOff : .momentaryPushIn)
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: button.title)?
+            .withSymbolConfiguration(.init(pointSize: 16, weight: .medium))
+        button.imagePosition = .imageOnly
+        button.font = .systemFont(ofSize: 11, weight: .medium)
+        button.toolTip = shortcut.isEmpty ? button.title : "\(button.title) (\(shortcut))"
+        button.setAccessibilityLabel(button.title)
+        button.setAccessibilityHelp(button.toolTip)
+        addSubview(button)
     }
     private func buildStyle() {
         let colors = NSStackView()
@@ -89,52 +122,54 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
         popover.contentViewController = controller; popover.behavior = .transient; popover.delegate = self
     }
     func fit(maxWidth: CGFloat) {
-        let narrow = maxWidth < 355
-        if narrow != compact {
-            let owner = compact ? stack : row
-            owner.removeArrangedSubview(actions); actions.removeFromSuperview()
-            if narrow { stack.insertArrangedSubview(actions, at: 1) } else { row.addArrangedSubview(actions) }
-            compact = narrow
+        let limit = max(1, maxWidth), padding: CGFloat = 8, height: CGFloat = 30, gap: CGFloat = 3
+        var x = padding, y = padding, used: CGFloat = 0
+        for group in groups {
+            let visible = group.filter { !$0.isHidden }
+            if !visible.isEmpty, x > padding { x += 6 }
+            for button in visible {
+                let width = button.imagePosition == .imageOnly ? height : max(60, button.intrinsicContentSize.width + 8)
+                if x > padding, x + width + padding > limit { x = padding; y += height + gap }
+                button.frame = CGRect(x: x, y: y, width: min(width, max(1, limit - padding * 2)), height: height)
+                x = button.frame.maxX + gap; used = max(used, button.frame.maxX + padding)
+            }
         }
-        statusLabel.preferredMaxLayoutWidth = max(160, min(300, maxWidth - 20))
+        let width = min(limit, max(min(360, limit), used))
+        statusLabel.frame = CGRect(x: padding, y: y + height + 5, width: max(1, width - padding * 2), height: 16)
+        preferredSize = NSSize(width: width, height: statusLabel.frame.maxY + padding)
     }
     override func mouseDown(with event: NSEvent) {}
     override func mouseDragged(with event: NSEvent) {}
     override func mouseUp(with event: NSEvent) {}
     override func rightMouseDown(with event: NSEvent) {}
-    func menuWillOpen(_ menu: NSMenu) { trackingMenu = true; editor.session.activate(editor); editor.session.commitText() }
-    func menuDidClose(_ menu: NSMenu) { trackingMenu = false; editor.session.restoreResponder() }
     func popoverDidClose(_ notification: Notification) { editor.session.restoreResponder() }
     func closePopover() { popover.close() }
     func sync() {
-        if !trackingMenu {
-        toolMenu.removeAllItems(); toolMenu.addItem(withTitle: "Tool")
-        toolMenu.menu?.autoenablesItems = false
-        if editor.session.canChooseSelection {
-            for (index, title) in ["Region", "Freehand", "Window", "Monitor", "Full Desktop"].enumerated() {
-                let entry = item(title, action: #selector(selectionChanged(_:)), tag: index)
-                entry.isEnabled = index != 2 || editor.session.canPickWindow
-                toolMenu.menu?.addItem(entry)
-            }
-            toolMenu.menu?.addItem(.separator())
+        let modes: [SelectionMode] = [.rectangle, .lasso, .pickWindow, .pickMonitor]
+        for (index, button) in selectionButtons.enumerated() {
+            button.isHidden = !editor.session.canChooseSelection
+            button.isEnabled = index != 2 || editor.session.canPickWindow
+            button.state = index < modes.count && editor.phase == .selecting(modes[index]) ? .on : .off
         }
-        for (index, tool) in tools.enumerated() where tool.0 != .crop || editor.phase == .editing {
-            let entry = item(tool.2, action: #selector(toolChanged(_:)), tag: index)
-            entry.state = (editor.phase == .annotating || editor.phase == .editing) && tool.0 == editor.tool ? .on : .off
-            entry.image = NSImage(systemSymbolName: tool.1, accessibilityDescription: tool.2)
-            toolMenu.menu?.addItem(entry)
+        for (index, button) in toolButtons.enumerated() {
+            button.isHidden = tools[index].0 == .crop && editor.phase != .editing
+            button.state = (editor.phase == .annotating || editor.phase == .editing) && tools[index].0 == editor.tool ? .on : .off
         }
-        moreMenu.removeAllItems(); moreMenu.addItem(withTitle: "More")
-        let undo = item("Undo", action: #selector(undo)), redo = item("Redo", action: #selector(redo)), delete = item("Delete selected", action: #selector(deleteSel))
-        undo.isEnabled = editor.doc.history.canUndo; redo.isEnabled = editor.doc.history.canRedo; delete.isEnabled = editor.doc.selectedID != nil
-        moreMenu.menu?.autoenablesItems = false
-        for entry in [undo, redo, delete] { moreMenu.menu?.addItem(entry) }
-        }
+        undoButton.isEnabled = editor.doc.history.canUndo; redoButton.isEnabled = editor.doc.history.canRedo
+        deleteButton.isEnabled = editor.doc.selectedID != nil
         doneButton.isEnabled = editor.session.canFinish
         doneButton.isHidden = editor.session.canChooseSelection
-        let status = editor.session.status ?? (editor.session.canChooseSelection ? "Annotate. Tab for Region. Release to copy." : nil)
-        statusLabel.stringValue = status ?? ""
-        statusLabel.isHidden = status == nil
+        let active = (selectionButtons + toolButtons).first { !$0.isHidden && $0.state == .on }?.title ?? "Capture"
+        let hint: String
+        switch editor.phase {
+        case .selecting(.pickWindow): hint = "Click a window · Esc: Cancel"
+        case .selecting(.pickMonitor): hint = "Click a monitor · Esc: Cancel"
+        case .selecting: hint = "Drag and release to copy · Esc: Cancel"
+        case .annotating: hint = "Tab: Region · Esc: Cancel"
+        case .editing, .ended: hint = "Return: Copy · Esc: Cancel"
+        }
+        statusLabel.stringValue = editor.session.status ?? "\(active) · \(hint)"
+        statusLabel.toolTip = statusLabel.stringValue
         styleButton.isEnabled = editor.styleTarget != nil
         if let kind = editor.styleTarget {
             let style = editor.doc.selected?.style ?? editor.doc.style(for: kind)
@@ -146,12 +181,12 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
             fill.state = style.filled ? .on : .off; fill.isEnabled = [.rectangle, .ellipse, .text].contains(kind)
         }
     }
-    @objc private func selectionChanged(_ item: NSMenuItem) {
+    @objc private func selectionChanged(_ item: NSButton) {
         editor.session.activate(editor)
         if item.tag == 4 { editor.session.selectDesktop() }
         else { editor.session.chooseSelection([.rectangle, .lasso, .pickWindow, .pickMonitor][item.tag]) }
     }
-    @objc private func toolChanged(_ item: NSMenuItem) { editor.setTool(tools[item.tag].0) }
+    @objc private func toolChanged(_ item: NSButton) { editor.setTool(tools[item.tag].0) }
     @objc private func openStyle() {
         editor.session.activate(editor); editor.session.commitText()
         popover.show(relativeTo: styleButton.bounds, of: styleButton, preferredEdge: .maxY)
@@ -174,9 +209,10 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
     #if SHAREX_E2E
     var e2eDone: NSButton { doneButton }
     var e2eCancel: NSButton { cancelButton }
-    var e2eTools: NSPopUpButton { toolMenu }
-    var e2eMore: NSPopUpButton { moreMenu }
+    var e2eButtons: [NSButton] { groups.flatMap { $0 }.filter { !$0.isHidden } }
+    func e2eButton(_ title: String) -> NSButton? { e2eButtons.first { $0.title == title } }
     var e2eStyle: NSButton { styleButton }
     var e2eStyleContents: NSView { popover.contentViewController!.view }
+    var e2ePopoverShown: Bool { popover.isShown }
     #endif
 }

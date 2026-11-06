@@ -270,7 +270,8 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
     func controlTextDidEndEditing(_ obj: Notification) { commitText() }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         switch selector {
-        case #selector(NSResponder.cancelOperation(_:)), #selector(NSResponder.insertNewline(_:)): commitText(); return true
+        case #selector(NSResponder.cancelOperation(_:)): cancel(); return true
+        case #selector(NSResponder.insertNewline(_:)): commitText(); return true
         case #selector(NSResponder.insertTab(_:)):
             if canChooseSelection { chooseSelection(.rectangle); return true }
             return false

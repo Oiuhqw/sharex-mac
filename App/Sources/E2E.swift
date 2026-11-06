@@ -18,6 +18,7 @@ enum E2E {
     // MARK: helper processes
 
     static func handlesHelperMode() -> Bool {
+        if let step = arg(after: "--e2e-login-item") { E2ELaunchAtLogin.run(step); return true }
         if let scenario = arg(after: "--e2e-seed-shortcuts"), let out = arg(after: "--out") {
             E2ESettings.seedShortcutRecovery(scenario, out: out)
             return true
@@ -495,6 +496,7 @@ enum E2E {
         await retina2x()
         await hotkey()
         await E2EKeyboard.run()
+        await E2ECaptureControls.run()
         await E2EClipboardOrder.run()
         await E2ESettings.run()
         record("multi-display", NSScreen.screens.count > 1, ["screens": NSScreen.screens.count],

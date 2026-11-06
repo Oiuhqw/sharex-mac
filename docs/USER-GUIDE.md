@@ -10,8 +10,8 @@ ShareX runs in the menu bar. Open the camera icon to start a capture or open **S
 2. Allow Screen Recording in **System Settings > Privacy & Security** when macOS requests it.
 3. Quit and reopen ShareX after you change that permission.
 4. Open the camera icon in the menu bar and choose **Region**.
-5. To add marks or redactions, choose an annotation from **Tool** and draw on the screen.
-6. Choose **Tool > Region** or press **Tab** to select the final capture area.
+5. To add marks or redactions, click an annotation icon in the top toolbar and draw on the screen.
+6. Choose **Region** or press **Tab** to select the final capture area.
 7. Drag around the area you want. Release the mouse to copy the finished image automatically.
 8. Open the destination app and choose **Edit > Paste**.
 
@@ -19,7 +19,7 @@ For a plain screenshot, drag the region immediately. Region and Freehand need no
 
 A new installation also saves a PNG in `~/Pictures/ShareX`. An update preserves your existing save preference and folder. **Control-Shift-1** is the only global shortcut assigned on a new installation.
 
-Click **Cancel** to close a capture without export. While you type a text annotation, a toolbar command commits the text before it runs. **Tab** commits the text and returns to Region selection. Optional **Esc** and **Return** keys first commit active text. Press **Esc** again to cancel. **Return** finishes a fixed-area editor when no text field is active.
+Press **Esc** once or click **Cancel** to close the capture and return to the live desktop without copying or saving. This also works while you type text, drag a selection, or use the Style popover. Other toolbar commands commit active text before they run. **Tab** commits text and returns to Region selection. **Return** commits active text; with no text field active, it finishes a fixed-area editor.
 
 ## Choose a capture
 
@@ -36,7 +36,7 @@ Choose a command from the ShareX menu. Each command can also have a custom short
 | Monitor… | Click a display. | Unassigned |
 | Last Region | Capture the previous area again. | Unassigned |
 
-The fixed top toolbar appears on every display. Before selection, **Tool** offers capture modes and annotation tools. Choose **Region** or **Freehand** after drawing, then release the final selection to copy. **Full Desktop** copies the entire frozen desktop with its annotations. **Window** becomes unavailable when annotations exist because a fresh window image would discard them. Fullscreen editing stays on the original displays. An annotation drag can cross a display boundary and remains one undo action.
+The fixed top toolbar appears on every display. Capture modes and annotation tools have separate icon buttons. Hover over a button to see its name and shortcut. The selected tool is highlighted and named below the icons. On narrow displays, the buttons wrap into rows. Choose **Region** or **Freehand** after drawing, then release the final selection to copy. **Full Desktop** copies the entire frozen desktop with its annotations. **Window** becomes unavailable when annotations exist because a fresh window image would discard them. Fullscreen editing stays on the original displays. An annotation drag can cross a display boundary and remains one undo action.
 
 The editor uses a frozen image. Window takes a fresh still image when you click the window. Active Window also takes a fresh still image. When editing is enabled, these captures open a titled canvas.
 
@@ -46,9 +46,9 @@ In **Settings… > Capture**, set a delay to capture a menu or another temporary
 
 ## Select an exact area
 
-Enable **Settings… > Capture > Show magnifier and crosshair**. Use the magnifier during Region or Freehand selection. The size label shows crop dimensions in image pixels, before any border or shadow.
+Enable **Settings… > Capture > Show magnifier**. The small crosshair has a white centre stroke and a black outline so it stays visible on light and dark areas. Use the magnifier during Region or Freehand selection. The size label shows crop dimensions in image pixels, before any border or shadow.
 
-Region and Freehand finish when you release the selection. To adjust a crop before export, use a fixed-area capture with **Open the editor for fixed-area captures** enabled, then choose **Tool > Crop**. Drag a crop handle to resize the area, or drag elsewhere to replace it. The magnifier also works in Crop. It hides near protected areas to avoid showing the original pixels beneath a redaction.
+Region and Freehand finish when you release the selection. To adjust a crop before export, use a fixed-area capture with **Open the editor for fixed-area captures** enabled, then choose **Crop**. Drag a crop handle to resize the area, or drag elsewhere to replace it. The magnifier also works in Crop. It hides near protected areas to avoid showing the original pixels beneath a redaction.
 
 These optional keys make small adjustments:
 
@@ -62,7 +62,7 @@ These optional keys make small adjustments:
 
 ## Add or change annotations
 
-Choose a tool from **Tool**. Drag to draw shapes and strokes. Click to place text or a step marker. The keys below are optional.
+Click a tool icon in the top toolbar. Drag to draw shapes and strokes. Click to place text or a step marker. The keys below are optional.
 
 | Tool | Optional key | Use |
 | --- | --- | --- |
@@ -81,17 +81,17 @@ Choose a tool from **Tool**. Drag to draw shapes and strokes. Click to place tex
 
 Open **Style** to change color, width or text size, opacity, fill, and effect strength. Blur and pixelation strength are adjustable. Hold **Shift** while drawing a shape if you want to constrain it.
 
-To move an annotation, choose **Tool > Select**, then drag the annotation. Optional arrow keys move it by one point. **Shift+Arrow** moves it by ten points.
+To move an annotation, choose **Select**, then drag the annotation. Optional arrow keys move it by one point. **Shift+Arrow** moves it by ten points.
 
-Choose **More > Delete selected** to remove the selected annotation. A right-click also deletes the annotation under the pointer. With no annotations, a right-click returns to area selection or cancels a fixed-area capture.
+Choose **Delete selected** to remove the selected annotation. A right-click also deletes the annotation under the pointer. With no annotations, a right-click returns to area selection or cancels a fixed-area capture.
 
-Choose **More > Undo** or **More > Redo** to change the shared history. Returning to Region selection preserves your annotations and history. Release the final region to finish, or click **Cancel** to close without export. Fixed-area editors retain **Done**, Return, and Command+C. Command+Z and Shift+Command+Z work before and after a crop exists.
+Choose **Undo** or **Redo** to change the shared history. Returning to Region selection preserves your annotations and history. Release the final region to finish, or click **Cancel** to close without export. Fixed-area editors retain **Done**, Return, and Command+C. Command+Z and Shift+Command+Z work before and after a crop exists.
 
 ## Hide sensitive content
 
 Blur and pixelation obscure detail but do not guarantee that the content cannot be inferred. To cover sensitive content completely:
 
-1. Choose **Tool > Rectangle**.
+1. Choose **Rectangle**.
 2. Open **Style** and select a color, such as black.
 3. Enable **Fill**.
 4. Move **Opacity** fully right to make the box opaque.
@@ -99,6 +99,12 @@ Blur and pixelation obscure detail but do not guarantee that the content cannot 
 6. Check the finished image before sharing it.
 
 Other screen-recording or screen-sharing apps may capture the editor before you finish the redactions. Stop those apps before opening sensitive content.
+
+## Start automatically at login
+
+Launch ShareX once from Applications. On the first normal launch after this update, ShareX registers to start each time you sign in. Capture shortcuts are then available from the menu bar.
+
+Use **Settings… > Capture > Startup > Launch ShareX at login** to change this setting. The status text shows the current macOS registration. If approval is needed, click **Open Login Items…** and allow ShareX. Turning startup off here or in System Settings remains effective when you reopen ShareX.
 
 ## Set shortcuts
 
@@ -130,7 +136,7 @@ Keep the recovery dialog open until you have the output you need. **Done** dismi
 
 ## Reduce a large capture
 
-If a selected area exceeds the output limit, the editor stays open with a size message. Choose **Tool > Crop**, reduce the area, and click **Done**. The limit is 64 Mi pixels. The image uses the highest scale of the displays that the crop touches. The app does not reduce image detail to fit the limit.
+If a selected area exceeds the output limit, the editor stays open with a size message. Choose **Crop**, reduce the area, and click **Done**. The limit is 64 Mi pixels. The image uses the highest scale of the displays that the crop touches. The app does not reduce image detail to fit the limit.
 
 If the display layout changes while you edit, the session cancels. Start a new capture after the displays settle.
 

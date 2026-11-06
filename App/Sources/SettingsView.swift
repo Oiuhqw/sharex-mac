@@ -25,6 +25,7 @@ struct SettingsView: View {
     }
 
     @ObservedObject var store: SettingsStore
+    @ObservedObject var launchAtLogin: LaunchAtLogin
     @StateObject private var shortcuts = Hotkeys.Editor()
     @State private var page: Page? = .capture
     @State private var search = ""
@@ -96,6 +97,8 @@ struct SettingsView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 700, minHeight: 520)
+        .onAppear { launchAtLogin.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in launchAtLogin.refresh() }
         .alert("Restore all shortcut defaults?", isPresented: $confirmRestoreShortcuts) {
             Button("Cancel", role: .cancel) {}
             Button("Restore Defaults", role: .destructive) { shortcuts.restoreAll() }
@@ -107,6 +110,17 @@ struct SettingsView: View {
 
     private var capturePage: some View {
         VStack(alignment: .leading, spacing: 18) {
+            SettingsSection("Startup") {
+                Toggle("Launch ShareX at login", isOn: Binding(get: { launchAtLogin.isRequested }, set: { launchAtLogin.setEnabled($0) }))
+                    .accessibilityIdentifier("settings.startup.enabled")
+                Text(launchAtLogin.detail)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("settings.startup.status")
+                if launchAtLogin.status == .requiresApproval || launchAtLogin.errorMessage != nil {
+                    Button("Open Login Items…") { launchAtLogin.openSystemSettings() }
+                        .accessibilityIdentifier("settings.startup.openSettings")
+                }
+            }
             SettingsSection("Before capture") {
                 Picker("Capture delay", selection: binding(\.options.delaySeconds)) {
                     ForEach(Array(Set(CaptureOptions.delayChoices + [store.value.options.delaySeconds])).sorted(), id: \.self) {
@@ -118,7 +132,7 @@ struct SettingsView: View {
                     .accessibilityIdentifier("settings.capture.cursor")
             }
             SettingsSection("Selection and editing") {
-                Toggle("Show magnifier and crosshair", isOn: binding(\.options.showMagnifier))
+                Toggle("Show magnifier", isOn: binding(\.options.showMagnifier))
                     .accessibilityIdentifier("settings.capture.magnifier")
                 Text("Inspect pixels while you select or adjust an area.")
                     .font(.caption).foregroundStyle(.secondary)

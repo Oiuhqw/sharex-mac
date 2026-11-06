@@ -15,6 +15,14 @@ final class OverlayWindow: NSPanel {
     override var canBecomeKey: Bool { true }
     // A non-activating panel must not become main; that would require activating the app.
     override var canBecomeMain: Bool { false }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, event.keyCode == 53, let editor = contentView as? EditorView {
+            editor.cancel()
+            return
+        }
+        super.sendEvent(event)
+    }
 }
 
 /// How an editor session ended.
@@ -33,6 +41,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private var completion: ((EditorOutcome) -> Void)?
     private let onStyles: ([ShapeKind: ShapeStyle]) -> Void
     private var previousApp: NSRunningApplication?
+    private var escapeMonitor: Any?
     private var preparationFailed = false
     private var topologyObserver: NSObjectProtocol?
     #if SHAREX_E2E
@@ -148,6 +157,16 @@ final class OverlayController: NSObject, NSWindowDelegate {
             if preparationFailed { reportPreparationFailure() }
             close(.cancelled); return
         }
+        // Popovers have their own window and responder. Esc still ends the whole capture.
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53 else { return event }
+            let cancelled = MainActor.assumeIsolated {
+                guard let self, self.completion != nil else { return false }
+                self.session?.cancel()
+                return true
+            }
+            return cancelled ? nil : event
+        }
         // Remember who had focus so it gets it back afterwards (and Active Window keeps working next time).
         let front = NSWorkspace.shared.frontmostApplication
         previousApp = front == .current ? nil : front
@@ -172,6 +191,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private func close(_ outcome: EditorOutcome) {
         guard let c = completion else { return }
         completion = nil
+        if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }; escapeMonitor = nil
         if let topologyObserver { NotificationCenter.default.removeObserver(topologyObserver) }; topologyObserver = nil
         // Styles are saved whether the capture finished or was cancelled; they are preferences, not edits.
         if !surfaces.isEmpty { onStyles(session?.doc.styles ?? [:]) }

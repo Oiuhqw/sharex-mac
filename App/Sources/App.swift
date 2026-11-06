@@ -48,6 +48,7 @@ private func editMenuBar() -> NSMenu {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let settings = SettingsStore()
+    let launchAtLogin = LaunchAtLogin()
     lazy var coordinator = CaptureCoordinator(settings: settings)
     var statusItem: NSStatusItem!
     var settingsWindow: NSWindow?
@@ -62,6 +63,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ScreenCapture.prefetch()
         #if SHAREX_E2E
         if E2E.enabled { E2E.start(self); return }
+        #else
+        launchAtLogin.enableByDefaultIfNeeded()
         #endif
         if !Permissions.hasScreenRecording { Permissions.requestScreenRecording() }
     }
@@ -139,7 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func openSettings() {
         if settingsWindow == nil {
-            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(store: settings)))
+            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(store: settings, launchAtLogin: launchAtLogin)))
             w.title = "ShareX Settings"
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             w.setContentSize(NSSize(width: 760, height: 560))

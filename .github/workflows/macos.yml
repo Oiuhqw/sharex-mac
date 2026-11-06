@@ -95,6 +95,9 @@ jobs:
       - name: E2E (real app, real pasteboard; SCK if TCC grant works)
         run: scripts/e2e.sh
 
+      - name: Launch at login (registration, relaunch, opt-out)
+        run: bash scripts/e2e-login.sh
+
       - name: E2E across mixed-scale virtual displays
         if: ${{ !cancelled() && steps.debug-build.outcome == 'success' }}
         timeout-minutes: 12

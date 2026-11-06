@@ -21,9 +21,8 @@ enum E2EEditing {
     @discardableResult
     static func tool(_ tip: String, in s: Session) -> Bool {
         let title = tip.components(separatedBy: " (")[0]
-        guard let menu = s.view.e2eToolbar.e2eTools.menu, let item = menu.items.first(where: { $0.title == title }),
-              let action = item.action else { return false }
-        return NSApp.sendAction(action, to: item.target, from: item)
+        guard let button = s.view.e2eToolbar.e2eButton(title), button.isEnabled else { return false }
+        button.performClick(nil); return true
     }
 
     private static func styleViews(_ s: Session) -> [NSView] { views(s.view.e2eToolbar.e2eStyleContents) }
@@ -31,9 +30,6 @@ enum E2EEditing {
     @discardableResult
     static func button(_ tip: String, in s: Session) -> Bool {
         let title = tip.components(separatedBy: " (")[0]
-        if let item = s.view.e2eToolbar.e2eMore.menu?.items.first(where: { $0.title == title }), item.isEnabled, let action = item.action {
-            return NSApp.sendAction(action, to: item.target, from: item)
-        }
         guard let control = (views(s.view) + styleViews(s)).compactMap({ $0 as? NSButton }).first(where: { $0.title == title }),
               control.isEnabled else { return false }
         control.performClick(nil); return true
