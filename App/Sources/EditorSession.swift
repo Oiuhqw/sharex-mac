@@ -108,7 +108,10 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
     }
     func undo() {
         commitText(); doc.undo()
-        if phase == .editing, doc.state.crop == nil { phase = .annotating; lasso = nil }
+        if phase == .editing, doc.state.crop == nil {
+            phase = .annotating; lasso = nil
+            if doc.tool == .crop { doc.tool = .select }
+        }
         restoreResponder(); refresh()
     }
     func redo() {
@@ -211,6 +214,7 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
             }
             else { lasso = nil }
         case (.selecting(.pickWindow), _):
+            guard canPickWindow else { phase = .annotating; hover = nil; refresh(); return }
             if let i = pickIndex(at: p), windows.indices.contains(i) { end(.pickedWindow(windows[i])); return }
         case (.selecting(.pickMonitor), _):
             if let r = pickTarget(at: p) { enterEditing(crop: r); if finishOnPick { finish() } }

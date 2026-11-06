@@ -12,6 +12,8 @@ enum E2EAnnotateFirst {
             $0.toolStyles = [:]; $0.saveToFile = true; $0.saveFolder = E2E.saved.path; $0.playSound = false
         }
         for tab in [true, false] { await annotated(tab: tab) }
+        await windowPickAfterRedo()
+        await undoCropToAnnotations()
         await plainRelease()
         await invalidLasso()
         await cancelled()
@@ -20,6 +22,87 @@ enum E2EAnnotateFirst {
     private static func unchanged(_ mark: (change: Int, files: [String])) -> Bool {
         NSPasteboard.general.changeCount == mark.change && NSPasteboard.general.string(forType: .string) == "e2e-sentinel"
             && E2E.savedFiles() == mark.files
+    }
+
+    private static func windowPickAfterRedo() async {
+        let name = "annotate-first-window-pick-after-redo", mark = E2E.markClipboard()
+        let openEditor = E2E.app.settings.value.options.openEditor
+        E2E.setOpts { $0.options.openEditor = false }
+        defer { E2E.setOpts { $0.options.openEditor = openEditor } }
+        guard let target = E2E.patternWindow() else {
+            E2E.record(name, false, ["error": "no window target"]); return
+        }
+        E2E.coord.capture(.region)
+        guard await E2E.until({ E2E.surface() != nil }), let surface = E2E.surface(),
+              let source = surface.view.renderer.source.sample(E2E.C, scale: E2E.scale, maximumPixels: Imaging.maximumPixels) else {
+            E2E.record(name, false, ["error": "no region overlay"]); return
+        }
+        let view = surface.view
+        let fixture = E2EEditing.Session(mark: mark, window: surface.window, view: view, original: E2E.bitmap(source))
+        var checks = E2EEditing.tool("Blur", in: fixture)
+        E2E.drag(CGPoint(x: 150, y: 150), CGPoint(x: 300, y: 250))
+        let annotated = view.doc.state, expected = E2EEditing.image(fixture)
+        checks = annotated.annotations.count == 1 && unchanged(mark) && checks
+        checks = E2EEditing.button("Undo", in: fixture) && checks
+        checks = view.doc.annotations.isEmpty && view.session.canPickWindow && checks
+        checks = E2EEditing.tool("Window", in: fixture) && checks
+        checks = view.phase == .selecting(.pickWindow) && checks
+        checks = E2EEditing.button("Redo", in: fixture) && checks
+        checks = view.phase == .selecting(.pickWindow) && view.doc.state == annotated && !view.session.canPickWindow && checks
+        let rect = Geometry.cocoaToDisplayTopLeft(target.frame, screenFrame: E2E.screen.frame)
+        let point = CGPoint(x: rect.midX, y: rect.midY)
+        E2E.mouse(.mouseMoved, point, in: surface)
+        checks = view.session.hover != nil && checks
+        E2E.click(point)
+        let rejected = view.phase == .annotating && view.doc.state == annotated && surface.window.isVisible
+            && E2E.coord.busy && unchanged(mark)
+        guard rejected else {
+            E2E.record(name, false, ["setup": checks, "windowPickRejected": rejected])
+            view.cancel(); _ = await E2E.until { !E2E.coord.busy }; return
+        }
+        await finishRegion(name, fixture, expected: expected, checks: checks,
+                           info: ["windowPickRejected": rejected, "annotationPreserved": view.doc.state == annotated])
+    }
+
+    private static func undoCropToAnnotations() async {
+        let name = "annotate-first-undo-crop-tool", mark = E2E.markClipboard()
+        E2E.setOpts { $0.options.openEditor = true }
+        E2E.coord.capture(.region)
+        guard await E2E.until({ E2E.surface() != nil }), let surface = E2E.surface(),
+              let source = surface.view.renderer.source.sample(E2E.C, scale: E2E.scale, maximumPixels: Imaging.maximumPixels) else {
+            E2E.record(name, false, ["error": "no region overlay"]); return
+        }
+        let view = surface.view
+        let fixture = E2EEditing.Session(mark: mark, window: surface.window, view: view, original: E2E.bitmap(source))
+        var checks = E2EEditing.tool("Blur", in: fixture)
+        E2E.drag(CGPoint(x: 150, y: 150), CGPoint(x: 300, y: 250))
+        let annotated = view.doc.state, expected = E2EEditing.image(fixture)
+        E2E.drag(CGPoint(x: 340, y: 140), CGPoint(x: 400, y: 220))
+        checks = view.doc.annotations.count == 2 && E2EEditing.tool("Monitor", in: fixture) && checks
+        E2E.click(CGPoint(x: 300, y: 300))
+        checks = view.phase == .editing && view.doc.state.crop != nil && unchanged(mark) && checks
+        checks = E2EEditing.tool("Crop", in: fixture) && checks
+        checks = view.tool == .crop && E2EEditing.button("Undo", in: fixture) && checks
+        let restored = view.phase == .annotating && view.doc.state == annotated && view.tool == .select
+            && !view.e2eToolbar.e2eTools.itemTitles.contains("Crop") && view.e2eToolbar.e2eDone.isHidden
+        E2E.drag(CGPoint(x: 340, y: 280), CGPoint(x: 400, y: 340))
+        let noHiddenCrop = view.doc.state == annotated && view.doc.history.canRedo && unchanged(mark)
+            && surface.window.isVisible && E2E.coord.busy
+        await finishRegion(name, fixture, expected: expected, checks: checks && restored && noHiddenCrop,
+                           info: ["undoRestoredAnnotations": restored, "dragDidNotCreateCrop": noHiddenCrop])
+    }
+
+    private static func finishRegion(_ name: String, _ fixture: E2EEditing.Session, expected: E2E.Bitmap?,
+                                     checks: Bool, info: [String: Any]) async {
+        let selected = E2EEditing.tool("Region", in: fixture)
+        E2E.drag(E2E.C.origin, CGPoint(x: E2E.C.maxX, y: E2E.C.maxY))
+        let finished = await E2E.until { !E2E.coord.busy }
+        guard let clip = E2E.checkClipboard(name, since: fixture.mark, w: E2E.cw, h: E2E.ch) else { return }
+        let blur = E2E.diffFrac(clip.png, fixture.original,
+                               CGRect(x: E2E.px(60), y: E2E.px(60), width: E2E.px(130), height: E2E.px(80)))
+        E2E.record(name, checks && selected && finished && clip.ok && blur > 0.15 && expected?.px == clip.png.px
+                   && fixture.view.phase == .ended && !fixture.window.isVisible,
+                   clip.info.merging(info) { $1 }.merging(["blurChangedFraction": blur, "finalRegionMatches": expected?.px == clip.png.px]) { $1 })
     }
 
     private static func annotated(tab: Bool) async {
