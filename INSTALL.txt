@@ -1,14 +1,10 @@
-ShareX for macOS 0.1.4, build 5
+ShareX for macOS 0.1.5, build 6
 
 Requires macOS 14 or later on Apple Silicon. The app contains arm64 code only.
 Intel Macs are unsupported.
 
-Download ShareX.dmg and ShareX.dmg.sha256 from the same release:
-https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.4
-
-In the download folder, verify the DMG before installing:
-
-    shasum -a 256 -c ShareX.dmg.sha256
+Download ShareX.dmg from the release:
+https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.5
 
 Open the DMG. Drag ShareX.app to Applications, then open it.
 ShareX appears in the menu bar. Open the camera icon and choose Region.
@@ -16,7 +12,7 @@ Allow Screen Recording in System Settings > Privacy & Security.
 Quit and reopen ShareX after you change that permission.
 
 To annotate, choose a drawing, Blur, or Pixelate tool before selecting the area.
-Choose Tool > Region or press Tab, then drag the final area.
+Click Region in the toolbar or press Tab, then drag the final area.
 Release the mouse to copy the finished image. No Done click is needed.
 For a plain screenshot, drag the region immediately.
 New installations also save a PNG in Pictures/ShareX.
@@ -27,7 +23,7 @@ The packaging workflow does not use Developer ID signing.
 After the first launch attempt, a downloaded copy may require
 System Settings > Privacy & Security > Open Anyway.
 
-If macOS says the verified app is damaged or refuses to open it, remove its
+If macOS says the downloaded app is damaged or refuses to open it, remove its
 download quarantine flag after copying it to Applications:
 
     xattr -dr com.apple.quarantine /Applications/ShareX.app
@@ -37,6 +33,12 @@ Then open the app again.
 If capture permission stops working after an ad-hoc update, remove the old
 ShareX entry from Screen Recording permissions. Add the updated
 /Applications/ShareX.app, then quit and reopen it.
+
+Changes in 0.1.5:
+- Press Esc once to cancel the capture, including active text and Style controls.
+- ShareX registers to launch at login. Change this in Settings > Capture > Startup.
+- The toolbar shows direct tool icons, tooltips, and the selected tool.
+- A compact outlined crosshair replaces the full-screen guide lines.
 
 Changes in 0.1.4:
 - Annotate the frozen desktop before selecting the final capture area.
@@ -78,8 +80,9 @@ Included from 0.1.1:
 - Blur and pixelation strength start at 8 points. An opaque filled box covers sensitive content completely.
 - Blur uses a reduced-resolution drag preview and full-resolution saved output.
 
-Native automated checks cover capture, editing, clipboard and PNG output,
-output recovery, and mixed-scale virtual-display layouts.
+Earlier native automated checks cover capture, editing, clipboard and PNG
+output, output recovery, and mixed-scale virtual-display layouts. Version 0.1.5
+has package build and launch checks; its full native E2E suite was not run.
 
 Physical mouse transitions, separate Spaces, physical display hot-plug, real
 mixed-density display capture, physical shortcuts, and interactive permission

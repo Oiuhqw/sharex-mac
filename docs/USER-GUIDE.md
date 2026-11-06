@@ -1,6 +1,6 @@
 # Capture and edit a screenshot
 
-ShareX requires macOS 14 or later on Apple Silicon. Intel Macs are unsupported. Download the [0.1.4 release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.4), then follow the [installation instructions](../INSTALL.txt). The package is ad-hoc signed with Hardened Runtime and is not notarized.
+ShareX requires macOS 14 or later on Apple Silicon. Intel Macs are unsupported. Download the [0.1.5 release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.5), then follow the [installation instructions](../INSTALL.txt). The package is ad-hoc signed with Hardened Runtime and is not notarized.
 
 ShareX runs in the menu bar. Open the camera icon to start a capture or open **Settings…**.
 

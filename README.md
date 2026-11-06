@@ -6,9 +6,9 @@ Use the [user guide](docs/USER-GUIDE.md) for capture, editing, shortcuts, and ou
 
 ## Latest built package
 
-Version **0.1.4, build 5** supports **Apple Silicon Macs running macOS 14 or later**. The app contains arm64 code only. **Intel Macs are unsupported.** Download `ShareX.dmg`, `ShareX.dmg.sha256`, and `INSTALL.txt` from the [0.1.4 GitHub release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.4).
+Version **0.1.5, build 6** supports **Apple Silicon Macs running macOS 14 or later**. The app contains arm64 code only. **Intel Macs are unsupported.** Download `ShareX.dmg` from the [0.1.5 GitHub release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.5).
 
-Verify the DMG against the checksum attached to that same release. The release notes identify the merged source and package build. The app is ad-hoc signed with Hardened Runtime and is not Apple-notarized. Read the [installation instructions](INSTALL.txt) before opening it.
+Each release has one installer, `ShareX.dmg`. Installation instructions are included inside it. The release notes identify the merged source and package build. The app is ad-hoc signed with Hardened Runtime and is not Apple-notarized. Read the [installation instructions](INSTALL.txt) before opening it.
 
 ## Capture and edit
 
@@ -127,15 +127,11 @@ Developer ID signing and notarization require the owner's Apple credentials. The
 
 ## Install the DMG
 
-Download the DMG and checksum from the [same 0.1.4 release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.4). In the download folder, verify the file:
-
-```sh
-shasum -a 256 -c ShareX.dmg.sha256
-```
+Download [ShareX.dmg from the 0.1.5 release](https://github.com/Oiuhqw/sharex-mac/releases/download/v0.1.5/ShareX.dmg).
 
 Open the DMG and drag ShareX to Applications. Gatekeeper may block the first launch because the app is not notarized. After the first launch attempt, use **System Settings > Privacy & Security > Open Anyway**.
 
-If macOS reports that the verified app is damaged or still refuses to open it, remove its download quarantine flag:
+If macOS reports that the downloaded app is damaged or still refuses to open it, remove its download quarantine flag:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/ShareX.app
