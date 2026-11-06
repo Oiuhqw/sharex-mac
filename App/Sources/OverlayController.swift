@@ -159,11 +159,13 @@ final class OverlayController: NSObject, NSWindowDelegate {
         }
         // Popovers have their own window and responder. Esc still ends the whole capture.
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            MainActor.assumeIsolated {
-                guard event.keyCode == 53, let self, self.completion != nil else { return event }
+            guard event.keyCode == 53 else { return event }
+            let cancelled = MainActor.assumeIsolated {
+                guard let self, self.completion != nil else { return false }
                 self.session?.cancel()
-                return nil
+                return true
             }
+            return cancelled ? nil : event
         }
         // Remember who had focus so it gets it back afterwards (and Active Window keeps working next time).
         let front = NSWorkspace.shared.frontmostApplication

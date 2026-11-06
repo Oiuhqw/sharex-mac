@@ -80,8 +80,8 @@ enum E2EEditorRegression {
             E2E.mouse(type, CGPoint(x: point.x - 300, y: point.y), in: owner)
         }
         owner.view.setTool(.shape(.rectangle)); owner.view.changeStyle { $0.filled = true; $0.color = .black }
-        send(.leftMouseDown, CGPoint(x: 340, y: 220)); send(.leftMouseDragged, CGPoint(x: 260, y: 240))
-        send(.leftMouseUp, CGPoint(x: 260, y: 240))
+        send(.leftMouseDown, CGPoint(x: 340, y: 230)); send(.leftMouseDragged, CGPoint(x: 260, y: 250))
+        send(.leftMouseUp, CGPoint(x: 260, y: 250))
         E2E.record("editor-\(tag)-annotate-before-selection", session.phase == .annotating
                    && session.doc.state.crop == nil && session.doc.annotations.count == 1 && outcomes.isEmpty)
         session.chooseSelection(mode)
