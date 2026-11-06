@@ -132,7 +132,7 @@ final class ToolbarView: NSVisualEffectView, NSMenuDelegate, NSPopoverDelegate {
         }
         doneButton.isEnabled = editor.session.canFinish
         doneButton.isHidden = editor.session.canChooseSelection
-        let status = editor.session.status ?? (editor.session.canChooseSelection ? "Annotate, then choose Region or press Tab. Drag and release to copy." : nil)
+        let status = editor.session.status ?? (editor.session.canChooseSelection ? "Annotate. Tab for Region. Release to copy." : nil)
         statusLabel.stringValue = status ?? ""
         statusLabel.isHidden = status == nil
         styleButton.isEnabled = editor.styleTarget != nil

@@ -62,7 +62,10 @@ final class EditorView: NSView {
         let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeAlways, .inVisibleRect, .mouseEnteredAndExited], owner: self)
         addTrackingArea(area); moveArea = area
     }
-    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window != nil { updateTrackingAreas(); syncMouse() } }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { updateTrackingAreas(); refresh(); syncMouse() }
+    }
     func syncMouse() {
         guard let window else { return }
         let p = convert(window.mouseLocationOutsideOfEventStream, from: nil)
@@ -138,6 +141,7 @@ final class EditorView: NSView {
         case .ended: break
         }
         toolbar.sync(); toolbar.fit(maxWidth: max(1, bounds.width - 8))
+        toolbar.layoutSubtreeIfNeeded()
         let size = toolbar.fittingSize
         toolbar.frame = CGRect(x: max(4, (bounds.width - size.width) / 2), y: safeTop, width: size.width, height: size.height)
         window?.invalidateCursorRects(for: self)

@@ -42,6 +42,13 @@ enum E2EMultiDisplay {
         guard let item = menu.menu?.items.first(where: { $0.title == title }), item.isEnabled, let action = item.action else { return false }
         return NSApp.sendAction(action, to: item.target, from: item)
     }
+    private static func seamPoints(from a: CGRect, to b: CGRect, offset: CGSize) -> (CGPoint, CGPoint) {
+        let vertical = a.maxY == b.minY || b.maxY == a.minY
+        let overlapLeft = max(a.minX, b.minX), overlapRight = min(a.maxX, b.maxX)
+        let seamX = overlapLeft + (overlapRight - overlapLeft) / 4
+        return (CGPoint(x: (vertical ? seamX : a.midX) - offset.width, y: a.midY - offset.height),
+                CGPoint(x: (vertical ? seamX : b.midX) + offset.width, y: b.midY + offset.height))
+    }
     private static func previewMatches(_ rig: Rig, crop: CGRect, name: String) async -> (ok: Bool, info: [String: Any]) {
         guard let flat = Export.flatten(renderer: rig.session.renderer, doc: rig.session.doc, crop: crop, lasso: nil) else {
             return (false, ["error": "export unavailable"])
@@ -170,8 +177,7 @@ enum E2EMultiDisplay {
             let rig = Rig(frozen)
             guard rig.surfaces.count == 2 else { E2E.record("multidisplay-panels", false); rig.cancel(); return }
             let a = rig.surfaces[reversed ? 1 : 0], b = rig.surfaces[reversed ? 0 : 1]
-            let p = CGPoint(x: a.view.viewport.midX - 100, y: a.view.viewport.midY - 70)
-            let q = CGPoint(x: b.view.viewport.midX + 100, y: b.view.viewport.midY + 70)
+            let (p, q) = seamPoints(from: a.view.viewport, to: b.view.viewport, offset: CGSize(width: 100, height: 70))
             let toolbarFrames = rig.surfaces.map { $0.view.e2eToolbar.frame }
             let crop = Geometry.rect(from: p, to: q), tag = reversed ? "reverse" : "forward"
             let chosen = command("Rectangle", menu: b.view.e2eToolbar.e2eTools)
@@ -200,8 +206,11 @@ enum E2EMultiDisplay {
                        && a.view.session === b.view.session && a.view.renderer === b.view.renderer)
             let preview = await previewMatches(rig, crop: crop, name: "seam-\(tag)")
             E2E.record("multidisplay-seam-preview-\(tag)", preview.ok, preview.info)
-            E2E.record("multidisplay-toolbar-stays-top-\(tag)", toolbarFrames == rig.surfaces.map { $0.view.e2eToolbar.frame }
-                       && rig.surfaces.allSatisfy { $0.view.e2eToolbar.frame.minY == $0.view.safeTop })
+            let finalToolbarFrames = rig.surfaces.map { $0.view.e2eToolbar.frame }
+            E2E.record("multidisplay-toolbar-stays-top-\(tag)", toolbarFrames == finalToolbarFrames
+                       && rig.surfaces.allSatisfy { $0.view.e2eToolbar.frame.minY == $0.view.safeTop },
+                       ["initialFrames": toolbarFrames.map { NSStringFromRect($0) },
+                        "finalFrames": finalToolbarFrames.map { NSStringFromRect($0) }])
             let expected = Export.flatten(renderer: rig.session.renderer, doc: rig.session.doc, crop: crop, lasso: nil).map(E2E.bitmap)
             event(.leftMouseUp, q, from: a)
             E2E.record("multidisplay-mouse-release-once-\(tag)", rig.session.phase == .ended && rig.outcomes.count == 1 && rig.result != nil
@@ -240,8 +249,7 @@ enum E2EMultiDisplay {
             let rig = Rig(frozen), surfaces = rig.surfaces
             guard surfaces.count == 2 else { rig.cancel(); continue }
             let a = surfaces[0], b = surfaces[1]
-            let p = CGPoint(x: a.view.viewport.midX - 60, y: a.view.viewport.midY - 60)
-            let q = CGPoint(x: b.view.viewport.midX + 60, y: b.view.viewport.midY + 60)
+            let (p, q) = seamPoints(from: a.view.viewport, to: b.view.viewport, offset: CGSize(width: 60, height: 60))
             a.view.setTool(.shape(kind)); drag(p, q, from: a)
             let crop = Geometry.rect(from: p, to: q)
             E2E.record("multidisplay-effect-before-selection-\(kind.rawValue)", rig.session.phase == .annotating
