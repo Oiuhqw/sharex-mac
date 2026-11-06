@@ -1,6 +1,6 @@
 # Capture and edit a screenshot
 
-ShareX requires macOS 14 or later on Apple Silicon. Intel Macs are unsupported. Download the [0.1.3 release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.3), then follow the [installation instructions](../INSTALL.txt). The package is ad-hoc signed with Hardened Runtime and is not notarized.
+ShareX requires macOS 14 or later on Apple Silicon. Intel Macs are unsupported. Download the [0.1.4 release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.4), then follow the [installation instructions](../INSTALL.txt). The package is ad-hoc signed with Hardened Runtime and is not notarized.
 
 ShareX runs in the menu bar. Open the camera icon to start a capture or open **Settings…**.
 
@@ -10,14 +10,16 @@ ShareX runs in the menu bar. Open the camera icon to start a capture or open **S
 2. Allow Screen Recording in **System Settings > Privacy & Security** when macOS requests it.
 3. Quit and reopen ShareX after you change that permission.
 4. Open the camera icon in the menu bar and choose **Region**.
-5. Drag a rectangle around the area you want.
-6. Choose an annotation from **Tool** and draw on the image.
-7. Click **Done** to finish.
+5. To add marks or redactions, choose an annotation from **Tool** and draw on the screen.
+6. Choose **Tool > Region** or press **Tab** to select the final capture area.
+7. Drag around the area you want. Release the mouse to copy the finished image automatically.
 8. Open the destination app and choose **Edit > Paste**.
+
+For a plain screenshot, drag the region immediately. Region and Freehand need no **Done** click. Drawing and tool changes do not copy or save intermediate images.
 
 A new installation also saves a PNG in `~/Pictures/ShareX`. An update preserves your existing save preference and folder. **Control-Shift-1** is the only global shortcut assigned on a new installation.
 
-Click **Cancel** to close a capture without export. While you type a text annotation, a toolbar command commits the text before it runs. Optional **Esc** and **Return** keys first commit active text. Press the key again to cancel or finish the capture.
+Click **Cancel** to close a capture without export. While you type a text annotation, a toolbar command commits the text before it runs. **Tab** commits the text and returns to Region selection. Optional **Esc** and **Return** keys first commit active text. Press **Esc** again to cancel. **Return** finishes a fixed-area editor when no text field is active.
 
 ## Choose a capture
 
@@ -34,7 +36,7 @@ Choose a command from the ShareX menu. Each command can also have a custom short
 | Monitor… | Click a display. | Unassigned |
 | Last Region | Capture the previous area again. | Unassigned |
 
-The fixed top toolbar appears on every display. Before selection, **Tool** offers Region, Freehand, Window, Monitor, and Full Desktop. Fullscreen editing stays on the original displays. A drag can cross a display boundary and remains one undo action.
+The fixed top toolbar appears on every display. Before selection, **Tool** offers capture modes and annotation tools. Choose **Region** or **Freehand** after drawing, then release the final selection to copy. **Full Desktop** copies the entire frozen desktop with its annotations. **Window** becomes unavailable when annotations exist because a fresh window image would discard them. Fullscreen editing stays on the original displays. An annotation drag can cross a display boundary and remains one undo action.
 
 The editor uses a frozen image. Window takes a fresh still image when you click the window. Active Window also takes a fresh still image. When editing is enabled, these captures open a titled canvas.
 
@@ -46,7 +48,7 @@ In **Settings… > Capture**, set a delay to capture a menu or another temporary
 
 Enable **Settings… > Capture > Show magnifier and crosshair**. Use the magnifier during Region or Freehand selection. The size label shows crop dimensions in image pixels, before any border or shadow.
 
-After selection, choose **Tool > Crop**. Drag a crop handle to resize the area, or drag elsewhere to replace it. The magnifier also works in Crop. It hides near protected areas to avoid showing the original pixels beneath a redaction.
+Region and Freehand finish when you release the selection. To adjust a crop before export, use a fixed-area capture with **Open the editor for fixed-area captures** enabled, then choose **Tool > Crop**. Drag a crop handle to resize the area, or drag elsewhere to replace it. The magnifier also works in Crop. It hides near protected areas to avoid showing the original pixels beneath a redaction.
 
 These optional keys make small adjustments:
 
@@ -83,7 +85,7 @@ To move an annotation, choose **Tool > Select**, then drag the annotation. Optio
 
 Choose **More > Delete selected** to remove the selected annotation. A right-click also deletes the annotation under the pointer. With no annotations, a right-click returns to area selection or cancels a fixed-area capture.
 
-Choose **More > Undo** or **More > Redo** to change the shared history. Click **Done** to finish or **Cancel** to close the capture. Optional keys include Command+Z, Shift+Command+Z, Return, and Command+C.
+Choose **More > Undo** or **More > Redo** to change the shared history. Returning to Region selection preserves your annotations and history. Release the final region to finish, or click **Cancel** to close without export. Fixed-area editors retain **Done**, Return, and Command+C. Command+Z and Shift+Command+Z work before and after a crop exists.
 
 ## Hide sensitive content
 
@@ -128,7 +130,7 @@ Keep the recovery dialog open until you have the output you need. **Done** dismi
 
 ## Reduce a large capture
 
-If **Done** is disabled with a size message, choose **Tool > Crop** and reduce the selected area. The limit is 64 Mi pixels. The image uses the highest scale of the displays that the crop touches. The app does not reduce image detail to fit the limit.
+If a selected area exceeds the output limit, the editor stays open with a size message. Choose **Tool > Crop**, reduce the area, and click **Done**. The limit is 64 Mi pixels. The image uses the highest scale of the displays that the crop touches. The app does not reduce image detail to fit the limit.
 
 If the display layout changes while you edit, the session cancels. Start a new capture after the displays settle.
 

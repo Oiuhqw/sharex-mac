@@ -62,7 +62,10 @@ final class EditorView: NSView {
         let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeAlways, .inVisibleRect, .mouseEnteredAndExited], owner: self)
         addTrackingArea(area); moveArea = area
     }
-    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window != nil { updateTrackingAreas(); syncMouse() } }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { updateTrackingAreas(); refresh(); syncMouse() }
+    }
     func syncMouse() {
         guard let window else { return }
         let p = convert(window.mouseLocationOutsideOfEventStream, from: nil)
@@ -93,7 +96,8 @@ final class EditorView: NSView {
         switch e.keyCode {
         case 53: cancel(); return                                   // Esc
         case 36, 76: if phase == .editing { finish() }; return       // Return, keypad Enter
-        case 51, 117: if phase == .editing { deleteSelection() }; return
+        case 48: session.chooseSelection(.rectangle); return        // Tab
+        case 51, 117: if phase == .editing || phase == .annotating { deleteSelection() }; return
         case 123...126: session.nudge(e.keyCode, by: shift ? 10 : 1, resizing: e.modifierFlags.contains(.option)); return
         default: break
         }
@@ -106,7 +110,7 @@ final class EditorView: NSView {
             }
             return
         }
-        if phase == .editing, let t = Tool.forKey(ch) { setTool(t) }
+        if session.canAnnotate, let t = Tool.forKey(ch) { setTool(t) }
     }
 
 
@@ -120,10 +124,7 @@ final class EditorView: NSView {
     func refresh() {
         CATransaction.begin(); CATransaction.setDisableActions(true); defer { CATransaction.commit() }
         switch phase {
-        case .selecting:
-            annotationsView?.isHidden = true; liveView?.isHidden = true
-            liveView?.show(nil, renderer: renderer)
-        case .editing:
+        case .selecting, .annotating, .editing:
             if annotationsView == nil {
                 let annotations = AnnotationsView(frame: bounds, renderer: renderer)
                 annotations.bounds = viewport
@@ -140,6 +141,7 @@ final class EditorView: NSView {
         case .ended: break
         }
         toolbar.sync(); toolbar.fit(maxWidth: max(1, bounds.width - 8))
+        toolbar.layoutSubtreeIfNeeded()
         let size = toolbar.fittingSize
         toolbar.frame = CGRect(x: max(4, (bounds.width - size.width) / 2), y: safeTop, width: size.width, height: size.height)
         window?.invalidateCursorRects(for: self)
@@ -157,6 +159,8 @@ final class EditorView: NSView {
             if mode == .rectangle || mode == .lasso, let mouse = session.mouse, viewport.contains(mouse) {
                 state.crosshair = local(mouse); setMagnifier(mouse, state: &state)
             }
+        case .annotating:
+            if let selected = doc.selected { state.selection = local(selected.bounds) }
         case .editing:
             let crop = doc.state.crop ?? bounds0, localCrop = local(crop)
             let hole = CGMutablePath()

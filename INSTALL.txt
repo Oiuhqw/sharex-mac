@@ -1,10 +1,10 @@
-ShareX for macOS 0.1.3, build 4
+ShareX for macOS 0.1.4, build 5
 
 Requires macOS 14 or later on Apple Silicon. The app contains arm64 code only.
 Intel Macs are unsupported.
 
 Download ShareX.dmg and ShareX.dmg.sha256 from the same release:
-https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.3
+https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.4
 
 In the download folder, verify the DMG before installing:
 
@@ -14,6 +14,13 @@ Open the DMG. Drag ShareX.app to Applications, then open it.
 ShareX appears in the menu bar. Open the camera icon and choose Region.
 Allow Screen Recording in System Settings > Privacy & Security.
 Quit and reopen ShareX after you change that permission.
+
+To annotate, choose a drawing, Blur, or Pixelate tool before selecting the area.
+Choose Tool > Region or press Tab, then drag the final area.
+Release the mouse to copy the finished image. No Done click is needed.
+For a plain screenshot, drag the region immediately.
+New installations also save a PNG in Pictures/ShareX.
+Updates preserve your output settings.
 
 This build is ad-hoc signed with Hardened Runtime. It is not Apple-notarized.
 The packaging workflow does not use Developer ID signing.
@@ -30,6 +37,13 @@ Then open the app again.
 If capture permission stops working after an ad-hoc update, remove the old
 ShareX entry from Screen Recording permissions. Add the updated
 /Applications/ShareX.app, then quit and reopen it.
+
+Changes in 0.1.4:
+- Annotate the frozen desktop before selecting the final capture area.
+- Region and Freehand selections copy automatically when you release the mouse.
+- Region and Tab preserve annotations and commit active text.
+- Drawing and tool changes do not copy or save intermediate images.
+- Fixed-area and window editors retain Done and crop adjustments.
 
 Changes in 0.1.3:
 - Fullscreen editing stays on the original displays.

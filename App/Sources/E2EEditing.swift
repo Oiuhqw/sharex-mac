@@ -68,17 +68,17 @@ enum E2EEditing {
         Export.flatten(renderer: s.view.renderer, doc: s.view.doc, crop: E2E.C, lasso: nil).map(E2E.bitmap)
     }
 
-    static func open(_ name: String, from: CGPoint? = nil, to: CGPoint? = nil) async -> Session? {
+    static func open(_ name: String) async -> Session? {
         E2E.setOpts { $0.toolStyles = [:]; $0.options.openEditor = true; $0.options.delaySeconds = 0 }
         let mark = E2E.markClipboard()
-        E2E.coord.capture(.region)
+        E2E.preparePreset()
+        E2E.coord.capture(.lastRegion)
         guard await E2E.until({ E2E.surface() != nil }), let surface = E2E.surface() else {
             E2E.record(name, false, ["error": "selection overlay did not open"]); return nil
         }
-        E2E.drag(from ?? E2E.C.origin, to ?? CGPoint(x: E2E.C.maxX, y: E2E.C.maxY))
         guard surface.view.phase == .editing, surface.view.doc.state.crop == E2E.C,
               let frame = surface.view.renderer.source.sample(E2E.C, scale: E2E.scale, maximumPixels: Imaging.maximumPixels) else {
-            E2E.record(name, false, ["error": "drag did not select the expected rectangle"])
+            E2E.record(name, false, ["error": "saved-region preset did not open the expected rectangle"])
             surface.view.cancel(); _ = await E2E.until({ !E2E.coord.busy }); return nil
         }
         return Session(mark: mark, window: surface.window, view: surface.view, original: E2E.bitmap(frame))
@@ -114,27 +114,39 @@ enum E2EEditing {
         let a = E2E.C.origin, b = CGPoint(x: E2E.C.maxX, y: E2E.C.maxY)
         let c = CGPoint(x: b.x, y: a.y), d = CGPoint(x: a.x, y: b.y)
         for (index, pair) in [(a, b), (b, a), (c, d), (d, c)].enumerated() {
-            let name = "editing-region-drag-direction-\(index + 1)"
-            guard let s = await open(name, from: pair.0, to: pair.1) else { continue }
-            await finish(name, s, condition: true) { $0.px == s.original.px }
+            let name = "editing-region-drag-direction-\(index + 1)", mark = E2E.markClipboard()
+            E2E.coord.capture(.region)
+            guard await E2E.until({ E2E.surface() != nil }), let surface = E2E.surface(),
+                  let original = surface.view.renderer.source.sample(E2E.C, scale: E2E.scale, maximumPixels: Imaging.maximumPixels) else {
+                E2E.record(name, false, ["error": "no region overlay"]); return
+            }
+            E2E.drag(pair.0, pair.1)
+            let finished = await E2E.until { !E2E.coord.busy }
+            if let clip = E2E.checkClipboard(name, since: mark, w: E2E.cw, h: E2E.ch) {
+                E2E.record(name, finished && clip.ok && clip.png.px == E2E.bitmap(original).px
+                           && surface.view.phase == .ended && !surface.window.isVisible, clip.info)
+            }
         }
     }
 
     static func resetSelection() async {
-        let name = "editing-rightclick-reset-and-one-pixel-drag"
-        guard let s = await open(name) else { return }
-        E2E.mouse(.rightMouseDown, CGPoint(x: 200, y: 200), in: (s.window, s.view))
-        let reset = s.view.phase == .selecting(.rectangle) && s.view.doc.state.crop == nil
-        E2E.drag(CGPoint(x: 200, y: 200), CGPoint(x: 200, y: 200))
-        let emptyRejected = s.view.phase == .selecting(.rectangle) && s.view.doc.state.crop == nil
+        let name = "editing-rightclick-reset-and-one-pixel-drag", mark = E2E.markClipboard()
+        E2E.coord.capture(.region)
+        guard await E2E.until({ E2E.surface() != nil }), let surface = E2E.surface() else {
+            E2E.record(name, false, ["error": "no region overlay"]); return
+        }
+        surface.view.setTool(.select)
+        E2E.mouse(.rightMouseDown, CGPoint(x: 200, y: 200), in: surface)
+        let reset = surface.view.phase == .selecting(.rectangle) && surface.view.doc.state.crop == nil
+        E2E.drag(CGPoint(x: 200, y: 200), CGPoint(x: 250, y: 200))
+        let emptyRejected = surface.view.phase == .selecting(.rectangle) && surface.view.doc.state.crop == nil
+            && NSPasteboard.general.changeCount == mark.change && E2E.savedFiles() == mark.files
         E2E.drag(CGPoint(x: 200, y: 200), CGPoint(x: 200.25, y: 200.25))
-        let tiny = s.view.doc.state.crop.flatMap { s.view.renderer.pixelArea($0) }
-        let onePixelSelected = s.view.phase == .editing && tiny?.w == 1 && tiny?.h == 1
-        E2E.mouse(.rightMouseDown, CGPoint(x: 200, y: 200), in: (s.window, s.view))
-        E2E.drag(E2E.C.origin, CGPoint(x: E2E.C.maxX, y: E2E.C.maxY))
-        await finish(name, s, condition: reset && emptyRejected && onePixelSelected && s.view.doc.state.crop == E2E.C,
-                     info: ["reset": reset, "emptyDragRejected": emptyRejected,
-                            "onePixelSelected": onePixelSelected]) { $0.px == s.original.px }
+        let finished = await E2E.until { !E2E.coord.busy }
+        if let clip = E2E.checkClipboard(name, since: mark, w: 1, h: 1) {
+            E2E.record(name, reset && emptyRejected && finished && clip.ok,
+                       clip.info.merging(["reset": reset, "emptyDragRejected": emptyRejected, "onePixelDelivered": finished]) { $1 })
+        }
     }
 
     static func toolbarMoveResize() async {
