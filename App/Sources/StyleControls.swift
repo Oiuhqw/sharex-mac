@@ -7,10 +7,14 @@ final class TrackingSlider: NSSlider {
     var endTracking: (() -> Void)?
     #if SHAREX_E2E
     private(set) var e2eCompletedGestures = 0
+    var e2eTrackingBegan: ((NSEvent) -> Void)?
     #endif
 
     override func mouseDown(with event: NSEvent) {
         beginTracking?()
+        #if SHAREX_E2E
+        e2eTrackingBegan?(event)
+        #endif
         defer {
             endTracking?()
             #if SHAREX_E2E
@@ -45,7 +49,10 @@ final class ColorSwatch: NSButton {
             NSColor.controlAccentColor.setStroke()
             let rim = NSBezierPath(ovalIn: bounds.insetBy(dx: 2, dy: 2)); rim.lineWidth = 2; rim.stroke()
             let check = NSBezierPath()
-            check.move(to: CGPoint(x: 13, y: 18)); check.line(to: CGPoint(x: 17, y: 14)); check.line(to: CGPoint(x: 24, y: 23))
+            let direction: CGFloat = isFlipped ? -1 : 1
+            check.move(to: CGPoint(x: 13, y: 18))
+            check.line(to: CGPoint(x: 17, y: 18 - 4 * direction))
+            check.line(to: CGPoint(x: 24, y: 18 + 5 * direction))
             (color == .white || color == .yellow ? NSColor.black : NSColor.white).setStroke()
             check.lineWidth = 2; check.lineCapStyle = .round; check.lineJoinStyle = .round; check.stroke()
         }
