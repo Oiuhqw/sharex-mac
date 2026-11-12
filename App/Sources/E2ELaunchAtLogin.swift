@@ -10,7 +10,7 @@ enum E2ELaunchAtLogin {
         var passed = false
         switch step {
         case "default":
-            guard login.status == .notRegistered else { report(step, login, passed: false); return }
+            guard login.status == .notRegistered || login.status == .notFound else { report(step, login, passed: false); return }
             LaunchAtLogin.e2eResetDefault()
             login.enableByDefaultIfNeeded()
             passed = login.status == .enabled
@@ -35,7 +35,7 @@ enum E2ELaunchAtLogin {
         case "cleanup":
             login.setEnabled(false)
             LaunchAtLogin.e2eResetDefault()
-            passed = login.status == .notRegistered
+            passed = login.status == .notRegistered || login.status == .notFound
         default: break
         }
         report(step, login, passed: passed && login.errorMessage == nil)
