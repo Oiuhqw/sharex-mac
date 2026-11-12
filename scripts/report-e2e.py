@@ -12,7 +12,8 @@ def report(root: Path) -> None:
         unverified = [row.get("name") for row in checks if row.get("status") == "unverifiable"]
         print(json.dumps({"file": str(path), "checks": len(checks), "failed": failed,
                           "unverified": unverified, "pass": data.get("pass")}, sort_keys=True))
-    for name in ["round-loupe.png", "style-feedback.png", "smart-erase.png", "loupe.png", "onscreen-orientation.png"]:
+    for name in ["round-loupe.png", "style-feedback.png", "style-feedback-window.png", "smart-erase.png",
+                 "loupe.png", "onscreen-orientation.png", "capture-canvas-tall-native-window.png"]:
         path = root / name
         if path.is_file() and path.stat().st_size <= 250_000:
             print(f"E2E_IMAGE {name} {base64.b64encode(path.read_bytes()).decode('ascii')}")

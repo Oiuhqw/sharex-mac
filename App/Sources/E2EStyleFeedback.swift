@@ -101,8 +101,9 @@ enum E2EStyleFeedback {
                    && values.contains { $0.stringValue == "40%" },
                    ["previewPixelsChanged": previewChanged, "sharedSessionViews": 2])
         if let window = toolbar.e2eStyleContents.window {
-            await E2E.snapshotNativeWindow(window, name: "style-feedback")
+            await E2E.snapshotNativeWindow(window, name: "style-feedback-window")
         } else { E2E.record("style-feedback", false, ["error": "popover has no window"]) }
+        E2E.snapshotNativeView(toolbar.e2eStyleContents, name: "style-feedback")
         let snapshotSize = (try? Data(contentsOf: E2E.out.appendingPathComponent("style-feedback.png")))?.count ?? 0
         E2E.record("style-feedback-snapshot-size", snapshotSize > 0 && snapshotSize <= 250 * 1024, ["bytes": snapshotSize])
         E2E.record("style-feedback-save-destination", toolbar.e2eOutput.contains(E2E.saved.path)

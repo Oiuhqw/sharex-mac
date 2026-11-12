@@ -80,7 +80,7 @@ Click a tool icon in the top toolbar. Drag to draw shapes and strokes. Click to 
 | Text | T | Add text. To edit existing text, select this tool and click the text. |
 | Step marker | I | Add a numbered marker. |
 
-Open **Style** to change color, width or text size, opacity, fill, and effect strength. The selected color, numeric values, and preview show the current style before you draw. Slider changes update the selected annotation while you drag. One undo restores the style from before that drag. Controls apply only to tools that use them. Hold **Shift** while drawing a shape if you want to constrain it.
+Open **Style** to change color, width or text size, opacity, fill, and effect strength. The selected color, numeric values, and preview show the current style before you draw. Slider changes update the selected annotation while you drag. One undo restores the style from before that drag. Controls apply only to tools that use them. Choose **Reset tool style** to restore the current tool's default style. Hold **Shift** while drawing a shape if you want to constrain it.
 
 To move an annotation, choose **Select**, then drag the annotation. Optional arrow keys move it by one point. **Shift+Arrow** moves it by ten points.
 
