@@ -26,23 +26,30 @@ enum E2EStyleFeedback {
 
     private static func openStyle(_ toolbar: ToolbarView) async -> Bool {
         guard E2E.postClick(toolbar.e2eStyle) else { return false }
-        return await E2E.until { toolbar.e2ePopoverShown && toolbar.e2eStyleContents.window?.isVisible == true }
+        let shown = await E2E.until { toolbar.e2ePopoverShown && toolbar.e2eStyleContents.window?.isVisible == true }
+        toolbar.e2eStyleContents.layoutSubtreeIfNeeded()
+        toolbar.e2eStyleContents.displayIfNeeded()
+        return shown
     }
 
     private static func postGesture(_ control: NSSlider, fractions: [CGFloat]) -> Bool {
         guard let window = control.window, let cell = control.cell as? NSSliderCell else { return false }
+        control.display()
         let knob = cell.knobRect(flipped: control.isFlipped)
+        guard !knob.isEmpty, control.bounds.intersects(knob) else { return false }
         let start = CGPoint(x: knob.midX, y: knob.midY)
         let points = fractions.map { CGPoint(x: knob.width / 2 + $0 * (control.bounds.width - knob.width), y: start.y) }
-        let events: [(NSEvent.EventType, CGPoint)] = [(.leftMouseDown, start)]
+        let positions: [(NSEvent.EventType, CGPoint)] = [(.leftMouseDown, start)]
             + points.map { (.leftMouseDragged, $0) } + [(.leftMouseUp, points.last ?? start)]
-        for (index, item) in events.enumerated() {
+        var events: [NSEvent] = []
+        for (index, item) in positions.enumerated() {
             guard let event = NSEvent.mouseEvent(with: item.0, location: control.convert(item.1, to: nil), modifierFlags: [],
-                                               timestamp: ProcessInfo.processInfo.systemUptime + Double(index) * 0.02,
+                                               timestamp: ProcessInfo.processInfo.systemUptime + Double(index) * 0.08,
                                                windowNumber: window.windowNumber, context: nil, eventNumber: index,
                                                clickCount: 1, pressure: item.0 == .leftMouseUp ? 0 : 1) else { return false }
-            NSApp.postEvent(event, atStart: false)
+            events.append(event)
         }
+        StyleEventPlayback(events).start()
         return true
     }
 
@@ -72,12 +79,13 @@ enum E2EStyleFeedback {
         E2E.record("style-feedback-save-destination", toolbar.e2eOutput.contains(E2E.saved.path)
                    && toolbar.e2eDone.toolTip == "Copy and save screenshot (Return)")
         toolbar.closePopover()
+        let closed = await E2E.until { !toolbar.e2ePopoverShown }
         E2E.drag(CGPoint(x: 150, y: 150), CGPoint(x: 300, y: 250))
         E2E.record("style-feedback-new-mark-default", s.view.doc.selected?.style.color == .blue
                    && s.view.doc.selected?.style.opacity == 0.4 && s.view.doc.selected?.style.filled == true)
         s.view.undo()
 
-        var controls = true
+        var controls = true, controlStates: [String: [Bool]] = [:]
         for (kind, hasWidth, hasOpacity, hasStrength, hasFill) in [
             (ShapeKind.rectangle, true, true, false, true), (.text, true, true, false, true),
             (.highlighter, false, true, false, false), (.blur, false, false, true, false),
@@ -86,12 +94,17 @@ enum E2EStyleFeedback {
         ] {
             s.view.setTool(.shape(kind))
             let fill = E2EEditing.views(toolbar.e2eStyleContents).compactMap { $0 as? NSButton }.first { $0.title == "Fill" }
-            controls = slider(toolbar, "Width / size")?.isEnabled == hasWidth
+            let matches = slider(toolbar, "Width / size")?.isEnabled == hasWidth
                 && slider(toolbar, "Opacity")?.isEnabled == hasOpacity
                 && slider(toolbar, "Effect strength")?.isEnabled == hasStrength
-                && fill?.isEnabled == hasFill && controls
+                && fill?.isEnabled == hasFill
+            controlStates[kind.rawValue] = [slider(toolbar, "Width / size")?.isEnabled ?? false,
+                                           slider(toolbar, "Opacity")?.isEnabled ?? false,
+                                           slider(toolbar, "Effect strength")?.isEnabled ?? false, fill?.isEnabled ?? false]
+            controls = controls && matches
         }
-        E2E.record("style-feedback-tool-controls", controls && !toolbar.e2eStyle.isEnabled && !toolbar.e2ePopoverShown)
+        E2E.record("style-feedback-tool-controls", controls && closed && !toolbar.e2eStyle.isEnabled && !toolbar.e2ePopoverShown,
+                   ["controlsByTool": controlStates, "popoverClosed": closed, "styleEnabled": toolbar.e2eStyle.isEnabled])
         s.view.setTool(.shape(.rectangle))
         let reset = E2EEditing.button("Reset tool style", in: s)
         E2E.record("style-feedback-reset-default", reset && s.view.doc.style(for: .rectangle) == .defaults(for: .rectangle)
@@ -127,9 +140,12 @@ enum E2EStyleFeedback {
         }
         let before = s.view.doc.state, count = s.view.doc.history.undoStates.count
         var intermediate = false, retainedFocus = false
+        var values: [Double] = [], historyCounts: [Int] = []
         let focused = window.makeFirstResponder(opacity)
         toolbar.e2eStyleChanged = { control in
-            guard control === opacity, control.doubleValue > 0.4, control.doubleValue < 0.9,
+            guard control === opacity else { return }
+            values.append(control.doubleValue); historyCounts.append(s.view.doc.history.undoStates.count)
+            guard control.doubleValue > 0.4, control.doubleValue < 0.9,
                   s.view.doc.isStyleGestureActive, !intermediate,
                   let exported = E2EEditing.image(s), let live = E2E.snapshotImageLayers(s.view, scale: E2E.scale) else { return }
             let inner = CGRect(x: E2E.px(60), y: E2E.px(60), width: E2E.px(130), height: E2E.px(80))
@@ -142,13 +158,16 @@ enum E2EStyleFeedback {
         let settled = await E2E.until { !s.view.doc.isStyleGestureActive && s.view.doc.history.undoStates.count == count + 1 }
         toolbar.e2eStyleChanged = nil
         let after = s.view.doc.state
+        let finalCount = s.view.doc.history.undoStates.count
         toolbar.closePopover()
         let dismissed = await E2E.until { !toolbar.e2ePopoverShown && s.window.firstResponder === s.view }
         s.view.undo(); let undone = s.view.doc.state == before
         s.view.redo(); let redone = s.view.doc.state == after
         E2E.record("style-feedback-native-gesture", focused && posted && settled && intermediate && retainedFocus && undone && redone && dismissed,
                    ["nativeWindowEvents": true, "intermediatePixelsChanged": intermediate, "sliderKeptFocus": retainedFocus,
-                    "oneUndoRestoredStyle": undone, "redoRestoredStyle": redone])
+                    "oneUndoRestoredStyle": undone, "redoRestoredStyle": redone, "focused": focused,
+                    "posted": posted, "settled": settled, "dismissed": dismissed,
+                    "actionValues": values, "historyCounts": historyCounts, "historyBefore": count, "historyAfter": finalCount])
 
         guard await openStyle(toolbar) else { E2E.record("style-feedback-reopen", false); s.view.cancel(); return }
         let noOpCount = s.view.doc.history.undoStates.count
@@ -159,7 +178,8 @@ enum E2EStyleFeedback {
                    && s.view.doc.history.undoStates.count == noOpCount)
 
         guard let keyWindow = opacity.window else { E2E.record("style-feedback-native-keyboard", false); s.view.cancel(); return }
-        var keyboard = keyWindow.makeFirstResponder(opacity)
+        let keyboardFocused = keyWindow.makeFirstResponder(opacity)
+        var keyboard = keyboardFocused
         let firstValue = opacity.doubleValue
         for _ in 0..<2 {
             for type in [NSEvent.EventType.keyDown, .keyUp] {
@@ -171,14 +191,36 @@ enum E2EStyleFeedback {
             }
         }
         let lastValue = opacity.doubleValue
-        keyboard = keyboard && lastValue > firstValue && s.view.doc.history.undoStates.count == noOpCount + 2
+        let keyHistoryCount = s.view.doc.history.undoStates.count
+        keyboard = keyboard && lastValue > firstValue && keyHistoryCount == noOpCount + 2
         toolbar.closePopover()
         s.view.undo(); let middleValue = s.view.doc.selected?.style.opacity ?? 0
         s.view.undo()
         E2E.record("style-feedback-native-keyboard", keyboard && middleValue > firstValue && middleValue < lastValue
-                   && s.view.doc.selected?.style.opacity == firstValue)
+                   && s.view.doc.selected?.style.opacity == firstValue,
+                   ["focused": keyboardFocused, "firstValue": firstValue, "lastValue": lastValue, "middleValue": middleValue,
+                    "historyBefore": noOpCount, "historyAfter": keyHistoryCount])
         let expected = E2EEditing.image(s)
         await E2EEditing.finish("style-feedback-export", s, condition: expected != nil) { $0.px == expected?.px }
+    }
+}
+
+@MainActor
+private final class StyleEventPlayback: NSObject {
+    private var events: [NSEvent]
+
+    init(_ events: [NSEvent]) { self.events = events; super.init() }
+
+    func start() {
+        let timer = Timer(timeInterval: 0.08, target: self, selector: #selector(postNext(_:)), userInfo: nil, repeats: true)
+        RunLoop.main.add(timer, forMode: .common)
+        RunLoop.main.add(timer, forMode: .eventTracking)
+        postNext(timer)
+    }
+
+    @objc private func postNext(_ timer: Timer) {
+        NSApp.postEvent(events.removeFirst(), atStart: false)
+        if events.isEmpty { timer.invalidate() }
     }
 }
 #endif

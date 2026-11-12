@@ -156,7 +156,7 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
             let visible = group.filter { !$0.isHidden }
             if !visible.isEmpty, x > padding { x += 6 }
             for button in visible {
-                let width = button.imagePosition == .imageOnly ? height : max(60, button.intrinsicContentSize.width + 8)
+                let width: CGFloat = button.imagePosition == .imageOnly ? height : 76
                 if x > padding, x + width + padding > limit { x = padding; y += height + gap }
                 button.frame = CGRect(x: x, y: y, width: min(width, max(1, limit - padding * 2)), height: height)
                 x = button.frame.maxX + gap; used = max(used, button.frame.maxX + padding)

@@ -142,6 +142,7 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
         doc.beginStyleGesture(to: kind)
     }
     func endStyleGesture() {
+        guard doc.isStyleGestureActive else { return }
         doc.endStyleGesture()
         refresh()
     }
