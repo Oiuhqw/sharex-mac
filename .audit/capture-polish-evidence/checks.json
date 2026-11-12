@@ -1,0 +1,78 @@
+[
+  {
+    "checks": 109,
+    "failed": [],
+    "file": "e2e-out/multidisplay/horizontal/results.json",
+    "pass": true,
+    "unverified": [
+      "multidisplay-separate-spaces-physical-input"
+    ]
+  },
+  {
+    "checks": 109,
+    "failed": [],
+    "file": "e2e-out/multidisplay/vertical-negative/results.json",
+    "pass": true,
+    "unverified": [
+      "multidisplay-separate-spaces-physical-input"
+    ]
+  },
+  {
+    "checks": 614,
+    "failed": [],
+    "file": "e2e-out/results.json",
+    "pass": true,
+    "unverified": [
+      "capture-display-textured-content",
+      "redaction-native-compositor-move-blur-2x-display-aligned",
+      "redaction-native-compositor-recovery-blur-2x-display-aligned",
+      "redaction-native-compositor-move-pixelate-2x-display-aligned",
+      "redaction-native-compositor-recovery-pixelate-2x-display-aligned",
+      "multi-display"
+    ]
+  },
+  {
+    "checks": 18,
+    "failed": [],
+    "file": "e2e-out/shortcut-recovery-collision/relaunch/results.json",
+    "pass": true,
+    "unverified": []
+  },
+  {
+    "checks": 17,
+    "failed": [],
+    "file": "e2e-out/shortcut-recovery-collision/results.json",
+    "pass": true,
+    "unverified": []
+  },
+  {
+    "checks": 14,
+    "failed": [],
+    "file": "e2e-out/shortcut-recovery-encoding/results.json",
+    "pass": true,
+    "unverified": []
+  },
+  {
+    "checks": 14,
+    "failed": [],
+    "file": "e2e-out/shortcut-recovery-ranges/results.json",
+    "pass": true,
+    "unverified": []
+  },
+  {
+    "checks": 6,
+    "failed": [],
+    "file": "perf-out/memory-diagnosis/results.json",
+    "pass": true,
+    "unverified": []
+  },
+  {
+    "checks": 37,
+    "failed": [],
+    "file": "perf-out/results.json",
+    "pass": true,
+    "unverified": [
+      "capture-display-textured-content"
+    ]
+  }
+]

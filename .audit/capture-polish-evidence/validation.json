@@ -1,0 +1,90 @@
+{
+  "run": "https://github.com/Oiuhqw/sharex-mac/actions/runs/43168138070",
+  "sourceRevision": "599e46e5870e17e0f46cc59add149de152f7aecb",
+  "conclusion": "success",
+  "core": {
+    "runs": 2,
+    "testsPerRun": 117,
+    "addressSanitizer": true
+  },
+  "ciScriptTests": 26,
+  "native": {
+    "checks": 938,
+    "passed": 929,
+    "failed": 0,
+    "unverifiedInstances": 9,
+    "distinctUnverifiedLabels": [
+      "multidisplay-separate-spaces-physical-input",
+      "capture-display-textured-content",
+      "redaction-native-compositor-move-blur-2x-display-aligned",
+      "redaction-native-compositor-recovery-blur-2x-display-aligned",
+      "redaction-native-compositor-move-pixelate-2x-display-aligned",
+      "redaction-native-compositor-recovery-pixelate-2x-display-aligned",
+      "multi-display"
+    ]
+  },
+  "smartEraseFixtures": {
+    "cases": 24,
+    "maximumChannelError": 1
+  },
+  "loginSteps": [
+    {
+      "detail": "ShareX starts when you sign in. Your capture shortcuts are ready in the menu bar.",
+      "error": "",
+      "pass": true,
+      "status": 1,
+      "step": "default"
+    },
+    {
+      "detail": "ShareX starts when you sign in. Your capture shortcuts are ready in the menu bar.",
+      "error": "",
+      "pass": true,
+      "status": 1,
+      "step": "relaunch-enabled"
+    },
+    {
+      "detail": "ShareX will not start automatically when you sign in.",
+      "error": "",
+      "pass": true,
+      "status": 0,
+      "step": "disable"
+    },
+    {
+      "detail": "ShareX will not start automatically when you sign in.",
+      "error": "",
+      "pass": true,
+      "status": 0,
+      "step": "relaunch-disabled"
+    },
+    {
+      "detail": "ShareX starts when you sign in. Your capture shortcuts are ready in the menu bar.",
+      "error": "",
+      "pass": true,
+      "status": 1,
+      "step": "enable"
+    },
+    {
+      "detail": "ShareX will not start automatically when you sign in.",
+      "error": "",
+      "pass": true,
+      "status": 0,
+      "step": "system-disable"
+    },
+    {
+      "detail": "ShareX will not start automatically when you sign in.",
+      "error": "",
+      "pass": true,
+      "status": 0,
+      "step": "relaunch-disabled"
+    },
+    {
+      "detail": "ShareX will not start automatically when you sign in.",
+      "error": "",
+      "pass": true,
+      "status": 0,
+      "step": "cleanup"
+    }
+  ],
+  "artifactUploads": false,
+  "packageBuilt": false
+}
