@@ -378,7 +378,7 @@ enum E2E {
         E2EPrecision.run()
         await E2ERedaction.run()
         E2EStylePersistence.run()
-        E2ECapturePolish.run()
+        await E2ECapturePolish.run()
         await menuAndSettings()
 
         // Baseline region, no marks: crop size and Retina scale.

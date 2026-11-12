@@ -19,15 +19,17 @@ For Region or Freehand, draw or redact before selecting the final area. Choose *
 Fullscreen editing stays on the original displays. Region and freehand selections can cross display boundaries. Each display has a fixed top toolbar with visible tool icons, **Style**, **Undo**, **Redo**, **Delete selected**, and **Cancel**. Hover over an icon to see its name and shortcut. The selected tool is highlighted and named below the buttons. Buttons wrap on narrow displays. Fixed-area editors also show **Done**. All panels share one document and undo history.
 
 - Annotation buttons are available before selection, alongside Region, Freehand, Window, Monitor, and Full Desktop. Crop is available in fixed-area editors.
-- **Style** changes color, width or text size, opacity, fill, and blur or pixelation strength.
+- **Style** shows the selected color, numeric values, and a preview. Sliders update the selected annotation as you drag, with one undo step per drag.
 - **Undo**, **Redo**, and **Delete selected** are separate icon buttons.
 - Releasing a Region or Freehand selection exports the image. **Done** exports from a fixed-area editor. **Cancel** or one press of **Esc** closes every capture window without export, including during text entry, a drag, or an open Style popover.
 
-The editor includes Select, Crop, Rectangle, Ellipse, Line, Arrow, Highlighter, Blur, Pixelate, Spotlight, Pen, Text, and Step marker. Optional editing keys are listed in the [user guide](docs/USER-GUIDE.md).
+The editor includes Select, Crop, Rectangle, Ellipse, Line, Arrow, Highlighter, Blur, Pixelate, Smart Eraser, Spotlight, Pen, Text, and Step marker. Smart Eraser estimates nearby background pixels to remove small objects on plain or smooth backgrounds. It runs locally and supports move, resize, undo, and export. Optional editing keys and repair limits are listed in the [user guide](docs/USER-GUIDE.md).
 
 A new installation assigns only **Control-Shift-1** for Region. The other seven capture commands start unassigned. Updates preserve valid saved assignments, including old defaults and disabled shortcuts. Settings lets you search commands, record shortcuts, clear assignments, and restore defaults.
 
 New installations copy PNG and TIFF to the clipboard and save a PNG in `~/Pictures/ShareX`. Updates preserve existing output preferences. Clipboard and file writes have separate results. If an output fails, **Retry** repeats only the failed destination. **Save As** saves the PNG elsewhere. The success sound plays only after every requested output succeeds.
+
+The toolbar shows whether the capture will copy and save, or copy only. The success sound is a short shutter click with a preview in Output settings. The circular magnifier retains the pixel marker and coordinate label for exact selection.
 
 Capture settings include a delay, cursor inclusion, a magnifier, a border, a shadow, and an option to open the editor for fixed-area captures. Border and shadow can increase the final image size.
 

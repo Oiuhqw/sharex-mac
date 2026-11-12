@@ -1,2 +1,7 @@
 ts	phase	decision	why	evidence	result
 2026-11-12T00:00:00Z	frame	Inspect five capture and editing behaviors before changing code	The request combines UI feedback and image processing	App/Sources/ToolbarView.swift; App/Sources/EditorLayers.swift; App/Sources/ExportDelivery.swift	open
+2026-11-12T04:47:13.2769100Z	frame	Correct initial timestamp precision	The first row used a date-only placeholder; this row records actual execution time	.audit/capture-polish.tsv	open
+2026-11-12T04:47:13.2769100Z	design	Select Sol design with Astra compact repair rendering	Keeps one style mutation path and excludes every protected sample	.audit/capture-design.md	3 candidates reviewed
+2026-11-12T04:47:13.2769100Z	implementation	Add circular loupe and generated shutter click with settings preview	Make capture precision and completion feedback clearer	918ef16	Native checks pending full implementation
+2026-11-12T04:47:13.2769100Z	validation	Use public macos-15 with no artifact uploads or package job	User requires free GitHub execution; verified repository is public and standard runner usage is free	https://docs.github.com/en/actions/reference/runners/github-hosted-runners	Authorized
+2026-11-12T04:47:58.6204449Z	implementation	Snapshot output settings when the editor opens	Keep the visible save destination consistent with delivery after a settings change	App/Sources/CaptureCoordinator.swift; App/Sources/E2ECapturePolish.swift	Native check authored

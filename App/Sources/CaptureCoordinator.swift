@@ -88,12 +88,14 @@ final class CaptureCoordinator {
             let scale = source.scale(for: crop) ?? 1
             let renderer = Renderer(source: source, scale: scale)
             guard let image = Export.flatten(renderer: renderer, doc: EditorDocument(), crop: crop, lasso: nil) else { throw CaptureError.imageTooLarge }
-            await deliver(image, scale: scale, last: style == .lastRegion ? source.layout.flatMap { LastRegion(crop: crop, layout: $0) } : nil)
+            await deliver(image, scale: scale, last: style == .lastRegion ? source.layout.flatMap { LastRegion(crop: crop, layout: $0) } : nil,
+                          settings: settings.value)
             return
         }
 
         let remember = [CaptureStyle.region, .freehand, .lastRegion].contains(style)
-        present(OverlayController(frozen: frozen, mode: style.selection, preset: preset, settings: settings.value,
+        let outputSettings = settings.value
+        present(OverlayController(frozen: frozen, mode: style.selection, preset: preset, settings: outputSettings,
                                   onStyles: { [weak self] in self?.saveStyles($0) }) { [weak self] outcome in
             guard let self else { return }
             switch outcome {
@@ -103,7 +105,7 @@ final class CaptureCoordinator {
                 self.overlay = nil
                 Task { @MainActor in
                     await self.deliver(r.image, scale: r.scale,
-                                       last: remember ? r.lastRegion : nil)
+                                       last: remember ? r.lastRegion : nil, settings: outputSettings)
                     self.busy = false
                 }
             case .pickedWindow(let w):
@@ -129,17 +131,18 @@ final class CaptureCoordinator {
     private func editOrDeliver(window w: WindowInfo) async throws {
         let shot = try await ScreenCapture.captureWindow(w)
         if settings.value.options.openEditor { openCanvas(shot.image, scale: shot.scale, screen: shot.screen, title: w.title) }
-        else { await deliver(shot.image, scale: shot.scale, last: nil) }
+        else { await deliver(shot.image, scale: shot.scale, last: nil, settings: settings.value) }
     }
 
     private func openCanvas(_ image: CGImage, scale: CGFloat, screen: NSScreen, title: String) {
+        let outputSettings = settings.value
         present(OverlayController(canvas: image, scale: scale, screen: screen, title: title.isEmpty ? "ShareX" : title,
-                                  settings: settings.value, onStyles: { [weak self] in self?.saveStyles($0) }) { [weak self] outcome in
+                                  settings: outputSettings, onStyles: { [weak self] in self?.saveStyles($0) }) { [weak self] outcome in
             guard let self else { return }
             guard case .finished(let r) = outcome else { self.endSession(); return }
             self.overlay = nil
             Task { @MainActor in
-                await self.deliver(r.image, scale: r.scale, last: nil)
+                await self.deliver(r.image, scale: r.scale, last: nil, settings: outputSettings)
                 self.busy = false
             }
         })
@@ -188,8 +191,7 @@ final class CaptureCoordinator {
 
     /// Decorate + PNG/TIFF encode run off the main thread; the pasteboard write is on main. The saved file is
     /// the clipboard's own PNG bytes, so the two can never differ.
-    private func deliver(_ flat: CGImage, scale: CGFloat, last: LastRegion?) async {
-        let s = settings.value
+    private func deliver(_ flat: CGImage, scale: CGFloat, last: LastRegion?, settings s: AppSettings) async {
         let st = Perf.signposter.beginInterval("deliver")
         defer { Perf.signposter.endInterval("deliver", st) }
         let box = ImageBox(image: flat), opts = s.options

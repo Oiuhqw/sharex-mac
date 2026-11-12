@@ -16,6 +16,9 @@ def report(root: Path) -> None:
         path = root / name
         if path.is_file() and path.stat().st_size <= 250_000:
             print(f"E2E_IMAGE {name} {base64.b64encode(path.read_bytes()).decode('ascii')}")
+    sound = root / "capture-click.wav"
+    if sound.is_file() and sound.stat().st_size <= 250_000:
+        print(f"E2E_AUDIO {sound.name} {base64.b64encode(sound.read_bytes()).decode('ascii')}")
 
 
 if __name__ == "__main__":
