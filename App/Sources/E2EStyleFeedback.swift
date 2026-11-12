@@ -26,7 +26,7 @@ enum E2EStyleFeedback {
 
     private static func openStyle(_ toolbar: ToolbarView) async -> Bool {
         guard E2E.postClick(toolbar.e2eStyle) else { return false }
-        let shown = await E2E.until { toolbar.e2ePopoverShown && toolbar.e2eStyleContents.window?.isVisible == true }
+        let shown = await E2E.until { toolbar.e2ePopoverPresented && toolbar.e2eStyleContents.window?.isVisible == true }
         toolbar.e2eStyleContents.layoutSubtreeIfNeeded()
         toolbar.e2eStyleContents.displayIfNeeded()
         return shown

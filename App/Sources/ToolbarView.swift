@@ -305,6 +305,10 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
     var e2eStyle: NSButton { styleButton }
     var e2eStyleContents: NSView { popover.contentViewController!.view }
     var e2ePopoverShown: Bool { popover.isShown }
+    private(set) var e2ePopoverPresented = false
+    func popoverWillShow(_ notification: Notification) { e2ePopoverPresented = false }
+    func popoverDidShow(_ notification: Notification) { e2ePopoverPresented = true }
+    func popoverWillClose(_ notification: Notification) { e2ePopoverPresented = false }
     var e2ePreview: NSView { preview }
     var e2eOutput: String { outputLabel.stringValue }
     var e2eStyleChanged: ((NSSlider) -> Void)?
