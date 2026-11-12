@@ -1,6 +1,6 @@
 # Multi-display capture and validation
 
-Version 0.1.3, build 4 supports macOS 14 or later on Apple Silicon. Intel Macs are unsupported. The project and release package target arm64 only. The [release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.3) provides the DMG and its checksum.
+Version 0.1.6, build 7 supports macOS 14 or later on Apple Silicon. Intel Macs are unsupported. The project and release package target arm64 only. The [release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.6) provides the DMG and its checksum.
 
 ## Shared editing state
 
@@ -10,11 +10,11 @@ Version 0.1.3, build 4 supports macOS 14 or later on Apple Silicon. Intel Macs a
 
 Effects sample the annotation rectangle, including both tiles at a seam. The source receives an opaque matte and prior protection masks before clamping. Pixelation retains `EffectMath.pixelateCenter`. The existing 16 Mi-pixel effect-source limit, 64 MiB effect cache, 16 MiB live-patch limit, and 64 Mi-pixel output limit remain in force. Gaps stay transparent in frame export. Failed redactions remain opaque.
 
-The toolbar stays at the safe top of each panel. Tool and More are labeled menus. Style opens a popover. Done and Cancel remain visible at narrow widths. Toolbar background clicks do not create annotations. The single text field commits before a command or host change. Closing a panel, cancelling, or changing display topology ends the session once.
+The toolbar stays at the safe top of each panel. Direct tool icons and separate Undo, Redo, and Delete selected buttons provide editing controls. Style opens a popover with live values and a preview. Done and Cancel remain visible at narrow widths. Toolbar background clicks do not create annotations. The single text field commits before a command or host change. Closing a panel, cancelling, or changing display topology ends the session once.
 
 ## Native test inputs
 
-The [0.1.3 assessment](../reviews/multidisplay-0.1.3.md) records source identity, exact results, and diagnostic artifacts. The dedicated driver runs two layouts with real `NSScreen` displays:
+The [current verification report](../.audit/capture-polish-verification.md) records the latest source identity, exact results, and diagnostic artifacts. The [0.1.3 assessment](../reviews/multidisplay-0.1.3.md) retains the original multi-display validation. The dedicated driver runs two layouts with real `NSScreen` displays:
 
 | Layout | Display modes | Coverage |
 | --- | --- | --- |
@@ -63,4 +63,4 @@ KeyboardShortcuts 3.1.0 writes initial bindings into UserDefaults only when a ke
 
 Native virtual-display geometry, app events, and window captures do not prove physical mouse routing across monitors. Separate Spaces, physical display hot-plug, real mixed-density display capture, interactive permission prompts, and physical shortcut use remain unverified hardware scenarios.
 
-The baseline suite and each dedicated display layout report their unavailable cases separately. An unverified case is not a passing check. The diagnostic package does not identify the final release package because the final documentation changes include `INSTALL.txt`. The final PR and release provide the exact-head review, merged-main package build, and attached checksum.
+The baseline suite and each dedicated display layout report their unavailable cases separately. An unverified case is not a passing check. The diagnostic package does not identify the final release package because the final documentation changes include `INSTALL.txt`. The final PR and release provide the reviewed source, merged-main package build, and checksum in the release notes.

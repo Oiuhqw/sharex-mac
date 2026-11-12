@@ -113,7 +113,7 @@ final class LiveMarkView: PassThroughView {
     private var shownFailureRects: [CGRect] = []
     static func supports(_ k: ShapeKind) -> Bool {
         switch k {
-        case .rectangle, .ellipse, .line, .arrow, .pen, .highlighter, .blur, .pixelate: true
+        case .rectangle, .ellipse, .line, .arrow, .pen, .highlighter, .blur, .pixelate, .smartErase: true
         default: false
         }
     }
@@ -171,16 +171,24 @@ final class LiveMarkView: PassThroughView {
         case .highlighter:
             highlight.path = CGPath(rect: a.rect, transform: nil); highlight.fillColor = color; highlight.isHidden = false
             return
-        case .blur, .pixelate:
+        case .blur, .pixelate, .smartErase:
             if let pt = renderer.livePatch(a) {
-                patch.contents = pt.image; patch.frame = pt.rect
+                patch.contents = pt.image
+                patch.frame = a.kind == .smartErase ? SmartErase.imageRect(for: pt.rect) : pt.rect
+                if a.kind == .smartErase {
+                    let mask = CAShapeLayer()
+                    mask.frame = patch.bounds
+                    mask.path = CGPath(rect: pt.rect.offsetBy(dx: -patch.frame.minX, dy: -patch.frame.minY), transform: nil)
+                    patch.mask = mask
+                }
                 patch.backgroundColor = nil
             } else if let rect = renderer.redactionBounds(a) {
                 // Match the export fallback without allocating another image after a render failure.
                 patch.contents = nil; patch.frame = rect
                 patch.backgroundColor = CGColor(gray: 0, alpha: 1)
             } else { return }
-            patch.magnificationFilter = renderer.smoothFrame ? .linear : .nearest
+            patch.magnificationFilter = a.kind == .smartErase || renderer.smoothFrame ? .linear : .nearest
+            patch.minificationFilter = a.kind == .smartErase ? .linear : .nearest
             patch.isHidden = false
             return
         default: return
@@ -240,11 +248,14 @@ final class ChromeView: PassThroughView {
         sizeLabel.backgroundColor = CGColor(gray: 0, alpha: 0.6)
         magLabel.backgroundColor = CGColor(gray: 0, alpha: 0.7)
         magnifier.backgroundColor = CGColor(gray: 0, alpha: 1); magnifier.masksToBounds = true
+        magnifier.cornerRadius = Self.n * Self.zoom / 2
         magImage.magnificationFilter = .nearest; magImage.minificationFilter = .nearest
         magImage.contentsGravity = .resize
         magMid.borderColor = CGColor(srgbRed: 1, green: 0.2, blue: 0.2, alpha: 1); magMid.borderWidth = 1
         let rim = CALayer(); rim.borderColor = .white; rim.borderWidth = 2
         rim.frame = CGRect(x: 0, y: 0, width: Self.n * Self.zoom, height: Self.n * Self.zoom)
+        rim.cornerRadius = Self.n * Self.zoom / 2
+        magLabel.cornerRadius = 5; magLabel.masksToBounds = true
         for l in [magImage, magMid, rim] {
             l.actions = ["position": NSNull(), "bounds": NSNull(), "contentsRect": NSNull(), "frame": NSNull(), "contents": NSNull()]
             magnifier.addSublayer(l)

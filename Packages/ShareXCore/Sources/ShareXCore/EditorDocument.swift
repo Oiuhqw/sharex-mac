@@ -46,12 +46,35 @@ public struct UndoStack<State: Equatable & Sendable>: Sendable {
 public struct EditorDocument: Sendable {
     public private(set) var state: EditorState
     public private(set) var history = UndoStack<EditorState>()
-    public var selectedID: Int?
-    public var tool: Tool = .shape(.rectangle)
+    public var selectedID: Int? {
+        willSet { if newValue != selectedID { endStyleGesture() } }
+    }
+    public var tool: Tool = .shape(.rectangle) {
+        willSet { if newValue != tool { endStyleGesture() } }
+    }
     public var styles: [ShapeKind: ShapeStyle]
     private var nextID = 1
     /// State at the start of the current drag, committed to history on `endDrag`.
     private var dragOrigin: EditorState?
+    private enum StyleGesture: Sendable {
+        case annotation(id: Int, kind: ShapeKind, before: EditorState)
+        case pendingText(id: Int, kind: ShapeKind)
+        case toolDefault(kind: ShapeKind)
+
+        var kind: ShapeKind {
+            switch self {
+            case .annotation(_, let kind, _), .pendingText(_, let kind), .toolDefault(let kind): kind
+            }
+        }
+        var id: Int? {
+            switch self {
+            case .annotation(let id, _, _), .pendingText(let id, _): id
+            case .toolDefault: nil
+            }
+        }
+    }
+    private var styleGesture: StyleGesture?
+    public var isStyleGestureActive: Bool { styleGesture != nil }
     /// A text mark added by `addText` that has no text yet. It is not in history: the first `setText`
     /// records the add and the text together, so one undo removes it.
     public private(set) var pendingTextID: Int?
@@ -90,6 +113,7 @@ public struct EditorDocument: Sendable {
     /// Starts a new mark at `p` with the current style for `kind`. Returns its id.
     @discardableResult
     public mutating func addShape(_ kind: ShapeKind, at p: CGPoint) -> Int {
+        endStyleGesture()
         let a = Annotation(id: nextID, kind: kind, style: style(for: kind), start: p, end: p)
         nextID += 1
         state.annotations.append(a)
@@ -145,6 +169,7 @@ public struct EditorDocument: Sendable {
     /// Replaces the text of a text mark as one undo step. Empty text deletes the mark.
     /// For a mark from `addText` the step covers the add too, and empty text leaves no history at all.
     public mutating func setText(_ id: Int, _ text: String) {
+        endStyleGesture()
         var before = state
         if pendingTextID == id { before.annotations.removeAll { $0.id == id }; pendingTextID = nil }
         update(id) { $0.text = text }
@@ -153,16 +178,37 @@ public struct EditorDocument: Sendable {
         dropStaleSelection()
     }
 
-    /// Changes the style of the selected mark (one undo step) and remembers it for that tool.
+    public mutating func beginStyleGesture(to kind: ShapeKind) {
+        guard styleGesture == nil else { return }
+        if let selected, selected.kind == kind {
+            if selected.id == pendingTextID {
+                styleGesture = .pendingText(id: selected.id, kind: kind)
+            } else {
+                commitPendingText()
+                styleGesture = .annotation(id: selected.id, kind: kind, before: state)
+            }
+        } else {
+            styleGesture = .toolDefault(kind: kind)
+        }
+    }
+
+    public mutating func endStyleGesture() {
+        let gesture = styleGesture
+        styleGesture = nil
+        if let gesture, case .annotation(_, _, let before) = gesture { history.record(before: before, after: state) }
+    }
+
+    /// Live slider changes share one history entry. Defaults remain outside document history.
     public mutating func applyStyle(_ change: (inout ShapeStyle) -> Void, to kind: ShapeKind) {
+        if let gesture = styleGesture, gesture.kind != kind { endStyleGesture() }
         var s = style(for: kind); change(&s); styles[kind] = s
-        guard let id = selectedID, selected?.kind == kind else { return }
-        // The text mark being typed is not in history yet; its style rides along with its first setText.
-        if id == pendingTextID { update(id) { change(&$0.style) }; return }
-        commitPendingText()
+        let target = if let gesture = styleGesture { gesture.id } else { selected?.kind == kind ? selectedID : nil }
+        guard let id = target else { return }
+        let record = styleGesture == nil && id != pendingTextID
+        if record { commitPendingText() }
         let before = state
         update(id) { change(&$0.style) }
-        history.record(before: before, after: state)
+        if record { history.record(before: before, after: state) }
     }
 
     public mutating func deleteSelected() {
@@ -182,13 +228,14 @@ public struct EditorDocument: Sendable {
     }
 
     /// Crop changes made during a drag (live), committed by `endDrag`.
-    public mutating func setCropLive(_ r: CGRect?) { state.crop = r }
+    public mutating func setCropLive(_ r: CGRect?) { endStyleGesture(); state.crop = r }
 
     public mutating func undo() { commitPendingText(); if let s = history.undo(state) { state = s; dropStaleSelection() } }
     public mutating func redo() { commitPendingText(); if let s = history.redo(state) { state = s; dropStaleSelection() } }
 
     /// A pending text mark that never got text is dropped (it was never visible).
     private mutating func commitPendingText() {
+        endStyleGesture()
         guard let id = pendingTextID else { return }
         pendingTextID = nil
         if let a = state.annotations.first(where: { $0.id == id }), a.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

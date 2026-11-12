@@ -1,10 +1,10 @@
-ShareX for macOS 0.1.5, build 6
+ShareX for macOS 0.1.6, build 7
 
 Requires macOS 14 or later on Apple Silicon. The app contains arm64 code only.
 Intel Macs are unsupported.
 
 Download ShareX.dmg from the release:
-https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.5
+https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.6
 
 Open the DMG. Drag ShareX.app to Applications, then open it.
 ShareX appears in the menu bar. Open the camera icon and choose Region.
@@ -33,6 +33,15 @@ Then open the app again.
 If capture permission stops working after an ad-hoc update, remove the old
 ShareX entry from Screen Recording permissions. Add the updated
 /Applications/ShareX.app, then quit and reopen it.
+
+Changes in 0.1.6:
+- The circular magnifier retains the pixel marker and coordinate label.
+- Style shows live color, opacity, and size feedback. One drag makes one undo step.
+- Smart Eraser (M) repairs small objects on plain or smooth screenshot backgrounds.
+- Smart Eraser runs locally. Difficult repairs stay covered and show recovery guidance.
+- The toolbar shows the save destination. New installations save PNG by default.
+- A crisp 90 ms shutter click has a preview in Output settings. Mute stays effective.
+- Small and tall image canvases fit the available space without reducing export detail.
 
 Changes in 0.1.5:
 - Press Esc once to cancel the capture, including active text and Style controls.
@@ -80,13 +89,13 @@ Included from 0.1.1:
 - Blur and pixelation strength start at 8 points. An opaque filled box covers sensitive content completely.
 - Blur uses a reduced-resolution drag preview and full-resolution saved output.
 
-Earlier native automated checks cover capture, editing, clipboard and PNG
-output, output recovery, and mixed-scale virtual-display layouts. Version 0.1.5
-has package build and launch checks; its full native E2E suite was not run.
+Native automated checks cover capture, editing, clipboard and PNG output,
+output recovery, startup, and mixed-scale virtual-display layouts. The release
+notes identify the full native validation and the separate production DMG build.
 
 Physical mouse transitions, separate Spaces, physical display hot-plug, real
 mixed-density display capture, physical shortcuts, and interactive permission
-prompts remain hardware checks. See the 0.1.3 assessment in the repository.
+prompts remain hardware checks. See reviews/README.md in the repository.
 
 Blur and pixelation do not guarantee that sensitive content cannot be inferred.
 Use a fully opaque filled rectangle and check the exported image before sharing it.

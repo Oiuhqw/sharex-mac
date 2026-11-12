@@ -5,19 +5,20 @@ import CoreGraphics
 
 /// Kinds of mark the editor can place. All geometry is in frozen-frame points, y-down.
 public enum ShapeKind: String, Codable, CaseIterable, Sendable {
-    case rectangle, ellipse, line, arrow, highlighter, blur, pixelate, spotlight, pen, text, step
+    case rectangle, ellipse, line, arrow, highlighter, blur, pixelate, smartErase, spotlight, pen, text, step
 
     /// ShareX-style single-key shortcut in the editor.
     public var key: Character {
         switch self {
         case .rectangle: "r"; case .ellipse: "e"; case .line: "l"; case .arrow: "a"
         case .highlighter: "h"; case .blur: "b"; case .pixelate: "p"; case .spotlight: "s"
-        case .pen: "f"; case .text: "t"; case .step: "i"
+        case .smartErase: "m"; case .pen: "f"; case .text: "t"; case .step: "i"
         }
     }
 
     /// Effects modify the pixels under them instead of drawing on top.
-    public var isEffect: Bool { self == .blur || self == .pixelate || self == .spotlight }
+    public var isEffect: Bool { isRedaction || self == .spotlight }
+    public var isRedaction: Bool { self == .blur || self == .pixelate || self == .smartErase }
     /// Shapes defined by two points that can be dragged, as opposed to a rect.
     public var isSegment: Bool { self == .line || self == .arrow }
 }

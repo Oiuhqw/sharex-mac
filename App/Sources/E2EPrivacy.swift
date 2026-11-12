@@ -281,7 +281,7 @@ enum E2EPrivacy {
         defer { view.releaseResources(); window.orderOut(nil); window.contentView = nil }
         let surface = (window: window as NSWindow, view: view)
         view.setTool(.shape(.rectangle))
-        E2E.mouse(.leftMouseDown, CGPoint(x: 120, y: 120), in: surface)
+        E2E.mouse(.leftMouseDown, CGPoint(x: 120, y: 160), in: surface)
         E2E.mouse(.leftMouseDragged, CGPoint(x: 360, y: 320), in: surface)
         E2E.mouse(.leftMouseUp, CGPoint(x: 360, y: 320), in: surface)
         view.setTool(.shape(.pixelate))

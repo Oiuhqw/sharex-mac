@@ -9,19 +9,40 @@ on:
         type: choice
         options: [macos-15]
         default: macos-15
+      release_tag:
+        description: Existing draft release tag to receive the checked DMG
+        type: string
+        default: ''
+      store_artifacts:
+        description: Also store the package in Actions (uses artifact storage)
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       runner:
         type: string
         default: macos-15
+      store_artifacts:
+        type: boolean
+        default: false
 permissions:
-  contents: read
+  contents: write
 jobs:
   dmg:
     runs-on: macos-15
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Check draft release source
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - name: Select Xcode 26.3
         run: |
           test "$(uname -m)" = arm64
@@ -39,6 +60,13 @@ jobs:
           APP=build/Build/Products/Release/ShareX.app
           test -d "$APP"
           echo "APP=$APP" >> $GITHUB_ENV
+      - name: Check release version
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
+          test "v$VERSION" = "$RELEASE_TAG"
       - name: Shipped binary is arm64 and has no test driver
         run: |
           BIN="$APP/Contents/MacOS/ShareX"
@@ -101,14 +129,6 @@ jobs:
           hdiutil create -volname ShareX -srcfolder dmgroot -ov -format UDZO ShareX.dmg
           hdiutil verify ShareX.dmg
           shasum -a 256 ShareX.dmg | tee ShareX.dmg.sha256
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: ShareX-dmg
-          path: |
-            ShareX.dmg
-            ShareX.dmg.sha256
-            INSTALL.txt
-            package-resources.log
       - name: Quarantine-simulated install + launch (what a downloaded DMG gets)
         timeout-minutes: 4
         run: |
@@ -137,3 +157,27 @@ jobs:
           if pgrep -x ShareX >/dev/null; then echo "- xattr -dr workaround: launched (open exit $OP2)" | tee -a "$R"; pkill -x ShareX; RC=0
           else echo "- xattr -dr workaround: FAILED to launch (open exit $OP2)" | tee -a "$R"; echo "::error::app does not launch after removing quarantine"; RC=1; fi
           exit $RC
+      - name: Upload checked DMG to draft release
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)" = "$GITHUB_SHA"
+          shasum -a 256 -c ShareX.dmg.sha256
+          gh release upload "$RELEASE_TAG" ShareX.dmg --repo "$GITHUB_REPOSITORY"
+          {
+            echo "Source: $GITHUB_SHA"
+            echo "Release: $RELEASE_TAG (draft)"
+            cat ShareX.dmg.sha256
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ inputs.store_artifacts }}
+        with:
+          name: ShareX-dmg
+          path: |
+            ShareX.dmg
+            ShareX.dmg.sha256
+            INSTALL.txt
+            package-resources.log

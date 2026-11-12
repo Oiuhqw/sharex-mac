@@ -1,0 +1,5 @@
+time	decision	reason	evidence	result
+2026-11-12	Prepare version 0.1.6 build 7	User requested merge, current documentation, and a DMG release	PR 7; prior native run 43168138070; public repository	Keep the established single ShareX.dmg installer
+2026-11-12	Use standard macos-15 and disable Actions artifact uploads	User requires free GitHub macOS execution	GitHub Actions billing documentation; repository visibility PUBLIC	Direct draft-release upload after all package checks
+2026-11-12	Update current docs and preserve historical reports	Older reports describe fixed revisions and must retain their scope	README, INSTALL, BRIEF, PLAN, user guide, multi-display guide, review index	Current docs point to feature and performance evidence
+2026-11-12	Require independent verdict and a guarded merge	Shipping playbook requires revision-bound verification	Dedicated release_verifier worktree; no pending auto-merge on PR 7	Final native run and merge verification pending

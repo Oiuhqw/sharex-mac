@@ -79,7 +79,7 @@ enum E2ECaptureControls {
         guard let fixture = await E2EEditing.open("capture-visible-tool-buttons") else { return }
         let bar = fixture.view.e2eToolbar
         let tools: [(String, Tool)] = [("Select", .select), ("Crop", .crop)] + ShapeKind.allCases.map {
-            ($0 == .step ? "Step marker" : $0.rawValue.capitalized, .shape($0))
+            ($0 == .step ? "Step marker" : ($0 == .smartErase ? "Smart Eraser" : $0.rawValue.capitalized), .shape($0))
         }
         var checks = true
         for (title, tool) in tools {
@@ -90,7 +90,7 @@ enum E2ECaptureControls {
                 && !(button.toolTip ?? "").isEmpty && bar.bounds.contains(button.frame)
         }
         E2E.snapshotNativeView(bar, name: "capture-visible-tools")
-        E2E.record("capture-visible-tool-buttons", checks && tools.count == 13,
+        E2E.record("capture-visible-tool-buttons", checks && tools.count == 14,
                    ["tools": tools.count, "buttons": bar.e2eButtons.count])
         fixture.view.cancel(); _ = await E2E.until { !E2E.coord.busy }
     }

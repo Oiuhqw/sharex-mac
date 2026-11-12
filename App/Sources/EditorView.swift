@@ -120,12 +120,18 @@ final class EditorView: NSView {
 
 
     func releaseResources() {
-        liveView?.releaseResources(); chrome.releaseResources(); frameView.layer?.contents = nil
         toolbar.closePopover()
+        liveView?.releaseResources(); chrome.releaseResources(); frameView.layer?.contents = nil
     }
     func invalidateAll() { annotationsView?.needsDisplay = true; liveView?.releaseResources() }
     func invalidateAnnotations(_ rect: CGRect) { annotationsView?.setNeedsDisplay(rect.intersection(viewport).integral) }
-    func showFailures(_ rects: [CGRect]) { liveView?.showFailedMasks(rects) }
+    func showFailures(_ rects: [CGRect]) {
+        liveView?.showFailedMasks(rects)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, phase != .ended else { return }
+            toolbar.sync()
+        }
+    }
     func refresh() {
         CATransaction.begin(); CATransaction.setDisableActions(true); defer { CATransaction.commit() }
         switch phase {

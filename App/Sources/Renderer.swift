@@ -37,6 +37,7 @@ final class Renderer {
     var liveEffectID: Int?
     private var failedRedactions: [Int: CGRect] = [:]
     var redactionFailureRects: [CGRect] { Array(failedRedactions.values) }
+    var smartEraseFailureRects: [CGRect] { failedRedactions.compactMap { effectKeys[$0.key]?.kind == .smartErase ? $0.value : nil } }
     var redactionFailuresChanged: (([CGRect]) -> Void)?
     var redactionFailuresNeedDisplay: ((CGRect) -> Void)?
     #if SHAREX_E2E
@@ -129,11 +130,13 @@ final class Renderer {
             ctx.beginPath(); ctx.move(to: first)
             for p in a.points.dropFirst() { ctx.addLine(to: p) }
             ctx.strokePath()
-        case .blur, .pixelate:
+        case .blur, .pixelate, .smartErase:
             if let patch = effectPatch(a) {
                 clipPriorProtection(for: a.id, rect: patch.rect, in: ctx)
-                ctx.interpolationQuality = smoothFrame ? .medium : .none
-                Imaging.drawUpright(patch.image, in: patch.rect, ctx: ctx)
+                ctx.clip(to: patch.rect)
+                ctx.interpolationQuality = a.kind == .smartErase ? .low : (smoothFrame ? .medium : .none)
+                let imageRect = a.kind == .smartErase ? SmartErase.imageRect(for: patch.rect) : patch.rect
+                Imaging.drawUpright(patch.image, in: imageRect, ctx: ctx)
             } else if let rect = redactionBounds(a) {
                 coverRedaction(rect, in: ctx)
             }
@@ -184,7 +187,7 @@ final class Renderer {
     func redactionBounds(_ a: Annotation) -> CGRect? { pixelArea(a.rect)?.points(scale: scale) }
 
     private func protectionBounds(_ a: Annotation) -> PixelRect? {
-        if a.kind == .blur || a.kind == .pixelate { return pixelArea(a.rect) }
+        if a.kind.isRedaction { return pixelArea(a.rect) }
         guard a.kind == .rectangle, a.style.filled, a.style.color.a * a.style.opacity == 1 else { return nil }
         return Geometry.fullyCoveredPixels(a.rect, scale: scale, width: pixelWidth, height: pixelHeight)
     }
@@ -194,21 +197,20 @@ final class Renderer {
 
     @discardableResult
     private func synchronize(_ annotations: [Annotation]) -> CGRect? {
+        let all = annotations.compactMap { a in protectionBounds(a).map { Protection(id: a.id, bounds: $0) } }
         var prior: [Protection] = []
         var next: [Int: EffectKey] = [:]
         for a in annotations {
             guard let area = protectionBounds(a) else { continue }
-            if a.kind == .blur || a.kind == .pixelate {
-                var intersections: [PixelRect] = []
-                var exceeded = false
-                for (index, p) in prior.enumerated() {
-                    if index == Self.dependencyScanLimit { exceeded = true; break }
-                    guard let overlap = area.intersection(p.bounds) else { continue }
-                    if intersections.count == Self.intersectionLimit { exceeded = true; break }
-                    intersections.append(overlap)
-                }
-                next[a.id] = EffectKey(kind: a.kind, rect: area, strength: a.style.strength,
-                                      prior: intersections, exceeded: exceeded)
+            if a.kind.isRedaction {
+                let sample = a.kind == .smartErase
+                    ? SmartErase.samplingArea(area, scale: scale, width: pixelWidth, height: pixelHeight) : area
+                let output = intersections(prior, with: area, excluding: a.id)
+                let source = a.kind == .smartErase ? intersections(all, with: sample, excluding: a.id) : output
+                next[a.id] = EffectKey(kind: a.kind, rect: area, sample: sample,
+                                      strength: a.kind == .smartErase ? 0 : a.style.strength,
+                                      sourceExclusions: source.rects, outputExclusions: output.rects,
+                                      exceeded: source.exceeded || output.exceeded)
             }
             prior.append(Protection(id: a.id, bounds: area))
         }
@@ -220,8 +222,20 @@ final class Renderer {
             if failedRedactions[id] != nil { setRedactionFailure(id, rect: next[id]?.rect.points(scale: scale)) }
         }
         effectKeys = next
-        protections = prior
+        protections = all
         return dirty.isNull ? nil : dirty
+    }
+
+    private func intersections(_ protections: [Protection], with area: PixelRect, excluding id: Int)
+        -> (rects: [PixelRect], exceeded: Bool) {
+        var rects: [PixelRect] = []
+        for (index, protection) in protections.enumerated() {
+            if index == Self.dependencyScanLimit { return (rects, true) }
+            guard protection.id != id, let overlap = area.intersection(protection.bounds) else { continue }
+            if rects.count == Self.intersectionLimit { return (rects, true) }
+            rects.append(overlap)
+        }
+        return (rects, false)
     }
 
     func sourceIsProtected(_ pixels: CGRect) -> Bool {
@@ -231,16 +245,19 @@ final class Renderer {
     func liveGuard(for a: Annotation) -> CGRect? {
         guard let own = protectionBounds(a), let index = protections.firstIndex(where: { $0.id == a.id }) else { return nil }
         var guardRect = CGRect.null
-        for (i, p) in protections.enumerated() where p.id != a.id && p.bounds.intersection(own) != nil {
+        for (i, p) in protections.enumerated() where p.id != a.id {
+            let effect = effectKeys[p.id]
+            let haloDepends = effect?.kind == .smartErase && effect?.sample.intersection(own) != nil
+            guard p.bounds.intersection(own) != nil || haloDepends else { continue }
             guardRect = guardRect.union(own.points(scale: scale))
-            if i > index, effectKeys[p.id] != nil { guardRect = guardRect.union(p.bounds.points(scale: scale)) }
+            if haloDepends || i > index && effect != nil { guardRect = guardRect.union(p.bounds.points(scale: scale)) }
         }
         return guardRect.isNull ? nil : guardRect
     }
 
     private func clipPriorProtection(for id: Int, rect: CGRect, in ctx: CGContext) {
         ctx.setShouldAntialias(false)
-        for area in effectKeys[id]?.prior ?? [] {
+        for area in effectKeys[id]?.outputExclusions ?? [] {
             ctx.beginPath(); ctx.addRect(rect); ctx.addRect(area.points(scale: scale)); ctx.clip(using: .evenOdd)
         }
     }
@@ -297,8 +314,11 @@ final class Renderer {
 
     private func key(for a: Annotation, area: PixelRect) -> EffectKey {
         let prepared = effectKeys[a.id]
-        return EffectKey(kind: a.kind, rect: area, strength: a.style.strength,
-                         prior: prepared?.prior ?? [], exceeded: prepared?.exceeded ?? false)
+        let sample = a.kind == .smartErase
+            ? SmartErase.samplingArea(area, scale: scale, width: pixelWidth, height: pixelHeight) : area
+        return EffectKey(kind: a.kind, rect: area, sample: sample, strength: a.kind == .smartErase ? 0 : a.style.strength,
+                         sourceExclusions: prepared?.sourceExclusions ?? [], outputExclusions: prepared?.outputExclusions ?? [],
+                         exceeded: prepared?.exceeded ?? false)
     }
 
     private func effectSource(_ key: EffectKey) -> CIImage? {
@@ -314,7 +334,7 @@ final class Renderer {
         source.draw(in: ctx, area: area.points(scale: scale))
         ctx.restoreGState()
         ctx.setBlendMode(.copy)
-        for covered in key.prior {
+        for covered in key.sourceExclusions {
             ctx.fill(CGRect(x: covered.x - area.x, y: covered.y - area.y, width: covered.w, height: covered.h))
         }
         guard let sanitized = ctx.makeImage() else { return nil }
@@ -328,6 +348,20 @@ final class Renderer {
             cacheClock &+= 1; hit.use = cacheClock; effectCache[a.id] = hit
             setRedactionFailure(a.id, rect: nil); return (hit.image, rect)
         }
+        #if SHAREX_E2E
+        if e2eRejectEffectImage || e2eRejectedEffectIDs.contains(a.id) { setRedactionFailure(a.id, rect: rect); return nil }
+        #endif
+        if a.kind == .smartErase {
+            guard !key.exceeded,
+                  Imaging.allocationBytes(width: px.w, height: px.h, maximumPixels: Self.effectPixels) != nil,
+                  let image = SmartErase.patch(source: source, scale: scale, output: px, sample: key.sample,
+                                               exclusions: key.sourceExclusions) else {
+                setRedactionFailure(a.id, rect: rect); return nil
+            }
+            setRedactionFailure(a.id, rect: nil)
+            if retain, a.id != liveEffectID { cache(image, key: key, id: a.id) }
+            return (image, rect)
+        }
         guard let src = effectSource(key) else { setRedactionFailure(a.id, rect: rect); return nil }
         let ciRect = px.flippedY(height: pixelHeight).cgRect
         let anchor = EffectMath.pixelateCenter(yUp: px.flippedY(height: pixelHeight))
@@ -335,9 +369,6 @@ final class Renderer {
             ? src.applyingGaussianBlur(sigma: EffectMath.blurSigma(strength: a.style.strength, scale: scale))
             : src.applyingFilter("CIPixellate", parameters: [kCIInputScaleKey: EffectMath.pixelateBlock(strength: a.style.strength, scale: scale),
                                                              kCIInputCenterKey: CIVector(x: anchor.x, y: anchor.y)])
-        #if SHAREX_E2E
-        if e2eRejectEffectImage || e2eRejectedEffectIDs.contains(a.id) { setRedactionFailure(a.id, rect: rect); return nil }
-        #endif
         guard let cg = ciContext.createCGImage(out.cropped(to: ciRect), from: ciRect, format: .RGBA8,
                                                colorSpace: source.colorSpace),
               Imaging.accepts(cg), let bytes = Imaging.retainedBytes(of: cg), bytes <= Self.effectPixels * 4 else {
@@ -352,12 +383,12 @@ final class Renderer {
     var fastLivePreview = false
     func livePatch(_ a: Annotation) -> (image: CGImage, rect: CGRect)? {
         guard let px = pixelArea(a.rect) else { liveCache = nil; setRedactionFailure(a.id, rect: nil); return nil }
-        let key = key(for: a, area: px), preview = fastLivePreview && a.kind == .blur && key.prior.isEmpty && !key.exceeded
+        let key = key(for: a, area: px), preview = fastLivePreview && a.kind == .blur && key.sourceExclusions.isEmpty && !key.exceeded
         if let c = liveCache, c.key == key, c.preview == preview { setRedactionFailure(a.id, rect: nil); return (c.image, px.points(scale: scale)) }
         liveCache = nil
         let patch: (image: CGImage, rect: CGRect)?
         if preview, let small = blurPreview(a, px) { patch = small }
-        else if Imaging.allocationBytes(width: px.w, height: px.h, maximumPixels: Self.liveBytesLimit / 4) != nil {
+        else if a.kind == .smartErase || Imaging.allocationBytes(width: px.w, height: px.h, maximumPixels: Self.liveBytesLimit / 4) != nil {
             patch = effectPatch(a, retain: false)
         } else { patch = nil }
         guard let patch, let bytes = Imaging.retainedBytes(of: patch.image), bytes <= Self.liveBytesLimit else {
@@ -392,8 +423,10 @@ final class Renderer {
     }
 
     private struct EffectKey: Hashable {
-        let kind: ShapeKind, rect: PixelRect, strength: Double
-        let prior: [PixelRect]
+        let kind: ShapeKind
+        let rect: PixelRect, sample: PixelRect
+        let strength: Double
+        let sourceExclusions: [PixelRect], outputExclusions: [PixelRect]
         let exceeded: Bool
     }
     /// One Metal-backed CIContext for the whole app: creating one costs a pipeline/shader-cache setup per capture.

@@ -1,6 +1,6 @@
 # ShareX for macOS implementation and verification
 
-Version 0.1.3, build 4 adds editing on the original displays and selections across display boundaries. The older proposals in `plans/` are historical.
+Version 0.1.6, build 7 adds the circular loupe, live style feedback, local Smart Eraser, clearer save status, and a crisp capture sound. The older proposals in `plans/` are historical.
 
 ## Implemented design
 
@@ -12,7 +12,7 @@ The capture path checks permission, applies the selected delay, freezes pixels, 
 
 `DesktopImageSource` retains native display tiles and their point placements. It does not allocate the desktop union. Export allocates the selected crop at the highest scale among displays with a positive-area intersection. Empty desktop gaps remain transparent. An untouched Retina display does not increase a 1x crop's scale.
 
-The toolbar stays at the safe top of each display. Tool, Style, More, Done, and Cancel remain available by mouse. All panels share annotations and undo. A drag across displays remains one gesture. A layout change during editing cancels the session once.
+The toolbar stays at the safe top of each display. Direct tool icons, Style, Undo, Redo, Delete selected, Done, and Cancel remain available by mouse. All panels share annotations and undo. A drag across displays remains one gesture. A layout change during editing cancels the session once.
 
 Last Region stores participant frames relative to an anchor display while retaining the original settings keys. It accepts common translation, backing-scale changes, and extra untouched displays. A missing, moved, or resized participant starts fresh Region selection. The coordinator revalidates after a countdown and against returned frozen geometry.
 
@@ -22,8 +22,10 @@ Export flattens the selected area, adds any border or shadow, and encodes PNG an
 
 - Eight capture modes cover Region, Freehand, Window, Active Window, Monitor, Active Monitor, Fullscreen, and Last Region.
 - The magnifier and crosshair support area selection and crop changes. Size labels show image pixels before border or shadow padding.
-- Tool provides boxes, ellipses, lines, arrows, highlighter, blur, pixelation, spotlight, pen, text, step markers, selection, and crop.
-- Style controls color, width or text size, opacity, fill, and effect strength. More provides Undo, Redo, and Delete selected.
+- Direct tool icons provide boxes, ellipses, lines, arrows, highlighter, blur, pixelation, Smart Eraser, spotlight, pen, text, step markers, selection, and crop.
+- Style shows color, numeric values, and a preview. Color, width or text size, opacity, fill, and effect strength update live. One slider drag creates one undo entry.
+- Smart Eraser uses at most 512 unprotected ring samples and a fixed 32 by 32 RGBA patch. Unsuitable repairs stay opaque. Move, resize, undo, redo, and export use the same repair result.
+- The toolbar states the output destination. A generated 90 ms shutter click plays after all requested outputs succeed.
 - Capture, Shortcuts, and Output settings include shortcut search, recording, conflict feedback, clear, and restore controls.
 - New installations assign only Control-Shift-1 for Region. Existing valid assignments remain unchanged. Editing keys are optional.
 - New installations copy to the clipboard and save a local PNG. Existing output preferences remain unchanged.
@@ -40,7 +42,7 @@ Other recording apps can capture the editor before redaction is complete. The ap
 
 ## Verification
 
-The [0.1.3 assessment](reviews/multidisplay-0.1.3.md) contains the diagnostic source and exact native results. The `macOS` workflow runs script tests, the core suite, AddressSanitizer, baseline app E2E, shortcut recovery, two virtual-display layouts, Release checks, and memory ownership checks.
+The [current verification report](.audit/capture-polish-verification.md) contains the diagnostic source and exact native results. The [performance assessment](.audit/performance-finalization.md) explains the measured CPU and RAM costs without claiming an unmeasured speedup. The `macOS` workflow runs script tests, the core suite, AddressSanitizer, baseline app E2E, shortcut recovery, two virtual-display layouts, Release checks, and memory ownership checks.
 
 The virtual helper creates two 1280 by 800 logical displays at 1x and 2x. Horizontal and vertical layouts include negative origins. Frozen tiles use deterministic fixture pixels on real `NSScreen` geometry. Actual ScreenCaptureKit window images cross-check editor projection and effects. Clipboard and PNG checks inspect delivered images. Layout mutation checks cover Last Region during the countdown and after freezing.
 
@@ -52,9 +54,9 @@ Memory checks record repeated sessions, buffer limits, object release, current R
 
 ## Delivery status
 
-Version 0.1.3, build 4 targets arm64 only. The [release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.3) provides the DMG, checksum, and installation instructions. The final PR records independent review and native validation at its exact documentation head. The release notes identify the separate build from merged main.
+Version 0.1.6, build 7 targets arm64 only. The [release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.6) provides the DMG, checksum, and installation instructions. The release notes identify the verified PR, merged source, production package run, and DMG checksum. [Build and publish a release](docs/RELEASING.md) defines the release steps.
 
-The diagnostic package, final PR package, and merged-main package have separate identities. `INSTALL.txt` is included in the DMG. Diagnostic validation therefore does not establish the final release checksum. The release's attached checksum is the reference for download verification.
+The diagnostic package, final PR package, and merged-main package have separate identities. `INSTALL.txt` is included in the DMG. Diagnostic validation therefore does not establish the final release checksum. The checksum in the release notes is the reference for download verification.
 
 Packaging requires all mandatory native checks to pass. It verifies arm64 architecture, the app icon, Hardened Runtime signing, test-code exclusion, launch, and installation. Both hosted workflows return to disabled after the validation and release session.
 
