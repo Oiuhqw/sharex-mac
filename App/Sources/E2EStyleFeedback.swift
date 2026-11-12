@@ -46,14 +46,14 @@ enum E2EStyleFeedback {
         let positions: [(CGEventType, CGPoint)] = [(.mouseMoved, start), (.leftMouseDown, start)]
             + points.map { (.leftMouseDragged, $0) } + [(.leftMouseUp, points.last ?? start)]
         var events: [CGEvent] = []
-        for (index, item) in positions.enumerated() {
+        for item in positions {
             let screen = window.convertPoint(toScreen: control.convert(item.1, to: nil))
             guard let event = CGEvent(mouseEventSource: source, mouseType: item.0,
                                       mouseCursorPosition: CGPoint(x: screen.x, y: primary.frame.maxY - screen.y),
                                       mouseButton: .left) else { return nil }
             event.flags = []
             event.setIntegerValueField(.mouseEventClickState, value: item.0 == .mouseMoved ? 0 : 1)
-            event.setIntegerValueField(.mouseEventNumber, value: Int64(index))
+            event.setIntegerValueField(.mouseEventNumber, value: item.0 == .mouseMoved ? 0 : 1)
             event.setDoubleValueField(.mouseEventPressure, value: item.0 == .leftMouseDown || item.0 == .leftMouseDragged ? 1 : 0)
             events.append(event)
         }
@@ -71,6 +71,7 @@ enum E2EStyleFeedback {
         let content = window.contentView
         let hit = content?.hitTest(control.convert(start, to: content?.superview))
         return ["eventType": event?.type.rawValue ?? 0, "eventWindow": event?.windowNumber ?? 0,
+                "buttonEventNumber": event?.eventNumber ?? 0,
                 "sliderWindow": window.windowNumber, "eventLocation": [location.x, location.y],
                 "knob": NSStringFromRect(knob), "bounds": NSStringFromRect(control.bounds),
                 "knobHitView": hit.map { String(describing: type(of: $0)) } ?? "none",
@@ -270,6 +271,7 @@ private final class StyleHIDGesture: NSObject {
         let event = events.removeFirst()
         event.timestamp = DispatchTime.now().uptimeNanoseconds
         postedEvents.append(["type": event.type.rawValue, "screen": [event.location.x, event.location.y],
+                             "buttonEventNumber": event.getIntegerValueField(.mouseEventNumber),
                              "leftButtonDownBeforePost": CGEventSource.buttonState(.combinedSessionState, button: .left)])
         event.post(tap: .cghidEventTap)
         if events.isEmpty { timer.invalidate() }
