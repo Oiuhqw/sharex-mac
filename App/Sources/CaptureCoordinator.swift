@@ -131,7 +131,9 @@ final class CaptureCoordinator {
     private func editOrDeliver(window w: WindowInfo, settings snapshot: AppSettings) async throws {
         let shot = try await ScreenCapture.captureWindow(w)
         if snapshot.options.openEditor {
-            openCanvas(shot.image, scale: shot.scale, screen: shot.screen, title: w.title, settings: snapshot)
+            var canvasSettings = snapshot
+            canvasSettings.toolStyles = settings.value.toolStyles
+            openCanvas(shot.image, scale: shot.scale, screen: shot.screen, title: w.title, settings: canvasSettings)
         } else { await deliver(shot.image, scale: shot.scale, last: nil, settings: snapshot) }
     }
 

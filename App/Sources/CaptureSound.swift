@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor
 enum CaptureSound {
-    private static let click = NSSound(data: waveData, byReference: false)
+    private static let click = NSSound(data: waveData)
 
     static func play() {
         click?.stop()

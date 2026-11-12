@@ -7,7 +7,7 @@ enum E2ECapturePolish {
     static func run() async {
         await outputSnapshot()
         await windowOutputSnapshot()
-        let sound = NSSound(data: CaptureSound.waveData, byReference: false)
+        let sound = NSSound(data: CaptureSound.waveData)
         try? CaptureSound.waveData.write(to: E2E.out.appendingPathComponent("capture-click.wav"))
         E2E.record("capture-sound-decodes-short-shutter", sound != nil && abs((sound?.duration ?? 0) - 0.09) < 0.002,
                    ["duration": sound?.duration ?? 0, "bytes": CaptureSound.waveData.count])
@@ -65,6 +65,7 @@ enum E2ECapturePolish {
                 $0.saveToFile = true; $0.saveFolder = E2E.saved.path; $0.playSound = false
                 $0.options.borderWidth = 0; $0.options.shadow = false
                 $0.options.openEditor = edit; $0.options.delaySeconds = 0
+                $0.toolStyles = [.rectangle: .defaults(for: .rectangle)]
             }
             let mark = E2E.markClipboard()
             E2E.coord.capture(.windowPicker)
@@ -72,11 +73,15 @@ enum E2ECapturePolish {
                 E2E.record(name, false, ["error": "window picker missing"]); return
             }
             var shown = picker.view.session.outputSummary.contains(E2E.saved.path)
+            picker.view.setTool(.shape(.rectangle))
+            picker.view.changeStyle { $0.color = .blue }
+            picker.view.session.chooseSelection(.pickWindow)
             E2E.setOpts { $0.saveToFile = false; $0.saveFolder = "/invalid/changed-during-capture"; $0.options.openEditor = !edit }
             E2E.click(CGPoint(x: rect.midX, y: rect.midY))
             if edit {
                 let opened = await E2E.until(6000, { E2E.surface()?.view.phase == .editing })
                 shown = shown && opened && E2E.surface()?.view.session.outputSummary.contains(E2E.saved.path) == true
+                    && E2E.surface()?.view.doc.style(for: .rectangle).color == .blue
                 E2E.surface()?.view.finish()
             }
             let finished = await E2E.until(6000, { !E2E.coord.busy })
@@ -84,7 +89,7 @@ enum E2ECapturePolish {
             if let clip = E2E.checkClipboard(name, since: mark,
                                              w: Int((target.frame.width * E2E.scale).rounded()),
                                              h: Int((target.frame.height * E2E.scale).rounded())) {
-                E2E.record(name, shown && finished && clip.ok, clip.info)
+                E2E.record(name, shown && finished && clip.ok && E2E.app.settings.value.toolStyles[.rectangle]?.color == .blue, clip.info)
             }
         }
     }
