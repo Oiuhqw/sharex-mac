@@ -132,6 +132,7 @@ enum E2ECapturePolish {
                         "canvas": NSStringFromSize(view.bounds.size), "room": NSStringFromSize(room), "viewScale": viewScale,
                         "originalPixelsPreserved": unchanged?.px == original.px])
 
+            view.setTool(.select)
             let chosen = toolbar.e2eButton("Rectangle").map { E2E.postClick($0) } ?? false
             let ready = await E2E.until { view.tool == .shape(.rectangle) }
             view.changeStyle { $0.color = .red; $0.filled = true; $0.opacity = 1; $0.width = 2 }
