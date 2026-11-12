@@ -40,7 +40,8 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
     var outputAction: String { saveFolder == nil ? "Copy" : "Copy and save" }
     var outputSummary: String {
         guard let saveFolder else { return "Clipboard only. PNG saving is off in Settings." }
-        return "Clipboard + PNG to \(saveFolder.isEmpty ? "~/Pictures/ShareX" : saveFolder)"
+        let destination = saveFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "Clipboard + PNG to \(destination.isEmpty ? "~/Pictures/ShareX" : destination)"
     }
     var completion: ((EditorOutcome) -> Void)?
     private var failureMessage: String?
@@ -56,6 +57,9 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
     }
     var status: String? {
         if phase == .editing, !canFinish { return "Use Crop to reduce the captured area (64 megapixel limit)." }
+        if !renderer.smartEraseFailureRects.isEmpty {
+            return "Smart Eraser could not read a simple background. Resize the area or use Pixelate."
+        }
         return failureMessage
     }
 

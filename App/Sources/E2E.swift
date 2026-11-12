@@ -378,6 +378,7 @@ enum E2E {
         E2EPrecision.run()
         await E2ERedaction.run()
         E2EStylePersistence.run()
+        await E2EStyleFeedback.run()
         await E2ECapturePolish.run()
         await menuAndSettings()
 
