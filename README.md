@@ -6,7 +6,7 @@ Use the [user guide](docs/USER-GUIDE.md) for capture, editing, shortcuts, and ou
 
 ## Latest built package
 
-Version **0.1.5, build 6** supports **Apple Silicon Macs running macOS 14 or later**. The app contains arm64 code only. **Intel Macs are unsupported.** Download `ShareX.dmg` from the [0.1.5 GitHub release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.5).
+Version **0.1.6, build 7** supports **Apple Silicon Macs running macOS 14 or later**. The app contains arm64 code only. **Intel Macs are unsupported.** Download `ShareX.dmg` from the [0.1.6 GitHub release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.6).
 
 Each release has one installer, `ShareX.dmg`. Installation instructions are included inside it. The release notes identify the merged source and package build. The app is ad-hoc signed with Hardened Runtime and is not Apple-notarized. Read the [installation instructions](INSTALL.txt) before opening it.
 
@@ -85,32 +85,19 @@ Keep the signing team and bundle ID, `com.sharexmac.ShareX`, stable. Screen Reco
 
 ## Build and verification
 
-The [0.1.3 assessment](reviews/multidisplay-0.1.3.md) records that version's diagnostic source, native results, screenshots, resource checks, and coverage limits. Each release's notes identify its source and validation run. `INSTALL.txt` is part of the DMG, so an earlier diagnostic package does not establish the final package identity.
+The [current verification report](.audit/capture-polish-verification.md) records the capture and editor checks. The [performance assessment](.audit/performance-finalization.md) records CPU and RAM measurements from three native runs. Each release's notes identify its source and validation run. `INSTALL.txt` is part of the DMG, so an earlier diagnostic package does not establish the final package identity.
 
-The `macOS` workflow runs script tests, core XCTest cases, AddressSanitizer, native app E2E, shortcut recovery, two virtual-display layouts, and Release resource checks. Artifacts contain result JSON, native window images, clipboard and file checks, logs, process RSS, and CPU samples.
+The `macOS` workflow runs script tests, core XCTest cases, AddressSanitizer, native app E2E, shortcut recovery, two virtual-display layouts, and Release resource checks. Job logs retain check summaries, selected native images, and performance JSON. Actions artifact storage is opt-in.
 
 The virtual-display driver uses real `NSScreen` geometry with one 1x display and one 2x display. Frozen tile images are deterministic fixtures. ScreenCaptureKit captures the actual editor windows for native comparison. This coverage does not certify physical mouse transitions, separate Spaces, physical hot-plug, real mixed-density display capture, interactive permission prompts, or physical shortcut use.
 
 The strict metrics validator checks 28 timing series, six paired renderer cases, and two resource scenarios. The hover gate requires Release p95 main-thread CPU below 2 ms and checks event delivery. Wall time and display-link callbacks remain diagnostics. They do not measure physical screen presentation time. No relative speedup is claimed from a hosted-runner sample.
 
-Packaging runs only after the required validation job succeeds. Debug, performance, and packaged executables must contain exactly arm64. Package checks verify the icon and signature, reject E2E code and private virtual-display APIs, and run launch and installation smoke checks.
+The main validation workflow packages only after its validation job succeeds. The separate release procedure requires a verified merge before the DMG workflow runs. Debug, performance, and packaged executables must contain exactly arm64. Package checks verify the icon and signature, reject E2E code and private virtual-display APIs, and run launch and installation smoke checks.
 
-The owner keeps the `macOS` and `DMG` workflows disabled between validation sessions. To start a hosted validation session:
+The owner keeps the `macOS` and `DMG` workflows disabled between validation sessions. See [Build and publish a release](docs/RELEASING.md) for free standard-runner validation, draft uploads, package checks, and publication.
 
-```sh
-gh workflow enable macos.yml --repo Oiuhqw/sharex-mac
-gh workflow enable dmg.yml --repo Oiuhqw/sharex-mac
-gh workflow run macos.yml --repo Oiuhqw/sharex-mac --ref main -f runner=macos-15
-```
-
-After the session completes, restore both workflows to disabled:
-
-```sh
-gh workflow disable macos.yml --repo Oiuhqw/sharex-mac
-gh workflow disable dmg.yml --repo Oiuhqw/sharex-mac
-```
-
-The earlier 47-unit security audit covers `e8f9596`. It is not a new security audit of 0.1.3. The full fuzz campaign remains incomplete. See the [review index](reviews/README.md) for the historical scope.
+The earlier 47-unit security audit covers `e8f9596`. It is not a security audit of the complete 0.1.6 patch. The full fuzz campaign remains incomplete. See the [review index](reviews/README.md) for the historical scope.
 
 ## Check on physical Macs
 
@@ -129,7 +116,7 @@ Developer ID signing and notarization require the owner's Apple credentials. The
 
 ## Install the DMG
 
-Download [ShareX.dmg from the 0.1.5 release](https://github.com/Oiuhqw/sharex-mac/releases/download/v0.1.5/ShareX.dmg).
+Download [ShareX.dmg from the 0.1.6 release](https://github.com/Oiuhqw/sharex-mac/releases/download/v0.1.6/ShareX.dmg).
 
 Open the DMG and drag ShareX to Applications. Gatekeeper may block the first launch because the app is not notarized. After the first launch attempt, use **System Settings > Privacy & Security > Open Anyway**.
 

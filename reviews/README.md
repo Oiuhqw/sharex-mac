@@ -1,8 +1,12 @@
 # Review evidence
 
-The current implementation assessment is [Multi-display capture and release validation for 0.1.3](multidisplay-0.1.3.md). It records the diagnostic source, native check counts, virtual-display inputs, actual editor-window images, resource gates, and package checks. The app supports Apple Silicon on macOS 14 or later. Intel Macs are unsupported.
+The current capture and editor implementation is documented in the [0.1.6 verification report](../.audit/capture-polish-verification.md). The full native run recorded 938 checks, with 929 passed, zero failures, and nine unverified instances across seven labels. It also passed 117 core tests, the same 117 under AddressSanitizer, 26 CI script tests, and seven startup scenarios plus cleanup.
 
-The final PR records independent review and native validation at its exact documentation head. The [0.1.3 release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.3) identifies the merged-main package build and provides its checksum. These identities are separate from the diagnostic run because the DMG includes `INSTALL.txt`.
+The [performance assessment](../.audit/performance-finalization.md) compares three native runs. It records CPU time, output latency, active and settled RAM, idle CPU, allocation limits, and evidence gaps. No relative speedup or complete leak-free claim is made.
+
+The [0.1.6 release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.6) identifies the final merged source, native validation, production package build, and DMG checksum. The [shipping PR](https://github.com/Oiuhqw/sharex-mac/pull/7) records the independent verdict. The app supports Apple Silicon on macOS 14 or later. Intel Macs are unsupported.
+
+The [0.1.3 assessment](multidisplay-0.1.3.md) remains historical evidence for the initial multi-display implementation. It does not replace the current capture and editor report.
 
 Automated mixed-scale coverage uses deterministic frozen tiles on real 1x and 2x `NSScreen` geometry. ScreenCaptureKit captures the actual editor windows for native comparisons. Physical mouse transitions, separate Spaces, physical hot-plug, real mixed-density display capture, physical shortcuts, and interactive permission prompts remain hardware checks.
 
