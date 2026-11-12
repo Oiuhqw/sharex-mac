@@ -45,7 +45,7 @@ enum E2EMultiDisplay {
     private static func seamPoints(from a: CGRect, to b: CGRect, offset: CGSize) -> (CGPoint, CGPoint) {
         let vertical = a.maxY == b.minY || b.maxY == a.minY
         let overlapLeft = max(a.minX, b.minX), overlapRight = min(a.maxX, b.maxX)
-        let seamX = overlapLeft + (overlapRight - overlapLeft) / 4
+        let seamX = overlapLeft + min(100, (overlapRight - overlapLeft) / 4)
         return (CGPoint(x: (vertical ? seamX : a.midX) - offset.width, y: a.midY - offset.height),
                 CGPoint(x: (vertical ? seamX : b.midX) + offset.width, y: b.midY + offset.height))
     }
@@ -341,7 +341,7 @@ enum E2EMultiDisplay {
         let onScreen = contents.window.map { window in NSScreen.screens.contains { $0.frame.contains(window.frame) } } ?? false
         E2E.record("multidisplay-style-visible-\(tag)", selected && posted && shown && onScreen
                    && controlsFit(contents) && controls.allSatisfy { !$0.isHiddenOrHasHiddenAncestor }
-                   && buttons.count == 7 && sliders.count == 3,
+                   && buttons.count == 8 && buttons.contains { $0.title == "Reset tool style" } && sliders.count == 3,
                    ["controls": controls.count, "bounds": NSStringFromRect(contents.bounds),
                     "controlFrames": controls.map { NSStringFromRect($0.convert($0.bounds, to: contents)) }])
         guard shown else { bar.closePopover(); return }

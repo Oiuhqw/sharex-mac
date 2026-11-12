@@ -9,7 +9,7 @@ import ShareXCore
 /// show the 15×15 pixels around the pixel under the cursor, upright, at 8x; moving the mouse must update it.
 @MainActor
 enum E2ELoupe {
-    static let size = CGSize(width: 300, height: 240), sc: CGFloat = 2
+    static let size = CGSize(width: 960, height: 360), sc: CGFloat = 2
 
     static func fixture() -> CGImage? {
         let w = Int(size.width * sc), h = Int(size.height * sc)
@@ -153,9 +153,9 @@ enum E2ELoupe {
         let steps: [(String, NSEvent.EventType, CGPoint)] = [("hover", .mouseMoved, CGPoint(x: 60, y: 50)),
                                                              ("moved", .mouseMoved, CGPoint(x: 101.5, y: 80)),
                                                              ("cornerTopLeft", .mouseMoved, CGPoint(x: 1.5, y: 1.5)),
-                                                             ("cornerBottomRight", .mouseMoved, CGPoint(x: 298.5, y: 238.5)),
-                                                             ("cornerTopRight", .mouseMoved, CGPoint(x: 298.5, y: 1.5)),
-                                                             ("dragEdge", .leftMouseDragged, CGPoint(x: 250, y: 200))]
+                                                             ("cornerBottomRight", .mouseMoved, CGPoint(x: size.width - 1.5, y: size.height - 1.5)),
+                                                             ("cornerTopRight", .mouseMoved, CGPoint(x: size.width - 1.5, y: 1.5)),
+                                                             ("dragEdge", .leftMouseDragged, CGPoint(x: size.width - 50, y: size.height - 40))]
         for (i, (name, type, p)) in steps.enumerated() {
             if type == .leftMouseDragged { send(.leftMouseDown, CGPoint(x: 150, y: 120)) }
             let t0 = DispatchTime.now().uptimeNanoseconds
@@ -168,7 +168,7 @@ enum E2ELoupe {
             ok = ok && check(E2E.bitmap(shot), cursor: p, frame: v.e2eLoupe.frame).ok
             info[name] = r
         }
-        send(.leftMouseUp, CGPoint(x: 250, y: 200))
+        send(.leftMouseUp, CGPoint(x: size.width - 50, y: size.height - 40))
         v.releaseResources(); w.orderOut(nil); w.contentView = nil; w.close()
         // Pace hover commits at display ticks, matching the Release performance probe.
         do {

@@ -120,8 +120,8 @@ final class EditorView: NSView {
 
 
     func releaseResources() {
-        liveView?.releaseResources(); chrome.releaseResources(); frameView.layer?.contents = nil
         toolbar.closePopover()
+        liveView?.releaseResources(); chrome.releaseResources(); frameView.layer?.contents = nil
     }
     func invalidateAll() { annotationsView?.needsDisplay = true; liveView?.releaseResources() }
     func invalidateAnnotations(_ rect: CGRect) { annotationsView?.setNeedsDisplay(rect.intersection(viewport).integral) }
