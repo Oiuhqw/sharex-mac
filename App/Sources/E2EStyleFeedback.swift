@@ -66,8 +66,14 @@ enum E2EStyleFeedback {
         guard let window = control.window else { return ["error": "slider has no window"] }
         let cursor = control.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
         let location = event.map { control.convert($0.locationInWindow, from: nil) } ?? .zero
+        let knob = (control.cell as? NSSliderCell)?.knobRect(flipped: control.isFlipped) ?? .zero
+        let start = CGPoint(x: knob.midX, y: knob.midY)
+        let content = window.contentView
+        let hit = content?.hitTest(control.convert(start, to: content?.superview))
         return ["eventType": event?.type.rawValue ?? 0, "eventWindow": event?.windowNumber ?? 0,
                 "sliderWindow": window.windowNumber, "eventLocation": [location.x, location.y],
+                "knob": NSStringFromRect(knob), "bounds": NSStringFromRect(control.bounds),
+                "knobHitView": hit.map { String(describing: type(of: $0)) } ?? "none",
                 "cursor": [cursor.x, cursor.y], "pressedMouseButtons": NSEvent.pressedMouseButtons,
                 "sessionLeftButtonDown": CGEventSource.buttonState(.combinedSessionState, button: .left),
                 "focused": window.firstResponder === control, "keyWindow": window.isKeyWindow]
@@ -196,6 +202,7 @@ enum E2EStyleFeedback {
         let released = NSEvent.pressedMouseButtons & 1 == 0
         E2E.record("style-feedback-native-delivery", completed && downDelivered && released && trackingStarts.count == 1,
                    ["eventPostingPermitted": CGPreflightPostEventAccess(), "completed": completed,
+                    "sliderState": inputState(opacity, event: nil),
                     "downDeliveredAtKnob": downDelivered, "released": released,
                     "postedEvents": gesture?.postedEvents ?? [], "trackingStarts": trackingStarts, "actionInputs": actionInputs])
         let after = s.view.doc.state
