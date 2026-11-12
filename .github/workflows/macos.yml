@@ -18,6 +18,10 @@ on:
         description: Build and upload a DMG after validation
         type: boolean
         default: true
+      login_probe:
+        description: Run only the native login-item diagnostic
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,7 +31,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  login-probe:
+    if: ${{ inputs.login_probe == true }}
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - run: sudo xcode-select -s /Applications/Xcode_26.3.app
+      - name: Compile and run the native login-item diagnostic
+        run: bash scripts/e2e-login-probe.sh
+
   build-and-test:
+    if: ${{ !inputs.login_probe }}
     runs-on: macos-15
     timeout-minutes: 30
     steps:
