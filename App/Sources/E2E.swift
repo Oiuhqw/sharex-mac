@@ -377,6 +377,7 @@ enum E2E {
         E2EPrivacy.run()
         E2EPrecision.run()
         await E2ERedaction.run()
+        await E2ESmartErase.run()
         E2EStylePersistence.run()
         await E2EStyleFeedback.run()
         await E2ECapturePolish.run()
@@ -464,6 +465,8 @@ enum E2E {
                     let changed = diffFrac(b, base, inner), outside = diffFrac(b, base, CGRect(x: 0, y: 0, width: x0 - 2, height: y0 - 2))
                     feat = changed > 0.15 && outside == 0; detail["changedInside"] = changed; detail["changedOutside"] = outside
                 }
+            case .smartErase:
+                break
             case .spotlight:
                 if let base {
                     // Mean brightness of a 30 px corner patch (robust to fixture text landing on a single sample).

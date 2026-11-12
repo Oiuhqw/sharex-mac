@@ -113,7 +113,7 @@ final class LiveMarkView: PassThroughView {
     private var shownFailureRects: [CGRect] = []
     static func supports(_ k: ShapeKind) -> Bool {
         switch k {
-        case .rectangle, .ellipse, .line, .arrow, .pen, .highlighter, .blur, .pixelate: true
+        case .rectangle, .ellipse, .line, .arrow, .pen, .highlighter, .blur, .pixelate, .smartErase: true
         default: false
         }
     }
@@ -171,16 +171,24 @@ final class LiveMarkView: PassThroughView {
         case .highlighter:
             highlight.path = CGPath(rect: a.rect, transform: nil); highlight.fillColor = color; highlight.isHidden = false
             return
-        case .blur, .pixelate:
+        case .blur, .pixelate, .smartErase:
             if let pt = renderer.livePatch(a) {
-                patch.contents = pt.image; patch.frame = pt.rect
+                patch.contents = pt.image
+                patch.frame = a.kind == .smartErase ? SmartErase.imageRect(for: pt.rect) : pt.rect
+                if a.kind == .smartErase {
+                    let mask = CAShapeLayer()
+                    mask.frame = patch.bounds
+                    mask.path = CGPath(rect: pt.rect.offsetBy(dx: -patch.frame.minX, dy: -patch.frame.minY), transform: nil)
+                    patch.mask = mask
+                }
                 patch.backgroundColor = nil
             } else if let rect = renderer.redactionBounds(a) {
                 // Match the export fallback without allocating another image after a render failure.
                 patch.contents = nil; patch.frame = rect
                 patch.backgroundColor = CGColor(gray: 0, alpha: 1)
             } else { return }
-            patch.magnificationFilter = renderer.smoothFrame ? .linear : .nearest
+            patch.magnificationFilter = a.kind == .smartErase || renderer.smoothFrame ? .linear : .nearest
+            patch.minificationFilter = a.kind == .smartErase ? .linear : .nearest
             patch.isHidden = false
             return
         default: return
