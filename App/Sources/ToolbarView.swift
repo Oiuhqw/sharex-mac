@@ -10,6 +10,7 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
         (.shape(.line), "line.diagonal", "Line"), (.shape(.arrow), "arrow.up.right", "Arrow"),
         (.shape(.highlighter), "highlighter", "Highlighter"), (.shape(.blur), "drop", "Blur"),
         (.shape(.pixelate), "squareshape.split.3x3", "Pixelate"), (.shape(.spotlight), "light.max", "Spotlight"),
+        (.shape(.smartErase), "eraser", "Smart Eraser"),
         (.shape(.pen), "scribble", "Pen"), (.shape(.text), "textformat", "Text"),
         (.shape(.step), "1.circle", "Step marker"),
     ]
@@ -26,12 +27,19 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
     private let doneButton = NSButton(title: "Done", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
+    private let outputLabel = NSTextField(labelWithString: "")
     private let popover = NSPopover()
-    private let width = NSSlider(value: 4, minValue: 1, maxValue: 40, target: nil, action: nil)
-    private let opacity = NSSlider(value: 1, minValue: 0.1, maxValue: 1, target: nil, action: nil)
-    private let strength = NSSlider(value: 12, minValue: 2, maxValue: 90, target: nil, action: nil)
+    private let width = TrackingSlider(value: 4, minValue: 1, maxValue: 40, target: nil, action: nil)
+    private let opacity = TrackingSlider(value: 1, minValue: 0.1, maxValue: 1, target: nil, action: nil)
+    private let strength = TrackingSlider(value: 12, minValue: 2, maxValue: 90, target: nil, action: nil)
+    private let widthLabel = NSTextField(labelWithString: "Width")
+    private let widthValue = NSTextField(labelWithString: "")
+    private let opacityValue = NSTextField(labelWithString: "")
+    private let strengthValue = NSTextField(labelWithString: "")
+    private let preview = StylePreviewView(frame: .zero)
     private let fill = NSButton(checkboxWithTitle: "Fill", target: nil, action: nil)
-    private var colorButtons: [NSButton] = []
+    private var colorButtons: [ColorSwatch] = []
+    private static let colorNames = ["Red", "Yellow", "Green", "Blue", "Black", "White"]
     private var preferredSize = NSSize.zero
     override var fittingSize: NSSize { preferredSize }
     override var isFlipped: Bool { true }
@@ -69,12 +77,15 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
             configure(button, symbol: symbol, shortcut: shortcut)
         }
         for button in [styleButton, doneButton, cancelButton] { button.imagePosition = .imageLeading }
-        doneButton.toolTip = "Copy screenshot (Return)"
         cancelButton.toolTip = "Cancel capture (Esc)"
         statusLabel.font = .systemFont(ofSize: 11); statusLabel.textColor = .labelColor
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.setAccessibilityIdentifier("capture.toolbar.status")
         addSubview(statusLabel)
+        outputLabel.font = .systemFont(ofSize: 11); outputLabel.textColor = .secondaryLabelColor
+        outputLabel.lineBreakMode = .byTruncatingMiddle
+        outputLabel.setAccessibilityIdentifier("capture.toolbar.output")
+        addSubview(outputLabel)
         buildStyle()
         sync()
     }
@@ -101,20 +112,37 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
         addSubview(button)
     }
     private func buildStyle() {
-        let colors = NSStackView()
+        let colors = NSStackView(); colors.spacing = 10
         for (index, color) in RGBA.palette.enumerated() {
-            let button = NSButton(title: ["Red", "Yellow", "Green", "Blue", "Black", "White"][index], target: self, action: #selector(colorPicked(_:)))
-            button.tag = index; button.bezelStyle = .rounded
-            button.contentTintColor = NSColor(cgColor: Imaging.cgColor(color)); colors.addArrangedSubview(button); colorButtons.append(button)
+            let button = ColorSwatch(name: Self.colorNames[index], color: color, target: self, action: #selector(colorPicked(_:)))
+            button.tag = index; colors.addArrangedSubview(button); colorButtons.append(button)
         }
         let controls = NSStackView(); controls.orientation = .vertical; controls.alignment = .leading; controls.spacing = 10
         controls.addArrangedSubview(colors)
-        for (label, slider) in [("Width / size", width), ("Opacity", opacity), ("Effect strength", strength)] {
-            slider.target = self; slider.action = #selector(sliderChanged(_:)); slider.isContinuous = false
-            slider.widthAnchor.constraint(equalToConstant: 180).isActive = true; slider.setAccessibilityLabel(label)
-            controls.addArrangedSubview(NSStackView(views: [NSTextField(labelWithString: label), slider]))
+        controls.addArrangedSubview(preview)
+        for (label, slider, value, name) in [
+            (widthLabel, width, widthValue, "Width / size"),
+            (NSTextField(labelWithString: "Opacity"), opacity, opacityValue, "Opacity"),
+            (NSTextField(labelWithString: "Strength"), strength, strengthValue, "Effect strength")
+        ] {
+            slider.target = self; slider.action = #selector(sliderChanged(_:)); slider.isContinuous = true
+            slider.beginTracking = { [weak self] in
+                guard let self else { return }
+                if !popover.isShown { editor.session.activate(editor) }
+                editor.session.beginStyleGesture()
+            }
+            slider.endTracking = { [weak self] in self?.editor.session.endStyleGesture() }
+            slider.widthAnchor.constraint(equalToConstant: 166).isActive = true; slider.setAccessibilityLabel(name)
+            label.widthAnchor.constraint(equalToConstant: 76).isActive = true
+            value.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); value.alignment = .right
+            value.widthAnchor.constraint(equalToConstant: 46).isActive = true
+            value.setAccessibilityIdentifier("capture.style.\(slider === width ? "width" : slider === opacity ? "opacity" : "strength")")
+            let row = NSStackView(views: [label, slider, value]); row.spacing = 8
+            controls.addArrangedSubview(row)
         }
         fill.target = self; fill.action = #selector(fillChanged); controls.addArrangedSubview(fill)
+        let reset = NSButton(title: "Reset tool style", target: self, action: #selector(resetStyle))
+        reset.bezelStyle = .rounded; controls.addArrangedSubview(reset)
         let contents = NSView()
         Self.embed(controls, in: contents, padding: NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12))
         contents.setFrameSize(contents.fittingSize)
@@ -136,14 +164,15 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
         }
         let width = min(limit, max(min(360, limit), used))
         statusLabel.frame = CGRect(x: padding, y: y + height + 5, width: max(1, width - padding * 2), height: 16)
-        preferredSize = NSSize(width: width, height: statusLabel.frame.maxY + padding)
+        outputLabel.frame = statusLabel.frame.offsetBy(dx: 0, dy: 17)
+        preferredSize = NSSize(width: width, height: outputLabel.frame.maxY + padding)
     }
     override func mouseDown(with event: NSEvent) {}
     override func mouseDragged(with event: NSEvent) {}
     override func mouseUp(with event: NSEvent) {}
     override func rightMouseDown(with event: NSEvent) {}
-    func popoverDidClose(_ notification: Notification) { editor.session.restoreResponder() }
-    func closePopover() { popover.close() }
+    func popoverDidClose(_ notification: Notification) { editor.session.endStyleGesture(); editor.session.restoreResponder() }
+    func closePopover() { editor.session.endStyleGesture(); popover.close() }
     func sync() {
         let modes: [SelectionMode] = [.rectangle, .lasso, .pickWindow, .pickMonitor]
         for (index, button) in selectionButtons.enumerated() {
@@ -159,26 +188,50 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
         deleteButton.isEnabled = editor.doc.selectedID != nil
         doneButton.isEnabled = editor.session.canFinish
         doneButton.isHidden = editor.session.canChooseSelection
+        doneButton.toolTip = "\(editor.session.outputAction) screenshot (Return)"
+        doneButton.setAccessibilityHelp(doneButton.toolTip)
+        outputLabel.stringValue = editor.session.outputSummary; outputLabel.toolTip = outputLabel.stringValue
         let active = (selectionButtons + toolButtons).first { !$0.isHidden && $0.state == .on }?.title ?? "Capture"
         let hint: String
         switch editor.phase {
         case .selecting(.pickWindow): hint = "Click a window · Esc: Cancel"
         case .selecting(.pickMonitor): hint = "Click a monitor · Esc: Cancel"
-        case .selecting: hint = "Drag and release to copy · Esc: Cancel"
+        case .selecting: hint = "Drag and release to \(editor.session.outputAction.lowercased()) · Esc: Cancel"
         case .annotating: hint = "Tab: Region · Esc: Cancel"
-        case .editing, .ended: hint = "Return: Copy · Esc: Cancel"
+        case .editing, .ended: hint = "Return: \(editor.session.outputAction) · Esc: Cancel"
         }
-        statusLabel.stringValue = editor.session.status ?? "\(active) · \(hint)"
+        let kind = editor.styleTarget
+        let style = kind.map { editor.doc.selected?.style ?? editor.doc.style(for: $0) }
+        let colorName = style.flatMap { RGBA.palette.firstIndex(of: $0.color) }.map { Self.colorNames[$0] } ?? "Custom color"
+        let editing = editor.phase == .annotating || editor.phase == .editing
+        let styleHint = kind.map { $0.isEffect || !editing
+            ? "" : " · \(colorName) · \(Int(((style?.opacity ?? 1) * 100).rounded()))%" } ?? ""
+        statusLabel.stringValue = editor.session.status ?? (editing && editor.tool == .shape(.smartErase)
+            ? "Smart Eraser · Drag over a small object on a plain or smooth background"
+            : "\(active)\(styleHint) · \(hint)")
         statusLabel.toolTip = statusLabel.stringValue
-        styleButton.isEnabled = editor.styleTarget != nil
-        if let kind = editor.styleTarget {
-            let style = editor.doc.selected?.style ?? editor.doc.style(for: kind)
+        styleButton.isEnabled = kind != nil && kind != .smartErase
+        if kind == .smartErase, popover.isShown { popover.close() }
+        if let kind, let style {
             let font = kind == .text || kind == .step
             width.minValue = font ? 8 : 1; width.maxValue = font ? 96 : 40; width.doubleValue = font ? style.fontSize : style.width
-            opacity.doubleValue = style.opacity
+            width.isEnabled = [.rectangle, .ellipse, .line, .arrow, .pen, .text, .step].contains(kind)
+            widthLabel.stringValue = font ? "Text size" : "Width"
+            widthValue.stringValue = width.isEnabled ? "\(Int(width.doubleValue.rounded())) pt" : "—"
+            opacity.doubleValue = style.opacity; opacity.isEnabled = !kind.isEffect
+            opacityValue.stringValue = opacity.isEnabled ? "\(Int((style.opacity * 100).rounded()))%" : "—"
             strength.minValue = kind == .blur || kind == .pixelate ? EffectMath.minStrength : 2
-            strength.doubleValue = style.strength; strength.isEnabled = kind.isEffect
+            strength.doubleValue = style.strength; strength.isEnabled = [.blur, .pixelate, .spotlight].contains(kind)
+            strengthValue.stringValue = strength.isEnabled ? "\(Int(style.strength.rounded()))" : "—"
             fill.state = style.filled ? .on : .off; fill.isEnabled = [.rectangle, .ellipse, .text].contains(kind)
+            for button in colorButtons {
+                button.isEnabled = !kind.isEffect; button.state = button.color == style.color ? .on : .off
+                button.setAccessibilityValue(button.state == .on ? "Selected" : "Not selected"); button.needsDisplay = true
+            }
+            if kind != .smartErase { preview.show(kind: kind, style: style) }
+            styleButton.toolTip = kind == .smartErase ? "Drag over a small object on a plain or smooth background"
+                : kind.isEffect ? "Adjust effect strength" : "Style · \(colorName) · \(opacityValue.stringValue) opacity"
+            styleButton.setAccessibilityHelp(styleButton.toolTip)
         }
     }
     @objc private func selectionChanged(_ item: NSButton) {
@@ -191,15 +244,26 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
         editor.session.activate(editor); editor.session.commitText()
         popover.show(relativeTo: styleButton.bounds, of: styleButton, preferredEdge: .maxY)
     }
-    @objc private func colorPicked(_ button: NSButton) { editor.changeStyle { $0.color = RGBA.palette[button.tag] } }
-    @objc private func fillChanged() { let on = fill.state == .on; editor.changeStyle { $0.filled = on } }
+    private func changeStyle(_ change: (inout ShapeStyle) -> Void) {
+        if !popover.isShown { editor.session.activate(editor) }
+        editor.session.changeStyle(change, restoreFocus: !popover.isShown)
+    }
+    @objc private func colorPicked(_ button: NSButton) { changeStyle { $0.color = RGBA.palette[button.tag] } }
+    @objc private func fillChanged() { let on = fill.state == .on; changeStyle { $0.filled = on } }
+    @objc private func resetStyle() {
+        guard let kind = editor.styleTarget else { return }
+        changeStyle { $0 = .defaults(for: kind) }
+    }
     @objc private func sliderChanged(_ slider: NSSlider) {
         let value = slider.doubleValue, font = editor.styleTarget == .text || editor.styleTarget == .step
         switch slider {
-        case width: editor.changeStyle { if font { $0.fontSize = value } else { $0.width = value } }
-        case opacity: editor.changeStyle { $0.opacity = value }
-        default: editor.changeStyle { $0.strength = value }
+        case width: changeStyle { if font { $0.fontSize = value } else { $0.width = value } }
+        case opacity: changeStyle { $0.opacity = value }
+        default: changeStyle { $0.strength = value }
         }
+        #if SHAREX_E2E
+        e2eStyleChanged?(slider)
+        #endif
     }
     @objc private func undo() { editor.undo() }
     @objc private func redo() { editor.redo() }
@@ -214,5 +278,8 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
     var e2eStyle: NSButton { styleButton }
     var e2eStyleContents: NSView { popover.contentViewController!.view }
     var e2ePopoverShown: Bool { popover.isShown }
+    var e2ePreview: NSView { preview }
+    var e2eOutput: String { outputLabel.stringValue }
+    var e2eStyleChanged: ((NSSlider) -> Void)?
     #endif
 }

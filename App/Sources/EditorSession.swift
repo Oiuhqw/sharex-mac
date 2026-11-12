@@ -82,7 +82,7 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
     func activate(_ view: EditorView) {
         guard phase != .ended else { return }
         if activeView !== view { commitText(); activeView = view }
-        view.window?.makeKey()
+        if !doc.isStyleGestureActive { view.window?.makeKey() }
     }
     func restoreResponder() {
         if let f = textField { f.window?.makeFirstResponder(f) }
@@ -133,10 +133,21 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
         if case .shape(let kind) = doc.tool { return kind }
         return nil
     }
-    func changeStyle(_ change: (inout ShapeStyle) -> Void) {
-        commitText()
-        guard let kind = styleTarget else { return }
-        doc.applyStyle(change, to: kind); restoreResponder(); refresh()
+    func beginStyleGesture() {
+        guard phase != .ended, let kind = styleTarget else { return }
+        doc.beginStyleGesture(to: kind)
+    }
+    func endStyleGesture() {
+        doc.endStyleGesture()
+        refresh()
+    }
+    func changeStyle(_ change: (inout ShapeStyle) -> Void, restoreFocus: Bool = true) {
+        guard phase != .ended, let kind = styleTarget else { return }
+        let tracking = doc.isStyleGestureActive
+        if !tracking { commitText() }
+        doc.applyStyle(change, to: kind)
+        if !tracking && restoreFocus { restoreResponder() }
+        refresh()
     }
     func rememberStyle(_ style: ShapeStyle, for kind: ShapeKind) { doc.styles[kind] = style; refresh() }
     func finish() {
@@ -154,6 +165,7 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
     func cancel() { end(.cancelled) }
     private func end(_ outcome: EditorOutcome) {
         guard phase != .ended else { return }
+        doc.endStyleGesture()
         phase = .ended
         textField?.delegate = nil; textField?.removeFromSuperview(); textField = nil; editingTextID = nil
         gestureOwner = nil; drag = .none; liveID = nil; renderer.liveEffectID = nil
@@ -287,6 +299,7 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
         }
     }
     func commitText() {
+        doc.endStyleGesture()
         guard let field = textField, let id = editingTextID else { return }
         textField = nil; editingTextID = nil; field.delegate = nil
         doc.setText(id, field.stringValue); field.removeFromSuperview(); restoreResponder(); refresh()
