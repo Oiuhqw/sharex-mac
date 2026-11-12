@@ -240,11 +240,14 @@ final class ChromeView: PassThroughView {
         sizeLabel.backgroundColor = CGColor(gray: 0, alpha: 0.6)
         magLabel.backgroundColor = CGColor(gray: 0, alpha: 0.7)
         magnifier.backgroundColor = CGColor(gray: 0, alpha: 1); magnifier.masksToBounds = true
+        magnifier.cornerRadius = Self.n * Self.zoom / 2
         magImage.magnificationFilter = .nearest; magImage.minificationFilter = .nearest
         magImage.contentsGravity = .resize
         magMid.borderColor = CGColor(srgbRed: 1, green: 0.2, blue: 0.2, alpha: 1); magMid.borderWidth = 1
         let rim = CALayer(); rim.borderColor = .white; rim.borderWidth = 2
         rim.frame = CGRect(x: 0, y: 0, width: Self.n * Self.zoom, height: Self.n * Self.zoom)
+        rim.cornerRadius = Self.n * Self.zoom / 2
+        magLabel.cornerRadius = 5; magLabel.masksToBounds = true
         for l in [magImage, magMid, rim] {
             l.actions = ["position": NSNull(), "bounds": NSNull(), "contentsRect": NSNull(), "frame": NSNull(), "contents": NSNull()]
             magnifier.addSublayer(l)

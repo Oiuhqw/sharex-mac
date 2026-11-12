@@ -36,6 +36,12 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
     private let pickRects: [CGRect]
     private let windows: [WindowInfo]
     private let outputScale: CGFloat?
+    let saveFolder: String?
+    var outputAction: String { saveFolder == nil ? "Copy" : "Copy and save" }
+    var outputSummary: String {
+        guard let saveFolder else { return "Clipboard only. PNG saving is off in Settings." }
+        return "Clipboard + PNG to \(saveFolder.isEmpty ? "~/Pictures/ShareX" : saveFolder)"
+    }
     var completion: ((EditorOutcome) -> Void)?
     private var failureMessage: String?
     var bounds0: CGRect { renderer.source.bounds }
@@ -54,9 +60,11 @@ final class EditorSession: NSObject, NSTextFieldDelegate {
     }
 
     init(renderer: Renderer, mode: SelectionMode, initialCrop: CGRect?, styles: [ShapeKind: ShapeStyle],
-         pickRects: [CGRect], windows: [WindowInfo] = [], finishOnPick: Bool, outputScale: CGFloat? = nil) {
+         pickRects: [CGRect], windows: [WindowInfo] = [], finishOnPick: Bool, outputScale: CGFloat? = nil,
+         saveFolder: String? = "") {
         self.renderer = renderer; self.pickRects = pickRects; self.windows = windows
         self.finishOnPick = finishOnPick; self.outputScale = outputScale
+        self.saveFolder = saveFolder
         doc = EditorDocument(crop: initialCrop, styles: styles)
         phase = initialCrop == nil ? .selecting(mode) : .editing
         selectionMode = initialCrop == nil ? mode : nil

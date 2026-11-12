@@ -72,7 +72,8 @@ final class OverlayController: NSObject, NSWindowDelegate {
         let picks = windows.map { Geometry.cocoaToDisplayTopLeft($0.frame, screenFrame: map.cocoaBounds).intersection(map.bounds) }
         let renderer = Renderer(source: source, scale: source.scale(for: initial ?? source.bounds) ?? 1)
         let session = EditorSession(renderer: renderer, mode: mode, initialCrop: initial, styles: settings.toolStyles,
-                                    pickRects: picks, windows: windows, finishOnPick: !settings.options.openEditor)
+                                    pickRects: picks, windows: windows, finishOnPick: !settings.options.openEditor,
+                                    saveFolder: settings.saveToFile ? settings.saveFolder : nil)
         install(session)
         for (index, frozen) in frozen.enumerated() {
             let display = map.displays[index], frame = display.frame, viewport = map.placement(display)
@@ -126,7 +127,8 @@ final class OverlayController: NSObject, NSWindowDelegate {
         let renderer = Renderer(frame: canvas, scale: viewScale)
         renderer.smoothFrame = abs(viewScale - screen.backingScaleFactor) > 0.01
         let session = EditorSession(renderer: renderer, mode: .rectangle, initialCrop: imageRect.points(scale: viewScale),
-                                    styles: settings.toolStyles, pickRects: [], finishOnPick: false, outputScale: scale)
+                                    styles: settings.toolStyles, pickRects: [], finishOnPick: false, outputScale: scale,
+                                    saveFolder: settings.saveToFile ? settings.saveFolder : nil)
         install(session)
         let view = EditorView(frame: CGRect(origin: .zero, size: size), session: session,
                               viewport: CGRect(origin: .zero, size: size), image: canvas, showMagnifier: settings.options.showMagnifier)

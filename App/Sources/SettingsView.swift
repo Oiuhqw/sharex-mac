@@ -268,6 +268,10 @@ struct SettingsView: View {
             SettingsSection("After capture") {
                 Toggle("Play a sound after capture", isOn: binding(\.playSound))
                     .accessibilityIdentifier("settings.output.sound")
+                Button("Preview capture sound") { CaptureSound.play() }
+                    .accessibilityIdentifier("settings.output.previewSound")
+                Text("A short shutter click confirms that all requested outputs succeeded.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }

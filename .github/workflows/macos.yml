@@ -10,6 +10,14 @@ on:
         type: choice
         options: [macos-15]
         default: macos-15
+      store_artifacts:
+        description: Upload validation artifacts
+        type: boolean
+        default: true
+      build_package:
+        description: Build and upload a DMG after validation
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -104,7 +112,7 @@ jobs:
         run: scripts/e2e-multidisplay.sh
 
       - name: Upload E2E artifacts
-        if: always()
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || inputs.store_artifacts) }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e
@@ -134,7 +142,7 @@ jobs:
             --e2e "$PWD/perf-out/memory-diagnosis" --memory-diagnosis
 
       - name: Upload perf
-        if: always()
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || inputs.store_artifacts) }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: perf
@@ -155,7 +163,7 @@ jobs:
             > native-diagnostics/sharex-system.log 2>&1 || true
 
       - name: Upload logs
-        if: always()
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || inputs.store_artifacts) }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: logs
@@ -168,7 +176,12 @@ jobs:
             native-diagnostics
           if-no-files-found: ignore
 
+      - name: Report checks in job logs
+        if: always()
+        run: python3 scripts/report-e2e.py
+
   package:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_package }}
     needs: build-and-test
     uses: ./.github/workflows/dmg.yml
     with:

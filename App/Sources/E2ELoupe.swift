@@ -38,6 +38,9 @@ enum E2ELoupe {
         let cx = Int((p.x * sc).rounded(.down)), cy = Int((p.y * sc).rounded(.down))
         var good = 0, total = 0, centre: [Int] = []
         for j in 0..<Int(ChromeView.n) { for i in 0..<Int(ChromeView.n) {
+            let dx = (CGFloat(i) + 0.5) * z - L.width / 2
+            let dy = (CGFloat(j) + 0.5) * z - L.height / 2
+            guard hypot(dx, dy) < L.width / 2 - 3 else { continue }
             let vx = L.minX + (CGFloat(i) + 0.5) * z, vy = L.minY + (CGFloat(j) + 0.5) * z
             let c = m.at(Int(Double(vx) * kx), Int(Double(vy) * ky))
             let rx = Int((c.r * 15).rounded()), gy = Int((c.g * 15).rounded())

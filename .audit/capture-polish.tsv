@@ -1,0 +1,2 @@
+ts	phase	decision	why	evidence	result
+2026-11-12T00:00:00Z	frame	Inspect five capture and editing behaviors before changing code	The request combines UI feedback and image processing	App/Sources/ToolbarView.swift; App/Sources/EditorLayers.swift; App/Sources/ExportDelivery.swift	open

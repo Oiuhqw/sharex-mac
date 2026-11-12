@@ -63,7 +63,7 @@ final class ExportDelivery {
         #if SHAREX_E2E
         if E2E.enabled { E2EExport.successSounds += 1; return }
         #endif
-        NSSound(named: "Tink")?.play()
+        CaptureSound.play()
     }
 
     private func recover() async {
