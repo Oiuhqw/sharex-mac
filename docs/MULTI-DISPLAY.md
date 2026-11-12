@@ -63,4 +63,4 @@ KeyboardShortcuts 3.1.0 writes initial bindings into UserDefaults only when a ke
 
 Native virtual-display geometry, app events, and window captures do not prove physical mouse routing across monitors. Separate Spaces, physical display hot-plug, real mixed-density display capture, interactive permission prompts, and physical shortcut use remain unverified hardware scenarios.
 
-The baseline suite and each dedicated display layout report their unavailable cases separately. An unverified case is not a passing check. The diagnostic package does not identify the final release package because the final documentation changes include `INSTALL.txt`. The final PR and release provide the exact-head review, merged-main package build, and attached checksum.
+The baseline suite and each dedicated display layout report their unavailable cases separately. An unverified case is not a passing check. The diagnostic package does not identify the final release package because the final documentation changes include `INSTALL.txt`. The final PR and release provide the reviewed source, merged-main package build, and checksum in the release notes.
