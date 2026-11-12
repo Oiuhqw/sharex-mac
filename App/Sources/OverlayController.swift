@@ -107,25 +107,31 @@ final class OverlayController: NSObject, NSWindowDelegate {
         self.onStyles = onStyles
         super.init()
         let marginPt: CGFloat = 60, toolbarTop: CGFloat = 4
-        let room = CGSize(width: screen.visibleFrame.width - 40, height: screen.visibleFrame.height - 80)
+        // AppKit rounds the content size up to whole points.
+        let room = CGSize(width: floor(screen.visibleFrame.width - 40), height: floor(screen.visibleFrame.height - 80))
         preparationFailed = true
         guard Imaging.accepts(image), scale.isFinite, scale > 0, room.width > 2 * marginPt, room.height > 0 else { return }
         let minPt = CGSize(width: min(760, room.width), height: min(420, room.height))
         // Image pixels per view point: the image's own scale (real size), or more when it must shrink to fit.
-        var viewScale = max(scale, CGFloat(image.width) / (room.width - 2 * marginPt))
-        var topPt: CGFloat
+        // Each rounded margin adds less than one source pixel. Reserve two pixels when fitting.
+        var viewScale = max(scale, (CGFloat(image.width) + 2) / (room.width - 2 * marginPt))
+        var topPt: CGFloat, margin: CGFloat, canvasWidth: CGFloat
         while true {
-            let width = max(CGFloat(image.width) / viewScale + 2 * marginPt, minPt.width)
+            margin = ceil(marginPt * viewScale)
+            canvasWidth = max(CGFloat(image.width) + 2 * margin,
+                              min(ceil(minPt.width * viewScale), floor(room.width * viewScale)))
+            let width = min(room.width, canvasWidth / viewScale)
             topPt = max(marginPt, ToolbarView.editingSize(maxWidth: width - 8).height + toolbarTop + 4)
             guard room.height > topPt + marginPt else { return }
-            let fittedScale = max(viewScale, CGFloat(image.height) / (room.height - topPt - marginPt))
+            let fittedScale = max(viewScale, (CGFloat(image.height) + 2) / (room.height - topPt - marginPt))
             if fittedScale == viewScale { break }
             // Shrinking a tall image can narrow the canvas and wrap the toolbar onto another row.
             viewScale = fittedScale
         }
-        let margin = ceil(marginPt * viewScale), top = ceil(topPt * viewScale)
-        let padded = CGSize(width: max(CGFloat(image.width) + 2 * margin, ceil(minPt.width * viewScale)),
-                            height: max(CGFloat(image.height) + top + margin, ceil(minPt.height * viewScale)))
+        let top = ceil(topPt * viewScale)
+        let padded = CGSize(width: canvasWidth,
+                            height: max(CGFloat(image.height) + top + margin,
+                                        min(ceil(minPt.height * viewScale), floor(room.height * viewScale))))
         guard let dimensions = Imaging.pixelDimensions(size: padded, scale: 1) else { return }
         let cw = dimensions.width, ch = dimensions.height
         let imageRect = PixelRect(x: (cw - image.width) / 2,
@@ -134,7 +140,8 @@ final class OverlayController: NSObject, NSWindowDelegate {
         Imaging.drawUpright(image, in: imageRect.cgRect, ctx: ctx)
         guard let canvas = ctx.makeImage() else { return }
 
-        let size = CGSize(width: CGFloat(cw) / viewScale, height: CGFloat(ch) / viewScale)
+        // Division can round a capped pixel extent just above the room boundary.
+        let size = CGSize(width: min(room.width, CGFloat(cw) / viewScale), height: min(room.height, CGFloat(ch) / viewScale))
         let renderer = Renderer(frame: canvas, scale: viewScale)
         renderer.smoothFrame = abs(viewScale - screen.backingScaleFactor) > 0.01
         let session = EditorSession(renderer: renderer, mode: .rectangle, initialCrop: imageRect.points(scale: viewScale),

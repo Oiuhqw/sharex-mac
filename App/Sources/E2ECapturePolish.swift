@@ -127,7 +127,7 @@ enum E2ECapturePolish {
             let room = CGSize(width: E2E.screen.visibleFrame.width - 40, height: E2E.screen.visibleFrame.height - 80)
             E2E.record("\(name)-toolbar-clear", !toolbar.frame.intersects(crop) && toolbar.frame.maxY < crop.minY
                        && view.bounds.contains(crop) && unchanged?.px == original.px
-                       && view.bounds.width <= room.width + 2 / viewScale && view.bounds.height <= room.height + 2 / viewScale,
+                       && view.bounds.width <= room.width && view.bounds.height <= room.height,
                        ["toolbar": NSStringFromRect(toolbar.frame), "crop": NSStringFromRect(crop),
                         "canvas": NSStringFromSize(view.bounds.size), "room": NSStringFromSize(room), "viewScale": viewScale,
                         "originalPixelsPreserved": unchanged?.px == original.px])
