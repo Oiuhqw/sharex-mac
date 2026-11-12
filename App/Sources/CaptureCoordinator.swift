@@ -46,7 +46,7 @@ final class CaptureCoordinator {
         case .activeWindow:
             // Captured live and on its own, so overlapping windows and the overlay never get in the picture.
             guard let w = ScreenCapture.activeWindow() else { NSSound.beep(); return }
-            try await editOrDeliver(window: w)
+            try await editOrDeliver(window: w, settings: settings.value)
             return
         case .activeMonitor:
             targets = [underMouse]; preset = full(underMouse)
@@ -111,7 +111,7 @@ final class CaptureCoordinator {
             case .pickedWindow(let w):
                 self.overlay = nil   // stay busy: the live capture follows
                 Task { @MainActor in
-                    do { try await self.editOrDeliver(window: w) }
+                    do { try await self.editOrDeliver(window: w, settings: outputSettings) }
                     catch { self.report(error) }
                     if self.overlay == nil { self.busy = false }
                 }
@@ -128,14 +128,14 @@ final class CaptureCoordinator {
     }
 
     /// A window captured live with transparent corners; border and shadow are drawn around it like any capture.
-    private func editOrDeliver(window w: WindowInfo) async throws {
+    private func editOrDeliver(window w: WindowInfo, settings snapshot: AppSettings) async throws {
         let shot = try await ScreenCapture.captureWindow(w)
-        if settings.value.options.openEditor { openCanvas(shot.image, scale: shot.scale, screen: shot.screen, title: w.title) }
-        else { await deliver(shot.image, scale: shot.scale, last: nil, settings: settings.value) }
+        if snapshot.options.openEditor {
+            openCanvas(shot.image, scale: shot.scale, screen: shot.screen, title: w.title, settings: snapshot)
+        } else { await deliver(shot.image, scale: shot.scale, last: nil, settings: snapshot) }
     }
 
-    private func openCanvas(_ image: CGImage, scale: CGFloat, screen: NSScreen, title: String) {
-        let outputSettings = settings.value
+    private func openCanvas(_ image: CGImage, scale: CGFloat, screen: NSScreen, title: String, settings outputSettings: AppSettings) {
         present(OverlayController(canvas: image, scale: scale, screen: screen, title: title.isEmpty ? "ShareX" : title,
                                   settings: outputSettings, onStyles: { [weak self] in self?.saveStyles($0) }) { [weak self] outcome in
             guard let self else { return }
