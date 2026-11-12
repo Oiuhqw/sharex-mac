@@ -248,10 +248,17 @@ enum E2ESmartErase {
         let renderer = Renderer(frame: source, scale: 1)
         let first = flatten(renderer, doc), again = flatten(renderer, doc)
         let patch = doc.selected.flatMap { renderer.livePatch($0) }
+        let patchBytes = patch.flatMap { Imaging.retainedBytes(of: $0.image) }
         E2E.record("smart-erase-compact-cache-bounds", first.flatMap { a in again.map { a.px == $0.px } } == true
                    && renderer.e2eCacheEntryCount == 128 && renderer.e2eCacheBytes <= 64 * 1024 * 1024
-                   && renderer.e2eLiveBytes <= 16 * 1024 * 1024 && patch?.image.width == 2 && patch?.image.height == 2,
+                   && renderer.e2eLiveBytes <= 16 * 1024 * 1024 && patchBytes.map { $0 <= 4096 } == true,
                    ["cacheBytes": renderer.e2eCacheBytes, "entries": renderer.e2eCacheEntryCount, "liveBytes": renderer.e2eLiveBytes])
+        var large = EditorDocument()
+        add(.smartErase, CGRect(x: 80, y: 80, width: 800, height: 600), to: &large)
+        _ = renderer.synchronize(large)
+        let largePatch = large.selected.flatMap { renderer.livePatch($0) }
+        E2E.record("smart-erase-patch-size-independent", largePatch.flatMap { Imaging.retainedBytes(of: $0.image) } == patchBytes
+                   && patchBytes.map { $0 <= 4096 } == true && renderer.smartEraseFailureRects.isEmpty)
         renderer.releaseTransientResources()
         E2E.record("smart-erase-resource-release", renderer.e2eCacheBytes == 0 && renderer.e2eLiveBytes == 0)
     }
@@ -265,7 +272,8 @@ enum E2ESmartErase {
         let view = EditorView(frame: bounds, renderer: renderer, mode: .rectangle, initialCrop: bounds,
                               styles: [:], showMagnifier: true, pickRects: [], finishOnPick: false)
         let window = OverlayWindow(contentRect: bounds, styleMask: .borderless, backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.contentView = view; window.orderFrontRegardless()
+        window.isReleasedWhenClosed = false; window.acceptsMouseMovedEvents = true
+        window.contentView = view; window.orderFrontRegardless()
         window.makeFirstResponder(view)
         defer { view.releaseResources(); window.orderOut(nil); window.contentView = nil }
         let surface = (window: window as NSWindow, view: view)
@@ -326,7 +334,9 @@ enum E2ESmartErase {
         E2E.mouse(.mouseMoved, CGPoint(x: rect.midX, y: rect.midY), in: surface)
         let concealed = !view.e2eLoupe.visible
         E2E.mouse(.mouseMoved, CGPoint(x: 600, y: 450), in: surface)
-        E2E.record("smart-erase-native-loupe-protection", concealed && view.e2eLoupe.visible)
+        E2E.record("smart-erase-native-loupe-protection", concealed && view.e2eLoupe.visible,
+                   ["protectedHidden": concealed, "outsideVisible": view.e2eLoupe.visible,
+                    "lastMouse": view.session.mouse.map { "\($0)" } ?? "none"])
 
         view.setTool(.shape(.rectangle))
         view.changeStyle { $0.filled = true; $0.color = .black; $0.opacity = 1 }

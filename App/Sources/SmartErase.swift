@@ -2,6 +2,7 @@ import AppKit
 import ShareXCore
 
 enum SmartErase {
+    private static let patchSide = 32
     private typealias RGB = SIMD3<Double>
     private struct Sample {
         let x: Double, y: Double
@@ -18,8 +19,11 @@ enum SmartErase {
         return PixelRect(x: x, y: y, w: min(width, rect.maxX + halo) - x, h: min(height, rect.maxY + halo) - y)
     }
 
-    /// The four texel centers lie on the output corners.
-    static func imageRect(for rect: CGRect) -> CGRect { rect.insetBy(dx: -rect.width / 2, dy: -rect.height / 2) }
+    /// The outer texel centers lie on the output corners.
+    static func imageRect(for rect: CGRect) -> CGRect {
+        let intervals = CGFloat(patchSide - 1)
+        return rect.insetBy(dx: -rect.width / (2 * intervals), dy: -rect.height / (2 * intervals))
+    }
 
     static func patch(source: DesktopImageSource, scale: CGFloat, output: PixelRect,
                       sample: PixelRect, exclusions: [PixelRect]) -> CGImage? {
@@ -60,13 +64,16 @@ enum SmartErase {
         }
         guard let plane = fit(samples) else { return nil }
         var pixels: [UInt8] = []
-        for y in [-1.0, 1.0] { for x in [-1.0, 1.0] {
+        pixels.reserveCapacity(patchSide * patchSide * 4)
+        for row in 0..<patchSide { for column in 0..<patchSide {
+            let x = 2 * Double(column) / Double(patchSide - 1) - 1
+            let y = 2 * Double(row) / Double(patchSide - 1) - 1
             let color = plane.at(x, y)
             for channel in 0..<3 { pixels.append(UInt8((max(0, min(1, color[channel])) * 255).rounded())) }
             pixels.append(255)
         } }
         guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
-        return CGImage(width: 2, height: 2, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 8,
+        return CGImage(width: patchSide, height: patchSide, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: patchSide * 4,
                        space: Imaging.colorSpace, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                        provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
