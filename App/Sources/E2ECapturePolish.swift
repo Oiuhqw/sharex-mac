@@ -7,6 +7,7 @@ enum E2ECapturePolish {
     static func run() async {
         await outputSnapshot()
         await windowOutputSnapshot()
+        await canvasToolbarPadding()
         let sound = NSSound(data: CaptureSound.waveData)
         try? CaptureSound.waveData.write(to: E2E.out.appendingPathComponent("capture-click.wav"))
         E2E.record("capture-sound-decodes-short-shutter", sound != nil && abs((sound?.duration ?? 0) - 0.09) < 0.002,
@@ -91,6 +92,90 @@ enum E2ECapturePolish {
                                              h: Int((target.frame.height * E2E.scale).rounded())) {
                 E2E.record(name, shown && finished && clip.ok && E2E.app.settings.value.toolStyles[.rectangle]?.color == .blue, clip.info)
             }
+        }
+    }
+
+    private static func canvasToolbarPadding() async {
+        for (name, width, height, scale) in [("compact", 640, 300, CGFloat(1)), ("wide", 960, 300, CGFloat(1)),
+                                             ("retina", 1280, 600, CGFloat(2)), ("tall", 640, 1600, CGFloat(1))] {
+            let name = "capture-canvas-\(name)"
+            guard let context = Imaging.context(width: width, height: height, flipped: true) else {
+                E2E.record(name, false, ["error": "canvas fixture allocation failed"]); continue
+            }
+            context.setFillColor(NSColor.white.cgColor)
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            context.setFillColor(NSColor.green.cgColor)
+            context.fill(CGRect(x: 0, y: 0, width: width, height: 8))
+            context.setFillColor(NSColor.blue.cgColor)
+            context.fill(CGRect(x: 0, y: height - 8, width: width, height: 8))
+            guard let image = context.makeImage() else { E2E.record(name, false); continue }
+            var result: EditorResult?
+            var outcomes = 0
+            var settings = AppSettings(); settings.options.showMagnifier = false
+            let controller = OverlayController(canvas: image, scale: scale, screen: E2E.screen, title: name,
+                                               settings: settings, onStyles: { _ in }) {
+                outcomes += 1
+                if case .finished(let finished) = $0 { result = finished }
+            }
+            controller.show()
+            guard let surface = controller.e2eSurfaces.first, let crop = surface.view.doc.state.crop else {
+                E2E.record(name, false, ["error": "canvas editor missing"]); continue
+            }
+            let view = surface.view, toolbar = view.e2eToolbar, viewScale = view.renderer.scale
+            let original = E2E.bitmap(image)
+            let unchanged = Export.flatten(renderer: view.renderer, doc: view.doc, crop: crop, lasso: nil).map(E2E.bitmap)
+            let room = CGSize(width: E2E.screen.visibleFrame.width - 40, height: E2E.screen.visibleFrame.height - 80)
+            E2E.record("\(name)-toolbar-clear", !toolbar.frame.intersects(crop) && toolbar.frame.maxY < crop.minY
+                       && view.bounds.contains(crop) && unchanged?.px == original.px
+                       && view.bounds.width <= room.width + 2 / viewScale && view.bounds.height <= room.height + 2 / viewScale,
+                       ["toolbar": NSStringFromRect(toolbar.frame), "crop": NSStringFromRect(crop),
+                        "canvas": NSStringFromSize(view.bounds.size), "room": NSStringFromSize(room), "viewScale": viewScale,
+                        "originalPixelsPreserved": unchanged?.px == original.px])
+
+            let chosen = toolbar.e2eButton("Rectangle").map { E2E.postClick($0) } ?? false
+            let ready = await E2E.until { view.tool == .shape(.rectangle) }
+            view.changeStyle { $0.color = .red; $0.filled = true; $0.opacity = 1; $0.width = 2 }
+            let mark = CGRect(x: crop.minX + 120 / viewScale, y: crop.minY + 12 / viewScale,
+                              width: 80 / viewScale, height: 32 / viewScale)
+            E2E.mouse(.leftMouseDown, mark.origin, in: surface)
+            E2E.mouse(.leftMouseDragged, CGPoint(x: mark.maxX, y: mark.maxY), in: surface)
+            E2E.mouse(.leftMouseUp, CGPoint(x: mark.maxX, y: mark.maxY), in: surface)
+            let annotated = chosen && ready && view.doc.annotations.count == 1
+            view.setTool(.select)
+            let background = CGPoint(x: crop.midX, y: crop.midY)
+            E2E.mouse(.leftMouseDown, background, in: surface)
+            E2E.mouse(.leftMouseUp, background, in: surface)
+            if let native = await E2E.snapshotNativeWindow(surface.window, name: "\(name)-native-window") {
+                func pixel(_ point: CGPoint) -> (r: Double, g: Double, b: Double, a: Double) {
+                    let point = view.convert(point, to: nil), backing = surface.window.backingScaleFactor
+                    return native.at(Int(point.x * backing), Int((surface.window.frame.height - point.y) * backing))
+                }
+                let edge = pixel(CGPoint(x: crop.minX + 30 / viewScale, y: crop.minY + 4 / viewScale))
+                let red = pixel(CGPoint(x: mark.midX, y: mark.midY))
+                E2E.record("\(name)-top-edge-visible", annotated && edge.g > 0.9 && edge.r < 0.1 && E2E.isRed(red),
+                           ["nativeWindowEvents": true, "topGreen": edge.g, "markRed": red.r, "markGreen": red.g])
+            }
+            let posted = E2E.postClick(toolbar.e2eDone)
+            let finished = await E2E.until { outcomes > 0 }
+            if let result {
+                let exported = E2E.bitmap(result.image)
+                var unchangedOutsideMark = exported.w == width && exported.h == height
+                if unchangedOutsideMark {
+                    for y in 0..<height {
+                        for x in 0..<width where x < 112 || x >= 208 || y < 8 || y >= 48 {
+                            let index = (y * width + x) * 4
+                            if exported.px[index..<(index + 4)] != original.px[index..<(index + 4)] { unchangedOutsideMark = false }
+                        }
+                    }
+                }
+                let red = exported.at(160, 28)
+                E2E.record("\(name)-native-export", annotated && posted && finished && outcomes == 1 && result.scale == scale
+                           && unchangedOutsideMark && E2E.isRed(red) && !surface.window.isVisible,
+                           ["width": exported.w, "height": exported.h, "outputScale": result.scale,
+                            "originalPixelsOutsideMark": unchangedOutsideMark, "annotations": view.doc.annotations.count])
+                E2EOrientation.writePNG(result.image, "\(name)-export.png")
+            } else { E2E.record("\(name)-native-export", false, ["error": "Done did not finish canvas editing"]) }
+            controller.session?.cancel()
         }
     }
 }

@@ -4,7 +4,7 @@ import ShareXCore
 @MainActor
 final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
     private unowned let editor: EditorView
-    private let tools: [(Tool, String, String)] = [
+    private static let tools: [(Tool, String, String)] = [
         (.select, "cursorarrow", "Select"), (.crop, "crop", "Crop"),
         (.shape(.rectangle), "rectangle", "Rectangle"), (.shape(.ellipse), "circle", "Ellipse"),
         (.shape(.line), "line.diagonal", "Line"), (.shape(.arrow), "arrow.up.right", "Arrow"),
@@ -26,6 +26,14 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
     private let styleButton = NSButton(title: "Style", target: nil, action: nil)
     private let doneButton = NSButton(title: "Done", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+    private static let actions: [[(button: KeyPath<ToolbarView, NSButton>, action: Selector, symbol: String, shortcut: String, showsTitle: Bool)]] = [
+        [(\.styleButton, #selector(openStyle), "slider.horizontal.3", "", true)],
+        [(\.undoButton, #selector(undo), "arrow.uturn.backward", "⌘Z", false),
+         (\.redoButton, #selector(redo), "arrow.uturn.forward", "⇧⌘Z", false),
+         (\.deleteButton, #selector(deleteSel), "trash", "Delete", false)],
+        [(\.doneButton, #selector(done), "checkmark", "Return", true),
+         (\.cancelButton, #selector(cancel), "xmark", "Esc", true)],
+    ]
     private let statusLabel = NSTextField(labelWithString: "")
     private let outputLabel = NSTextField(labelWithString: "")
     private let popover = NSPopover()
@@ -45,7 +53,7 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
     override var isFlipped: Bool { true }
 
     private var groups: [[NSButton]] {
-        [selectionButtons, toolButtons, [styleButton], [undoButton, redoButton, deleteButton], [doneButton, cancelButton]]
+        [selectionButtons, toolButtons] + Self.actions.map { $0.map { self[keyPath: $0.button] } }
     }
 
     init(editor: EditorView) {
@@ -58,25 +66,19 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
             configure(button, symbol: entry.1, shortcut: entry.2, selectable: index != 4)
             button.tag = index; selectionButtons.append(button)
         }
-        for (index, entry) in tools.enumerated() {
+        for (index, entry) in Self.tools.enumerated() {
             let shortcut: String
             switch entry.0 { case .select: shortcut = "V"; case .crop: shortcut = "C"; case .shape(let kind): shortcut = String(kind.key).uppercased() }
             let button = NSButton(title: entry.2, target: self, action: #selector(toolChanged(_:)))
             configure(button, symbol: entry.1, shortcut: shortcut, selectable: true)
             button.tag = index; toolButtons.append(button)
         }
-        for (button, action, symbol, shortcut) in [
-            (styleButton, #selector(openStyle), "slider.horizontal.3", ""),
-            (undoButton, #selector(undo), "arrow.uturn.backward", "⌘Z"),
-            (redoButton, #selector(redo), "arrow.uturn.forward", "⇧⌘Z"),
-            (deleteButton, #selector(deleteSel), "trash", "Delete"),
-            (doneButton, #selector(done), "checkmark", "Return"),
-            (cancelButton, #selector(cancel), "xmark", "Esc")
-        ] {
-            button.target = self; button.action = action
-            configure(button, symbol: symbol, shortcut: shortcut)
+        for entry in Self.actions.flatMap({ $0 }) {
+            let button = self[keyPath: entry.button]
+            button.target = self; button.action = entry.action
+            configure(button, symbol: entry.symbol, shortcut: entry.shortcut)
+            if entry.showsTitle { button.imagePosition = .imageLeading }
         }
-        for button in [styleButton, doneButton, cancelButton] { button.imagePosition = .imageLeading }
         cancelButton.toolTip = "Cancel capture (Esc)"
         statusLabel.font = .systemFont(ofSize: 11); statusLabel.textColor = .labelColor
         statusLabel.lineBreakMode = .byTruncatingTail
@@ -150,22 +152,47 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
         popover.contentViewController = controller; popover.behavior = .transient; popover.delegate = self
     }
     func fit(maxWidth: CGFloat) {
-        let limit = max(1, maxWidth), padding: CGFloat = 8, height: CGFloat = 30, gap: CGFloat = 3
+        let visible = groups.map { $0.filter { !$0.isHidden } }
+        let layout = Self.layout(widths: visible.map { $0.map { Self.buttonWidth(showsTitle: $0.imagePosition != .imageOnly) } }, maxWidth: maxWidth)
+        for (button, frame) in zip(visible.flatMap { $0 }, layout.buttons) { button.frame = frame }
+        statusLabel.frame = layout.status
+        outputLabel.frame = layout.output
+        preferredSize = layout.size
+    }
+
+    static func editingSize(maxWidth: CGFloat) -> CGSize {
+        let widths = [tools.map { _ in buttonWidth(showsTitle: false) }]
+            + actions.map { $0.map { buttonWidth(showsTitle: $0.showsTitle) } }
+        return layout(widths: widths, maxWidth: maxWidth).size
+    }
+
+    private static let buttonHeight: CGFloat = 30
+    private static func buttonWidth(showsTitle: Bool) -> CGFloat { showsTitle ? 76 : buttonHeight }
+
+    private struct Layout {
+        let buttons: [CGRect]
+        let status: CGRect
+        let output: CGRect
+        let size: CGSize
+    }
+
+    private static func layout(widths: [[CGFloat]], maxWidth: CGFloat) -> Layout {
+        let limit = max(1, maxWidth), padding: CGFloat = 8, height = buttonHeight, gap: CGFloat = 3
         var x = padding, y = padding, used: CGFloat = 0
-        for group in groups {
-            let visible = group.filter { !$0.isHidden }
-            if !visible.isEmpty, x > padding { x += 6 }
-            for button in visible {
-                let width: CGFloat = button.imagePosition == .imageOnly ? height : 76
+        var buttons: [CGRect] = []
+        for group in widths {
+            if !group.isEmpty, x > padding { x += 6 }
+            for width in group {
                 if x > padding, x + width + padding > limit { x = padding; y += height + gap }
-                button.frame = CGRect(x: x, y: y, width: min(width, max(1, limit - padding * 2)), height: height)
-                x = button.frame.maxX + gap; used = max(used, button.frame.maxX + padding)
+                let frame = CGRect(x: x, y: y, width: min(width, max(1, limit - padding * 2)), height: height)
+                buttons.append(frame)
+                x = frame.maxX + gap; used = max(used, frame.maxX + padding)
             }
         }
         let width = min(limit, max(min(360, limit), used))
-        statusLabel.frame = CGRect(x: padding, y: y + height + 5, width: max(1, width - padding * 2), height: 16)
-        outputLabel.frame = statusLabel.frame.offsetBy(dx: 0, dy: 17)
-        preferredSize = NSSize(width: width, height: outputLabel.frame.maxY + padding)
+        let status = CGRect(x: padding, y: y + height + 5, width: max(1, width - padding * 2), height: 16)
+        let output = status.offsetBy(dx: 0, dy: 17)
+        return Layout(buttons: buttons, status: status, output: output, size: CGSize(width: width, height: output.maxY + padding))
     }
     override func mouseDown(with event: NSEvent) {}
     override func mouseDragged(with event: NSEvent) {}
@@ -181,8 +208,8 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
             button.state = index < modes.count && editor.phase == .selecting(modes[index]) ? .on : .off
         }
         for (index, button) in toolButtons.enumerated() {
-            button.isHidden = tools[index].0 == .crop && editor.phase != .editing
-            button.state = (editor.phase == .annotating || editor.phase == .editing) && tools[index].0 == editor.tool ? .on : .off
+            button.isHidden = Self.tools[index].0 == .crop && editor.phase != .editing
+            button.state = (editor.phase == .annotating || editor.phase == .editing) && Self.tools[index].0 == editor.tool ? .on : .off
         }
         undoButton.isEnabled = editor.doc.history.canUndo; redoButton.isEnabled = editor.doc.history.canRedo
         deleteButton.isEnabled = editor.doc.selectedID != nil
@@ -239,7 +266,7 @@ final class ToolbarView: NSVisualEffectView, NSPopoverDelegate {
         if item.tag == 4 { editor.session.selectDesktop() }
         else { editor.session.chooseSelection([.rectangle, .lasso, .pickWindow, .pickMonitor][item.tag]) }
     }
-    @objc private func toolChanged(_ item: NSButton) { editor.setTool(tools[item.tag].0) }
+    @objc private func toolChanged(_ item: NSButton) { editor.setTool(Self.tools[item.tag].0) }
     @objc private func openStyle() {
         editor.session.activate(editor); editor.session.commitText()
         popover.show(relativeTo: styleButton.bounds, of: styleButton, preferredEdge: .maxY)
