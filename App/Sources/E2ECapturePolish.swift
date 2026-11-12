@@ -96,6 +96,7 @@ enum E2ECapturePolish {
     }
 
     private static func canvasToolbarPadding() async {
+        let edgeBandHeight = 32
         for (name, width, height, scale) in [("compact", 640, 300, CGFloat(1)), ("wide", 960, 300, CGFloat(1)),
                                              ("retina", 1280, 600, CGFloat(2)), ("tall", 640, 1600, CGFloat(1))] {
             let name = "capture-canvas-\(name)"
@@ -105,9 +106,9 @@ enum E2ECapturePolish {
             context.setFillColor(NSColor.white.cgColor)
             context.fill(CGRect(x: 0, y: 0, width: width, height: height))
             context.setFillColor(NSColor.green.cgColor)
-            context.fill(CGRect(x: 0, y: 0, width: width, height: 8))
+            context.fill(CGRect(x: 0, y: 0, width: width, height: edgeBandHeight))
             context.setFillColor(NSColor.blue.cgColor)
-            context.fill(CGRect(x: 0, y: height - 8, width: width, height: 8))
+            context.fill(CGRect(x: 0, y: height - edgeBandHeight, width: width, height: edgeBandHeight))
             guard let image = context.makeImage() else { E2E.record(name, false); continue }
             var result: EditorResult?
             var outcomes = 0
@@ -147,14 +148,20 @@ enum E2ECapturePolish {
             E2E.mouse(.leftMouseDown, background, in: surface)
             E2E.mouse(.leftMouseUp, background, in: surface)
             if let native = await E2E.snapshotNativeWindow(surface.window, name: "\(name)-native-window") {
-                func pixel(_ point: CGPoint) -> (r: Double, g: Double, b: Double, a: Double) {
+                func pixelPosition(_ point: CGPoint) -> (x: Int, y: Int) {
                     let point = view.convert(point, to: nil), backing = surface.window.backingScaleFactor
-                    return native.at(Int(point.x * backing), Int((surface.window.frame.height - point.y) * backing))
+                    return (Int(point.x * backing), Int((surface.window.frame.height - point.y) * backing))
                 }
-                let edge = pixel(CGPoint(x: crop.minX + 30 / viewScale, y: crop.minY + 4 / viewScale))
-                let red = pixel(CGPoint(x: mark.midX, y: mark.midY))
+                let edgePosition = pixelPosition(CGPoint(x: crop.minX + 30 / viewScale,
+                                                         y: crop.minY + CGFloat(edgeBandHeight) / 2 / viewScale))
+                let markPosition = pixelPosition(CGPoint(x: mark.midX, y: mark.midY))
+                let edge = native.at(edgePosition.x, edgePosition.y), red = native.at(markPosition.x, markPosition.y)
                 E2E.record("\(name)-top-edge-visible", annotated && edge.g > 0.9 && edge.r < 0.1 && E2E.isRed(red),
-                           ["nativeWindowEvents": true, "topGreen": edge.g, "markRed": red.r, "markGreen": red.g])
+                           ["nativeWindowEvents": true, "annotated": annotated, "selectionCleared": view.doc.selectedID == nil,
+                            "topPixelX": edgePosition.x, "topPixelY": edgePosition.y,
+                            "topRed": edge.r, "topGreen": edge.g, "topBlue": edge.b, "topAlpha": edge.a,
+                            "markPixelX": markPosition.x, "markPixelY": markPosition.y,
+                            "markRed": red.r, "markGreen": red.g, "markBlue": red.b, "markAlpha": red.a])
             }
             let posted = E2E.postClick(toolbar.e2eDone)
             let finished = await E2E.until { outcomes > 0 }
