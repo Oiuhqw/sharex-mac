@@ -32,10 +32,10 @@ struct AgentSetupView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Label(session.state.agentStatusTitle, systemImage: "record.circle").foregroundStyle(.red)
-                                .accessibilityIdentifier("settings.agents.recordingStatus")
                             Text(session.source.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
-                            .accessibilityIdentifier("settings.agents.recordingStatus")
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("settings.agents.recordingStatus")
                         Spacer()
                         Button("Stop Recording") { Task { await service.stopActive() } }
                             .disabled(session.state == .finalizing)
