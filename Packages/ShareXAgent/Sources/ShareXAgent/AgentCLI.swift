@@ -61,9 +61,7 @@ public enum AgentCLI {
                 fields[names[flag]!] = .number(number)
             } else { fields[names[flag]!] = .string(value) }
         }
-        let request = AgentRequest(id: requestID, operation: operation, arguments: fields)
-        _ = try OperationCatalog.validate(request)
-        return .request(request)
+        return .request(AgentRequest(id: requestID, operation: operation, arguments: fields))
     }
 
     public static func exitCode(for failure: AgentFailure?) -> Int32 {

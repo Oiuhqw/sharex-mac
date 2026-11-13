@@ -33,7 +33,13 @@ import Testing
         ["screenshot", "--target", "a", "--region", "0,0,1,2,garbage"],
         ["recording", "start", "--target", "a", "--fps", "2.5"], ["recording", "start", "--target", "a", "--duration", "inf"],
         ["recording", "stop", "--session", "invalid"], ["capabilities", "--request-id", "invalid"], ["unknown"]]
-    for arguments in cases { #expect(throws: AgentFailure.self) { try AgentCLI.parse(arguments) } }
+    for arguments in cases {
+        #expect(throws: AgentFailure.self) {
+            if case .request(let request) = try AgentCLI.parse(arguments) {
+                _ = try OperationCatalog.validate(request)
+            }
+        }
+    }
 }
 
 @Test func cliExitCodesIdentifySetupAndUsage() {

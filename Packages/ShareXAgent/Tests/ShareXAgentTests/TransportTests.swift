@@ -89,17 +89,23 @@ struct TransportTests {
         #expect(completed.wait(timeout: .now() + 2) == .success)
     }
 
-    @Test func runnerReturnsJSONFailureAndDoesNotLaunchForInvalidUsage() throws {
+    @Test(arguments: [["screenshot"], ["recording", "start", "--target", "window", "--duration", "7201"],
+                      ["recording", "start", "--target", "window", "--fps", "2.5"],
+                      ["capabilities", "--target", "window"], ["recording", "stop", "--session", "invalid"]])
+    func runnerReturnsCorrelatedJSONFailureAndDoesNotLaunchForInvalidUsage(arguments: [String]) throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let outputURL = root.appendingPathComponent("stdout"), errorURL = root.appendingPathComponent("stderr")
         try Data().write(to: outputURL); try Data().write(to: errorURL)
         let output = try FileHandle(forWritingTo: outputURL), errors = try FileHandle(forWritingTo: errorURL)
         defer { try? output.close(); try? errors.close() }
-        let code = AgentCommandRunner.run(["screenshot"], launch: { Issue.record("Invalid CLI started app") }, output: output, errors: errors)
+        let requestID = UUID()
+        let code = AgentCommandRunner.run(arguments + ["--request-id", requestID.uuidString],
+                                          launch: { Issue.record("Invalid CLI started app") }, output: output, errors: errors)
         #expect(code == 2)
         let response = try JSONDecoder().decode(AgentResponse.self, from: Data(contentsOf: outputURL))
         #expect(response.error?.code == .invalidRequest)
+        #expect(response.id == requestID)
         #expect(!(try Data(contentsOf: errorURL)).isEmpty)
     }
 

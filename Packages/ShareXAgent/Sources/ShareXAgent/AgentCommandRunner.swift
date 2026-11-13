@@ -23,6 +23,7 @@ public enum AgentCommandRunner {
             }
             guard case .request(let request) = invocation else { return 2 }
             requestID = request.id
+            _ = try OperationCatalog.validate(request)
             let response = try requester(request)
             try output.write(contentsOf: JSONEncoder().encode(response) + Data([10]))
             return AgentCLI.exitCode(for: response.error)
