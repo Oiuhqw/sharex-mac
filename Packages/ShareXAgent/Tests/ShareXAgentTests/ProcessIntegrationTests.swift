@@ -52,6 +52,67 @@ private func readMessage(_ handle: FileHandle) throws -> JSONValue {
     throw AgentFailure(.startupTimeout, "MCP did not reply while stdin remained open.")
 }
 
+@Test func atomicFileCreatePreservesAcceptedBytes() throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let destination = root.appendingPathComponent("\(UUID().uuidString).json")
+    let accepted = try AgentRequest(operation: .screenshot, arguments: ["target": .string("accepted")]).canonicalData()
+    try AtomicFile.create(accepted, at: destination)
+    #expect(try Data(contentsOf: destination) == accepted)
+    var info = stat()
+    #expect(lstat(destination.path, &info) == 0)
+    #expect(info.st_mode & 0o777 == 0o600)
+    #expect(info.st_nlink == 1)
+    #expect(throws: AgentFailure.self) { try AtomicFile.create(Data("different request".utf8), at: destination) }
+    #expect(try Data(contentsOf: destination) == accepted)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == [destination.lastPathComponent])
+}
+
+@Test func atomicFileReplaceKeepsTheOldFileIntactForExistingReaders() throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let destination = root.appendingPathComponent("manifest.json")
+    let original = Data("original record".utf8), replacement = Data(repeating: 0x62, count: 4096)
+    try AtomicFile.create(original, at: destination)
+    let reader = try FileHandle(forReadingFrom: destination)
+    defer { try? reader.close() }
+    try AtomicFile.replace(replacement, at: destination)
+    #expect(try Data(contentsOf: destination) == replacement)
+    #expect(try reader.readToEnd() == original)
+    var info = stat()
+    #expect(lstat(destination.path, &info) == 0)
+    #expect(info.st_mode & 0o777 == 0o600)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == [destination.lastPathComponent])
+}
+
+@Test(arguments: [false, true], [false, true])
+func atomicFileWriteFailureDoesNotPublish(replacing: Bool, interrupted: Bool) throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let destination = root.appendingPathComponent("\(UUID().uuidString).json")
+    let original = Data("accepted request".utf8)
+    if replacing { try AtomicFile.create(original, at: destination) }
+    let result = try runProcess(testHostExecutable(), arguments: ["--atomic-write-failure", replacing ? "replace" : "create",
+        destination.path, interrupted ? "interrupt" : "error"], environment: ProcessInfo.processInfo.environment)
+    #expect(result.status == (interrupted ? SIGKILL : 0))
+    #expect(result.output.isEmpty)
+    if replacing { #expect(try Data(contentsOf: destination) == original) }
+    else { #expect(!FileManager.default.fileExists(atPath: destination.path)) }
+    let remaining = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        .filter { $0 != destination }
+    if interrupted {
+        let partial = try #require(remaining.count == 1 ? remaining.first : nil)
+        #expect(partial.pathExtension == "tmp")
+        #expect(try Data(contentsOf: partial).count == 512)
+        var info = stat()
+        #expect(lstat(partial.path, &info) == 0)
+        #expect(info.st_mode & 0o777 == 0o600)
+    } else {
+        #expect(!result.errors.isEmpty)
+        #expect(remaining.isEmpty)
+    }
+}
+
 @Test func cliAndMCPProcessesUseTheSameSocketService() throws {
     let root = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }

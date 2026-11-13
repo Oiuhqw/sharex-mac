@@ -71,8 +71,7 @@ actor CaptureSessions {
         guard requestCount < maximumRequests else { throw AgentFailure(.limitReached, "The durable request limit is reached. Archive old agent data before continuing.") }
         try checkReserve()
         let bytes = try encoder().encode(RequestRecord(request: request, response: nil))
-        try Self.exclusiveWrite(bytes, to: requestURL(request.id))
-        try Self.syncDirectory(requestURL(request.id).deletingLastPathComponent())
+        try AtomicFile.create(bytes, at: requestURL(request.id))
         requestCount += 1
     }
 
@@ -101,7 +100,7 @@ actor CaptureSessions {
     func directory(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString, isDirectory: true) }
 
     nonisolated static func publishPNG(_ png: Data, at partial: URL, width: Int, height: Int) throws -> (URL, Int64, String) {
-        try exclusiveWrite(png, to: partial)
+        try AtomicFile.create(png, at: partial)
         guard let source = CGImageSourceCreateWithURL(partial as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil), image.width == width, image.height == height else {
             throw AgentFailure(.captureFailed, "The written PNG could not be decoded at the expected dimensions.")
@@ -176,18 +175,7 @@ actor CaptureSessions {
     private func atomicJSON<T: Encodable>(_ value: T, to url: URL) throws {
         let data = try encoder().encode(value)
         guard data.count <= 2_097_152 else { throw AgentFailure(.limitReached, "The session metadata limit is reached.") }
-        let temporary = url.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).tmp")
-        defer { _ = unlink(temporary.path) }
-        try Self.exclusiveWrite(data, to: temporary)
-        guard rename(temporary.path, url.path) == 0 else { throw storageError("Cannot commit agent metadata") }
-        try Self.syncDirectory(url.deletingLastPathComponent())
-    }
-    nonisolated private static func exclusiveWrite(_ data: Data, to url: URL) throws {
-        let descriptor = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
-        guard descriptor >= 0 else { throw AgentFailure(.storageFailed, "Cannot reserve the output file.") }
-        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-        try handle.write(contentsOf: data)
-        try handle.synchronize()
+        try AtomicFile.replace(data, at: url)
     }
     nonisolated private static func syncDirectory(_ directory: URL) throws {
         let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
