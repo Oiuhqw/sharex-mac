@@ -121,6 +121,8 @@ The manual **Agent capture** workflow builds and installs Release, then runs thi
 
 The permission helper is restricted to disposable GitHub runners with SIP disabled. This setup does not validate the human permission flow. Actual client discovery and model-driven capture tasks also require separate evidence. The media harness's resource samples are diagnostics, not a performance comparison.
 
+The workflow also runs [actual-client capture checks](AGENT-CLIENT-EVALUATION.md) through Codex MCP and Claude Code's shell tool without model inference. See the [validation report](AGENT-CAPTURE-VALIDATION.md) for measured results and coverage limits.
+
 ## Design references
 
 The [original ShareX recorder](https://github.com/ShareX/ShareX/blob/v22.4.0/ShareX.ScreenRecordingLib/ScreenRecorder.cs) separates start, stop request, and completed output. [ShareX 22.4.0 defaults to native recording](https://github.com/ShareX/ShareX/blob/v22.4.0/ShareX/TaskSettings.cs#L406). This implementation applies those lifecycle ideas with ScreenCaptureKit and AVAssetWriter on macOS.
