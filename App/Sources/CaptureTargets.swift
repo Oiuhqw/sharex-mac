@@ -48,9 +48,9 @@ final class CaptureTargets {
             throw AgentFailure(.targetNotFound, "The target token expired. Call targets.list and select a current target.")
         }
         let content = try await content()
-        guard let candidate = current(content).first(where: {
-            $0.identity.kind == entry.identity.kind && $0.identity.nativeID == entry.identity.nativeID
-        }) else { throw AgentFailure(.targetNotFound, "The selected target is no longer available.") }
+        guard let candidate = current(content, matching: entry.identity).first else {
+            throw AgentFailure(.targetNotFound, "The selected target is no longer available.")
+        }
         guard candidate.identity == entry.identity else {
             throw AgentFailure(.targetChanged, "The target identity, size, or scale changed. Call targets.list and select it again.")
         }
@@ -96,8 +96,9 @@ final class CaptureTargets {
 
     private struct Candidate { let identity: Identity; let name: String; let application: String? }
 
-    private func current(_ content: SCShareableContent) -> [Candidate] {
+    private func current(_ content: SCShareableContent, matching identity: Identity? = nil) -> [Candidate] {
         var values: [Candidate] = content.displays.compactMap { display in
+            if let identity, identity.kind != .display || identity.nativeID != display.displayID { return nil }
             guard let screen = NSScreen.screens.first(where: { ScreenCapture.displayID(of: $0) == display.displayID }) else { return nil }
             let uuid = CGDisplayCreateUUIDFromDisplayID(display.displayID)?.takeRetainedValue()
             let owner = uuid.map { CFUUIDCreateString(nil, $0) as String } ?? "display-\(display.displayID)"
@@ -106,6 +107,7 @@ final class CaptureTargets {
                 displayFrame: display.frame), name: screen.localizedName, application: nil)
         }
         values += content.windows.compactMap { window in
+            if let identity, identity.kind != .window || identity.nativeID != window.windowID { return nil }
             guard window.isOnScreen, window.windowLayer == 0, window.frame.width > 1, window.frame.height > 1,
                   let app = window.owningApplication, app.processID != ProcessInfo.processInfo.processIdentifier,
                   let running = NSRunningApplication(processIdentifier: app.processID) else { return nil }
