@@ -136,7 +136,6 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
          onLimit: @escaping @Sendable (String) -> Void) throws {
         let fps = options.fps
         writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
-        writer.shouldOptimizeForNetworkUse = true
         input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height,
             AVVideoCompressionPropertiesKey: [
@@ -146,6 +145,7 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
             ]
         ])
         input.expectsMediaDataInRealTime = true
+        input.preferredMediaChunkDuration = CMTime(value: 1, timescale: 10)
         guard writer.canAdd(input) else { throw AgentFailure(.recordingFailed, "H.264 encoding is unavailable for these dimensions.") }
         writer.add(input)
         self.fps = fps; self.url = url; self.options = options; self.onFailure = onFailure; self.onLimit = onLimit
