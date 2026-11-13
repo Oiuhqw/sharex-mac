@@ -22,6 +22,10 @@ on:
         description: Run only the native login-item diagnostic
         type: boolean
         default: false
+      agent_capture_only:
+        description: Run only installed Release agent capture validation
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -42,7 +46,7 @@ jobs:
         run: bash scripts/e2e-login-probe.sh
 
   build-and-test:
-    if: ${{ !inputs.login_probe }}
+    if: ${{ !inputs.login_probe && !inputs.agent_capture_only }}
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -84,6 +88,11 @@ jobs:
         run: |
           set -o pipefail
           swift test --sanitize=address --parallel 2>&1 | tee ../../core-asan.log
+
+      - name: Agent protocol and local transport tests
+        run: |
+          set -o pipefail
+          swift test --package-path Packages/ShareXAgent 2>&1 | tee agent-tests.log
 
       - name: Build app (unsigned)
         id: debug-build
@@ -187,6 +196,7 @@ jobs:
             xcodebuild-release.log
             core-tests.log
             core-asan.log
+            agent-tests.log
             smoke.log
             native-diagnostics
           if-no-files-found: ignore
@@ -195,9 +205,15 @@ jobs:
         if: always()
         run: python3 scripts/report-e2e.py
 
+  agent-capture:
+    if: ${{ !inputs.login_probe }}
+    uses: ./.github/workflows/agent-capture.yml
+    with:
+      store_artifacts: ${{ inputs.store_artifacts == true }}
+
   package:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_package }}
-    needs: build-and-test
+    needs: [build-and-test, agent-capture]
     permissions:
       contents: write
     uses: ./.github/workflows/dmg.yml

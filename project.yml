@@ -7,6 +7,8 @@ options:
 packages:
   ShareXCore:
     path: Packages/ShareXCore
+  ShareXAgent:
+    path: Packages/ShareXAgent
   KeyboardShortcuts:
     url: https://github.com/sindresorhus/KeyboardShortcuts
     exactVersion: 3.1.0
@@ -25,8 +27,8 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: ShareX
-        CFBundleShortVersionString: "0.1.6"
-        CFBundleVersion: "7"
+        CFBundleShortVersionString: "0.2.0"
+        CFBundleVersion: "8"
         CFBundleIconName: AppIcon
         LSUIElement: true
         LSMinimumSystemVersion: "14.0"
@@ -34,6 +36,8 @@ targets:
     dependencies:
       - package: ShareXCore
         product: ShareXCore
+      - package: ShareXAgent
+        product: ShareXAgent
       - package: KeyboardShortcuts
     # Base.xcconfig includes the git-ignored Local.xcconfig (DEVELOPMENT_TEAM); see Local.xcconfig.example.
     configFiles:

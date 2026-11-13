@@ -1,12 +1,14 @@
 # ShareX for macOS
 
-ShareX is a native menu-bar app for screenshots and annotation. It supports macOS 14 or later on Apple Silicon. Intel Macs are unsupported. Uploads, video, GIF recording, and OCR are outside this version's scope.
+ShareX is a native menu-bar app for screenshots, annotation, and silent MP4 recording. It supports macOS 14 or later on Apple Silicon. Intel Macs are unsupported. Local agents can take screenshots and control recordings through a CLI and MCP. Uploads, GIF recording, and OCR remain outside scope.
 
 Use the [user guide](docs/USER-GUIDE.md) for capture, editing, shortcuts, and output recovery. The [review index](reviews/README.md) records validation evidence and its limits.
 
+Use the [agent capture guide](docs/AGENT-CAPTURE.md) for Claude Code and Codex setup, recording sessions, screenshots, evidence, and validation requirements.
+
 ## Latest built package
 
-Version **0.1.6, build 7** supports **Apple Silicon Macs running macOS 14 or later**. The app contains arm64 code only. **Intel Macs are unsupported.** Download `ShareX.dmg` from the [0.1.6 GitHub release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.6).
+Version **0.2.0, build 8** supports **Apple Silicon Macs running macOS 14 or later**. The app contains arm64 code only. **Intel Macs are unsupported.** Download `ShareX.dmg` from the [0.2.0 GitHub release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.0).
 
 Each release has one installer, `ShareX.dmg`. Installation instructions are included inside it. The release notes identify the merged source and package build. The app is ad-hoc signed with Hardened Runtime and is not Apple-notarized. Read the [installation instructions](INSTALL.txt) before opening it.
 
@@ -97,7 +99,7 @@ The main validation workflow packages only after its validation job succeeds. Th
 
 The owner keeps the `macOS` and `DMG` workflows disabled between validation sessions. See [Build and publish a release](docs/RELEASING.md) for free standard-runner validation, draft uploads, package checks, and publication.
 
-The earlier 47-unit security audit covers `e8f9596`. It is not a security audit of the complete 0.1.6 patch. The full fuzz campaign remains incomplete. See the [review index](reviews/README.md) for the historical scope.
+The earlier 47-unit security audit covers `e8f9596`. It is not a security audit of the complete 0.2.0 patch. The full fuzz campaign remains incomplete. See the [review index](reviews/README.md) for the historical scope.
 
 ## Check on physical Macs
 
@@ -116,7 +118,7 @@ Developer ID signing and notarization require the owner's Apple credentials. The
 
 ## Install the DMG
 
-Download [ShareX.dmg from the 0.1.6 release](https://github.com/Oiuhqw/sharex-mac/releases/download/v0.1.6/ShareX.dmg).
+Download [ShareX.dmg from the 0.2.0 release](https://github.com/Oiuhqw/sharex-mac/releases/download/v0.2.0/ShareX.dmg).
 
 Open the DMG and drag ShareX to Applications. Gatekeeper may block the first launch because the app is not notarized. After the first launch attempt, use **System Settings > Privacy & Security > Open Anyway**.
 
@@ -137,6 +139,7 @@ tccutil reset ScreenCapture com.sharexmac.ShareX
 | Path | Contents |
 | --- | --- |
 | `Packages/ShareXCore/` | Geometry, capture options, annotations, the editor document, undo, desktop layout, settings, and tests. |
+| `Packages/ShareXAgent/` | Agent protocol, local transport, CLI, MCP, setup helpers, and tests. |
 | `App/Sources/` | AppKit windows, ScreenCaptureKit adapters, the shared editor session, native display tiles, rendering, output, and settings UI. |
 | `project.yml` | XcodeGen project and pinned KeyboardShortcuts 3.1.0 dependency. |
 | `scripts/` | Build, packaging, validation, and the external test-only virtual-display helper. |

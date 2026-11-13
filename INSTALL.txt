@@ -1,10 +1,10 @@
-ShareX for macOS 0.1.6, build 7
+ShareX for macOS 0.2.0, build 8
 
 Requires macOS 14 or later on Apple Silicon. The app contains arm64 code only.
 Intel Macs are unsupported.
 
 Download ShareX.dmg from the release:
-https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.6
+https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.0
 
 Open the DMG. Drag ShareX.app to Applications, then open it.
 ShareX appears in the menu bar. Open the camera icon and choose Region.
@@ -33,6 +33,15 @@ Then open the app again.
 If capture permission stops working after an ad-hoc update, remove the old
 ShareX entry from Screen Recording permissions. Add the updated
 /Applications/ShareX.app, then quit and reopen it.
+
+Changes in 0.2.0:
+- Local agents can take PNG screenshots and record silent H.264 MP4 video.
+- Capture a display, a window, or a display region through the CLI or stdio MCP.
+- Open Settings > Agents to enable access and install the CLI.
+- Copy the Claude Code or Codex registration command from the same settings page.
+- Sessions preserve markers, screenshots, hashes, and recording status after clients exit.
+- Stop a recording from the menu bar or Settings. Disable agent access to stop capture.
+- Audio, GIF, pause, remote access, and uploads are not supported.
 
 Changes in 0.1.6:
 - The circular magnifier retains the pixel marker and coordinate label.

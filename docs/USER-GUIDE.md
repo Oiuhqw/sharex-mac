@@ -1,8 +1,10 @@
 # Capture and edit a screenshot
 
-ShareX requires macOS 14 or later on Apple Silicon. Intel Macs are unsupported. Download the [0.1.6 release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.6), then follow the [installation instructions](../INSTALL.txt). The package is ad-hoc signed with Hardened Runtime and is not notarized.
+ShareX requires macOS 14 or later on Apple Silicon. Intel Macs are unsupported. Download the [0.2.0 release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.0), then follow the [installation instructions](../INSTALL.txt). The package is ad-hoc signed with Hardened Runtime and is not notarized.
 
 ShareX runs in the menu bar. Open the camera icon to start a capture or open **Settings…**.
+
+Version 0.2.0 includes agent screenshots and silent video recording. See the [agent capture guide](AGENT-CAPTURE.md) for setup and use with Claude Code, Codex, or scripts.
 
 ## Make your first capture
 

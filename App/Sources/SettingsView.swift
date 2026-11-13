@@ -6,13 +6,14 @@ import SwiftUI
 @MainActor
 struct SettingsView: View {
     private enum Page: String, CaseIterable, Identifiable {
-        case capture = "Capture", shortcuts = "Shortcuts", output = "Output"
+        case capture = "Capture", shortcuts = "Shortcuts", output = "Output", agents = "Agents"
         var id: String { rawValue.lowercased() }
         var symbol: String {
             switch self {
             case .capture: "camera.viewfinder"
             case .shortcuts: "keyboard"
             case .output: "square.and.arrow.down"
+            case .agents: "terminal"
             }
         }
         var detail: String {
@@ -20,12 +21,15 @@ struct SettingsView: View {
             case .capture: "Set up the capture and annotation editor."
             case .shortcuts: "Start a capture from any app. Click a shortcut to change it."
             case .output: "Copy each capture to the clipboard and save a local PNG."
+            case .agents: "Let local scripts and AI agents save screenshots and silent video."
             }
         }
     }
 
     @ObservedObject var store: SettingsStore
     @ObservedObject var launchAtLogin: LaunchAtLogin
+    let agent: AgentCaptureService
+    var agentServerError: String?
     @StateObject private var shortcuts = Hotkeys.Editor()
     @State private var page: Page? = .capture
     @State private var search = ""
@@ -82,6 +86,7 @@ struct SettingsView: View {
                         case .capture: capturePage
                         case .shortcuts: shortcutsPage
                         case .output: outputPage
+                        case .agents: AgentSetupView(service: agent, serverError: agentServerError)
                         }
                     }
                     .padding(24)
@@ -311,7 +316,7 @@ struct SettingsView: View {
     }
 }
 
-private struct SettingsSection<Content: View>: View {
+struct SettingsSection<Content: View>: View {
     let title: String
     let content: Content
 
