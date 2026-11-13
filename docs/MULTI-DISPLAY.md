@@ -1,6 +1,6 @@
 # Multi-display capture and validation
 
-Version 0.1.6, build 7 supports macOS 14 or later on Apple Silicon. Intel Macs are unsupported. The project and release package target arm64 only. The [release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.6) provides the DMG and its checksum.
+Version 0.2.0, build 8 supports macOS 14 or later on Apple Silicon. Intel Macs are unsupported. The project and release package target arm64 only. The [release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.0) provides the DMG and its checksum.
 
 ## Shared editing state
 

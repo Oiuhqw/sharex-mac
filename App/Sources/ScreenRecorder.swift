@@ -85,7 +85,6 @@ final class ScreenRecorder {
     }
 
     private func stopStream() async -> AgentFailure? {
-        // Writer finalization has its own deadline, including when ScreenCaptureKit never acknowledges stop.
         await withCheckedContinuation { continuation in
             let gate = StopContinuation(continuation)
             stream.stopCapture { error in

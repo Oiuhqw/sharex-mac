@@ -1,6 +1,6 @@
 # Capture screenshots and video from agents
 
-This feature is in the development source. It is not part of the published 0.1.6 package. Native validation and client compatibility evidence must identify the tested build before release.
+Agent capture is available in version 0.2.0, build 8. Native validation and client compatibility evidence identify the tested build in the [validation report](AGENT-CAPTURE-VALIDATION.md). The release notes identify the final package and checksum.
 
 ShareX can save PNG screenshots and silent H.264 MP4 recordings of a display, window, or rectangular display region. Claude Code and Codex use the same capture service through MCP. Scripts can use the command line. The menu-bar app owns each recording, so closing a command or reconnecting an agent does not end it.
 

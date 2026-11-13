@@ -37,7 +37,6 @@ SOURCES = ["https://learn.chatgpt.com/docs/app-server",
 
 
 def isolated_environment(directory):
-    """Allow runtime paths only; never copy agent auth, hooks, or SDK variables."""
     directory.mkdir()
     allowed = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "SYSTEMDRIVE",
                "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMDATA", "NUMBER_OF_PROCESSORS",
@@ -79,7 +78,6 @@ def close_client(process):
                 process.kill()
                 process.wait(timeout=2)
     if os.name != "nt":
-        # Each client starts in a new session. Reap only its owned process group.
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -116,8 +114,6 @@ class ClientRPC:
             self.lines.put(None)
 
     def send(self, message):
-        # Keep protocol evidence limited to identifiers and method names. Full
-        # client configuration, environment, authentication, and prompts stay out.
         self.run.evidence.emit("client_request", client=self.label, id=message.get("id"),
                                method=message.get("method"),
                                tool=message.get("params", {}).get("tool", message.get("params", {}).get("name")))

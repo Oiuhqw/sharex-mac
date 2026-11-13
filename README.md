@@ -1,14 +1,14 @@
 # ShareX for macOS
 
-ShareX is a native menu-bar app for screenshots and annotation. It supports macOS 14 or later on Apple Silicon. Intel Macs are unsupported. The published 0.1.6 package does not include video recording. This development source adds agent screenshots and silent MP4 recording through a CLI and MCP. Uploads, GIF recording, and OCR remain outside scope.
+ShareX is a native menu-bar app for screenshots, annotation, and silent MP4 recording. It supports macOS 14 or later on Apple Silicon. Intel Macs are unsupported. Local agents can take screenshots and control recordings through a CLI and MCP. Uploads, GIF recording, and OCR remain outside scope.
 
 Use the [user guide](docs/USER-GUIDE.md) for capture, editing, shortcuts, and output recovery. The [review index](reviews/README.md) records validation evidence and its limits.
 
-Use the [agent capture guide](docs/AGENT-CAPTURE.md) for Claude Code and Codex setup, recording sessions, screenshots, evidence, and validation requirements. This feature has not been published in a release.
+Use the [agent capture guide](docs/AGENT-CAPTURE.md) for Claude Code and Codex setup, recording sessions, screenshots, evidence, and validation requirements.
 
 ## Latest built package
 
-Version **0.1.6, build 7** supports **Apple Silicon Macs running macOS 14 or later**. The app contains arm64 code only. **Intel Macs are unsupported.** Download `ShareX.dmg` from the [0.1.6 GitHub release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.6).
+Version **0.2.0, build 8** supports **Apple Silicon Macs running macOS 14 or later**. The app contains arm64 code only. **Intel Macs are unsupported.** Download `ShareX.dmg` from the [0.2.0 GitHub release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.0).
 
 Each release has one installer, `ShareX.dmg`. Installation instructions are included inside it. The release notes identify the merged source and package build. The app is ad-hoc signed with Hardened Runtime and is not Apple-notarized. Read the [installation instructions](INSTALL.txt) before opening it.
 

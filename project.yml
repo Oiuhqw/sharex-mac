@@ -27,8 +27,8 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: ShareX
-        CFBundleShortVersionString: "0.1.6"
-        CFBundleVersion: "7"
+        CFBundleShortVersionString: "0.2.0"
+        CFBundleVersion: "8"
         CFBundleIconName: AppIcon
         LSUIElement: true
         LSMinimumSystemVersion: "14.0"

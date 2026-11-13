@@ -1,12 +1,14 @@
 # ShareX for macOS implementation and verification
 
-Version 0.1.6, build 7 adds the circular loupe, live style feedback, local Smart Eraser, clearer save status, and a crisp capture sound. The older proposals in `plans/` are historical.
+Version 0.2.0, build 8 adds local agent screenshots, silent MP4 recording, CLI and MCP control, durable capture sessions, and native setup controls. The older proposals in `plans/` are historical.
 
 ## Implemented design
 
 The app is a native menu-bar application for macOS 14 or later on Apple Silicon. Intel Macs are unsupported. AppKit owns capture windows and editing. SwiftUI owns Settings. ScreenCaptureKit supplies display and window images. CoreGraphics and CoreImage render the output. KeyboardShortcuts 3.1.0 supplies global shortcuts and is the only external runtime package.
 
-`Packages/ShareXCore` contains geometry, capture options, annotations, the editor document, undo history, desktop layout, and stored settings. `App/Sources` contains platform adapters and the UI.
+`Packages/ShareXCore` contains geometry, capture options, annotations, the editor document, undo history, desktop layout, and stored settings. `Packages/ShareXAgent` contains the operation catalog, CLI, MCP, local transport, and protocol types. `App/Sources` contains platform adapters and the UI.
+
+`AgentCaptureService` coordinates explicit capture targets and session operations. `ScreenRecorder` uses ScreenCaptureKit and AVAssetWriter. `CaptureSessions` persists atomic session state and artifacts. Agent access is off by default. A private per-user socket accepts same-user clients. The app shows recording status and stop controls. The [agent design](docs/AGENT-CAPTURE-DESIGN.md) describes limits, retry behavior, and recovery.
 
 The capture path checks permission, applies the selected delay, freezes pixels, and opens selection or editing. `EditorSession` owns one document, gesture, history, native text field, renderer, and terminal outcome. A borderless panel on each original display projects that shared state into local coordinates. Window captures open a titled canvas around a fresh still image.
 
@@ -54,7 +56,7 @@ Memory checks record repeated sessions, buffer limits, object release, current R
 
 ## Delivery status
 
-Version 0.1.6, build 7 targets arm64 only. The [release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.1.6) provides the DMG, checksum, and installation instructions. The release notes identify the verified PR, merged source, production package run, and DMG checksum. [Build and publish a release](docs/RELEASING.md) defines the release steps.
+Version 0.2.0, build 8 targets arm64 only. The [release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.0) provides the DMG, checksum, and installation instructions. The release notes identify the verified PR, merged source, production package run, and DMG checksum. [Build and publish a release](docs/RELEASING.md) defines the release steps.
 
 The diagnostic package, final PR package, and merged-main package have separate identities. `INSTALL.txt` is included in the DMG. Diagnostic validation therefore does not establish the final release checksum. The checksum in the release notes is the reference for download verification.
 
