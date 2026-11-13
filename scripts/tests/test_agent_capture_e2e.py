@@ -5,6 +5,7 @@ import plistlib
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 import uuid
@@ -240,6 +241,108 @@ class InstalledReleaseTests(unittest.TestCase):
         with mock.patch.dict(DRIVER.os.environ, {"SHAREX_E2E": "0"}):
             with self.assertRaisesRegex(DRIVER.Blocked, "Remove SHAREX_E2E"):
                 self.identity()
+
+
+class StartupTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.evidence = DRIVER.Evidence(Path(temporary.name))
+        self.addCleanup(self.evidence.events.close)
+        self.run = DRIVER.Run(SimpleNamespace(), self.evidence)
+        self.run.binary = Path("/Applications/ShareX.app/Contents/MacOS/ShareX")
+        self.app = mock.Mock(pid=5623)
+        self.app.poll.return_value = None
+        self.run.children.append(self.app)
+        self.run.launch = mock.Mock(return_value=self.app)
+        self.run.command = mock.Mock(side_effect=self.command)
+        self.connected = False
+        self.connect_failures = []
+        self.running = {"exitCode": 0, "stdout": "5623\n"}
+        self.capabilities = {"access": {"enabled": False}}
+        self.connection = mock.MagicMock()
+        self.connection.__enter__.return_value = self.connection
+        self.connection.connect.side_effect = self.connect
+        self.socket = SimpleNamespace(AF_UNIX=1, SOCK_STREAM=1,
+                                      socket=mock.Mock(return_value=self.connection))
+        for patcher in (mock.patch.object(DRIVER, "socket", self.socket, create=True),
+                        mock.patch.object(DRIVER.os, "getuid", return_value=501, create=True),
+                        mock.patch.object(DRIVER.time, "sleep")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def connect(self, address):
+        expected = Path("/tmp").resolve() / "sharex-agent-501/agent.sock"
+        self.assertEqual(address, str(expected))
+        if self.connect_failures:
+            raise self.connect_failures.pop(0)
+        self.connected = True
+
+    def command(self, command, **options):
+        if command[0] == "/usr/bin/pgrep":
+            self.assertEqual(command, ["/usr/bin/pgrep", "-x", "ShareX"])
+            return self.running
+        self.assertTrue(self.connected, "CLI ran before the endpoint accepted a connection")
+        self.assertEqual(command[:3], [self.run.binary, "--agent", "capabilities"])
+        request_id = command[command.index("--request-id") + 1] if "--request-id" in command else str(uuid.uuid4())
+        return {"exitCode": 0, "stdout": json.dumps({"version": 1, "id": request_id,
+                                                    "ok": True, "result": self.capabilities})}
+
+    def test_delayed_endpoint_is_ready_before_capabilities_can_auto_launch(self):
+        self.connect_failures = [FileNotFoundError(), ConnectionRefusedError()]
+        self.run.start_app()
+        self.run.launch.assert_called_once_with([self.run.binary, "--agent-background"], "app")
+        self.assertEqual(self.connection.connect.call_count, 3)
+        self.assertEqual(self.run.capabilities, self.capabilities)
+        self.assertEqual(sum(call.args[0][0] == self.run.binary for call in self.run.command.call_args_list), 1)
+        self.assertEqual(self.connection.__exit__.call_count, 3)
+
+    def test_unavailable_endpoint_times_out_without_calling_the_cli(self):
+        self.connection.connect.side_effect = ConnectionRefusedError()
+        with mock.patch.object(DRIVER.time, "monotonic", side_effect=range(20)):
+            with self.assertRaisesRegex(DRIVER.Failure, "Timed out waiting for agent socket"):
+                self.run.start_app()
+        self.run.command.assert_not_called()
+        self.assertIsNone(self.run.capabilities)
+
+    def test_owned_app_exit_stops_readiness_without_calling_the_cli(self):
+        self.app.poll.return_value = 1
+        with self.assertRaisesRegex(DRIVER.Failure, "exited during startup"):
+            self.run.start_app()
+        self.run.command.assert_not_called()
+
+    def test_unexpected_socket_error_is_not_retried(self):
+        self.connection.connect.side_effect = PermissionError("Endpoint is not accessible")
+        with self.assertRaisesRegex(PermissionError, "Endpoint is not accessible"):
+            self.run.start_app()
+        self.connection.connect.assert_called_once()
+        self.run.command.assert_not_called()
+
+    def test_extra_app_blocks_capabilities_and_cleanup_only_stops_owned_children(self):
+        self.running["stdout"] = "5623\n5626\n"
+        with self.assertRaisesRegex(DRIVER.Failure, "only the owned ShareX app PID"):
+            self.run.start_app()
+        self.assertTrue(all(call.args[0][0] == "/usr/bin/pgrep" for call in self.run.command.call_args_list))
+        with mock.patch.object(DRIVER, "stop_process") as stop:
+            self.assertEqual(self.run.cleanup(failed=True), [])
+        stop.assert_called_once_with(self.app)
+
+    def test_failed_process_check_stops_before_capabilities(self):
+        self.running = {"exitCode": 2, "stdout": ""}
+        with self.assertRaisesRegex(DRIVER.Failure, "only the owned ShareX app PID"):
+            self.run.start_app()
+        self.assertTrue(all(call.args[0][0] == "/usr/bin/pgrep" for call in self.run.command.call_args_list))
+
+    def test_app_spawned_by_capabilities_cannot_pass_startup(self):
+        def command(arguments, **options):
+            result = self.command(arguments, **options)
+            if arguments[0] == self.run.binary:
+                self.running["stdout"] = "5623\n5626\n"
+            return result
+
+        self.run.command.side_effect = command
+        with self.assertRaisesRegex(DRIVER.Failure, "only the owned ShareX app PID"):
+            self.run.start_app()
 
 
 class ReportTests(unittest.TestCase):
