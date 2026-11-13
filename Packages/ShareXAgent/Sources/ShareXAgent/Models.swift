@@ -65,6 +65,8 @@ public struct CaptureArtifact: Codable, Equatable, Sendable {
     public var sha256: String?
     public var durationSeconds: Double?
     public var failure: AgentFailure?
+    public var source: CaptureTarget?
+    public var selection: CaptureSelection?
     public let createdAt: Date
     public init(id: UUID = UUID(), kind: ArtifactKind, state: ArtifactState = .pending, createdAt: Date = Date()) {
         self.id = id; self.kind = kind; self.state = state; self.createdAt = createdAt
@@ -100,6 +102,28 @@ public struct CaptureSession: Codable, Equatable, Sendable {
         self.id = id; createdAt = Date(); self.source = source; self.selection = selection; self.options = options
         state = .starting; droppedFrames = 0; acceptedFrames = 0; artifacts = []; markers = []
     }
+
+    public mutating func failRecording(_ failure: AgentFailure, reason: String, at date: Date = Date()) {
+        state = failure.code == .interrupted ? .interrupted : .failed
+        self.failure = failure; stopReason = reason; endedAt = date
+        for index in artifacts.indices where artifacts[index].kind == .recording && artifacts[index].state == .pending {
+            artifacts[index].state = state == .interrupted ? .interrupted : .failed
+            artifacts[index].failure = failure
+        }
+    }
+
+    @discardableResult
+    public mutating func recoverAfterRestart(at date: Date = Date()) -> Bool {
+        guard !state.isTerminal || artifacts.contains(where: { $0.state == .pending }) else { return false }
+        let interruption = AgentFailure(.interrupted, "ShareX ended before capture completion was committed.")
+        if !state.isTerminal {
+            state = .interrupted; endedAt = date; stopReason = "app_restart"; failure = interruption
+        }
+        for index in artifacts.indices where artifacts[index].state == .pending {
+            artifacts[index].state = .interrupted; artifacts[index].failure = interruption
+        }
+        return true
+    }
 }
 
 public struct AgentAccessState: Codable, Equatable, Sendable {
@@ -131,10 +155,12 @@ public struct AgentCapabilities: Codable, Sendable {
     public let operations: [AgentOperation]
     public let limits: CaptureLimits
     public let sessionRoot: String
+    public let activeSessionID: UUID?
     public let coordinateSpace: String
     public let targetChangePolicy: String
-    public init(access: AgentAccessState, sessionRoot: String) {
+    public init(access: AgentAccessState, sessionRoot: String, activeSessionID: UUID? = nil) {
         protocolVersion = 1; self.access = access; self.sessionRoot = sessionRoot
+        self.activeSessionID = activeSessionID
         operations = AgentOperation.allCases; limits = CaptureLimits()
         coordinateSpace = "top-left display-local logical points"
         targetChangePolicy = "Stop on target loss, resize, scale change, or display geometry change. Never switch targets. Window movement is allowed."

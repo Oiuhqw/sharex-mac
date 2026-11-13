@@ -118,6 +118,18 @@ enum ScreenCapture {
         return c
     }
 
+    static func captureAgent(filter: SCContentFilter, configuration: SCStreamConfiguration) async throws -> CGImage {
+        do {
+            let box = try await AgentCaptureDeadline.run {
+                ImageBox(image: try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration))
+            }
+            let image = box.image
+            var retained = 0
+            try admit(image, retained: &retained)
+            return image
+        } catch { throw mapped(error) }
+    }
+
     /// Freezes the given screens. Our own windows are excluded from the frame.
     static func freeze(_ screens: [NSScreen], showCursor: Bool) async throws -> [FrozenScreen] {
         #if SHAREX_E2E
@@ -244,5 +256,37 @@ enum ScreenCapture {
     static func activeWindow() -> WindowInfo? {
         guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return nil }
         return windows().first { $0.pid == pid }
+    }
+}
+
+@MainActor
+enum AgentCaptureDeadline {
+    private static var inFlight = 0
+
+    static func run<Value: Sendable>(_ operation: @escaping @MainActor @Sendable () async throws -> Value) async throws -> Value {
+        guard inFlight < 4 else { throw CaptureError.captureFailed("Native capture is busy. Restart ShareX if a previous request timed out.") }
+        inFlight += 1
+        return try await withCheckedThrowingContinuation { continuation in
+            let pending = Pending<Value>(continuation)
+            pending.timer = Task { @MainActor in
+                do { try await Task.sleep(for: .seconds(12)) } catch { return }
+                pending.finish(.failure(CaptureError.captureFailed("Native capture did not respond within 12 seconds. Retry or restart ShareX.")))
+            }
+            Task { @MainActor in
+                defer { inFlight -= 1 }
+                do { pending.finish(.success(try await operation())) }
+                catch { pending.finish(.failure(error)) }
+            }
+        }
+    }
+
+    private final class Pending<Value: Sendable> {
+        var timer: Task<Void, Never>?
+        private var continuation: CheckedContinuation<Value, Error>?
+        init(_ continuation: CheckedContinuation<Value, Error>) { self.continuation = continuation }
+        func finish(_ result: Result<Value, Error>) {
+            timer?.cancel(); timer = nil
+            let saved = continuation; continuation = nil; saved?.resume(with: result)
+        }
     }
 }

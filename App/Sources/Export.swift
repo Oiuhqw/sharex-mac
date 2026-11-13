@@ -66,23 +66,29 @@ enum Export {
     /// ImageIO only (thread-safe), so this runs off the main thread.
     struct Encoded: Sendable { let png: Data; let tiff: Data }
     nonisolated static func encode(_ image: CGImage?, scale: CGFloat) -> Encoded? {
+        guard let png = encodeImage(image, scale: scale, type: .png), let tiff = encodeImage(image, scale: scale, type: .tiff) else { return nil }
+        return Encoded(png: png, tiff: tiff)
+    }
+
+    nonisolated private static func encodeImage(_ image: CGImage?, scale: CGFloat, type: UTType) -> Data? {
         guard let image, Imaging.accepts(image), scale.isFinite, scale > 0, scale <= CGFloat(Imaging.maximumPixels) else { return nil }
         let dpi = 72 * scale
         let props = [kCGImagePropertyDPIWidth: dpi, kCGImagePropertyDPIHeight: dpi] as CFDictionary
-        func bytes(_ type: UTType) -> Data? {
-            let d = NSMutableData()
-            guard let dest = CGImageDestinationCreateWithData(d as CFMutableData, type.identifier as CFString, 1, nil) else { return nil }
-            CGImageDestinationAddImage(dest, image, props)
-            return CGImageDestinationFinalize(dest) ? d as Data : nil
-        }
-        guard let png = bytes(.png), let tiff = bytes(.tiff) else { return nil }
-        return Encoded(png: png, tiff: tiff)
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data as CFMutableData, type.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, props)
+        return CGImageDestinationFinalize(destination) ? data as Data : nil
     }
 
     /// Encodes on a background thread so the main thread (and the closing overlay) never waits on PNG compression.
     static func encodeOffMain(_ image: CGImage, scale: CGFloat) async -> Encoded? {
         let box = ImageBox(image: image)
         return await Task.detached(priority: .userInitiated) { encode(box.image, scale: scale) }.value
+    }
+
+    static func encodePNGOffMain(_ image: CGImage, scale: CGFloat) async -> Data? {
+        let box = ImageBox(image: image)
+        return await Task.detached(priority: .userInitiated) { encodeImage(box.image, scale: scale, type: .png) }.value
     }
 
     /// Clears the pasteboard and writes one item carrying PNG and TIFF. Returns false if nothing was written.
