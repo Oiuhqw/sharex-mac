@@ -48,8 +48,10 @@ import Testing
     #expect(try LocalAgentClient(endpoint: AgentEndpoint(directory: endpoint.path)).send(AgentRequest(operation: .capabilities)).ok)
 }
 
+private final class TestBundleAnchor: NSObject {}
+
 private func testHostExecutable() throws -> URL {
-    var directory = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
+    var directory = Bundle(for: TestBundleAnchor.self).bundleURL
     for _ in 0..<5 {
         let executable = directory.appendingPathComponent("ShareXAgentTestHost")
         if FileManager.default.isExecutableFile(atPath: executable.path) { return executable }
