@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 public final class MCPServer {
     public typealias Requester = (AgentRequest) throws -> AgentResponse
@@ -93,8 +98,15 @@ public final class MCPServer {
     public func run(input: FileHandle = .standardInput, output: FileHandle = .standardOutput) throws {
         var line = Data()
         var oversized = false
-        while let chunk = try input.read(upToCount: 4096), !chunk.isEmpty {
-            for byte in chunk {
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { read(input.fileDescriptor, $0.baseAddress, $0.count) }
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            for byte in buffer.prefix(count) {
                 if byte == 10 {
                     let response = oversized ? rpcError(.null, -32600, "Message exceeds 65536 bytes.") : handle(line)
                     if let response { try output.write(contentsOf: JSONEncoder().encode(response) + Data([10])) }

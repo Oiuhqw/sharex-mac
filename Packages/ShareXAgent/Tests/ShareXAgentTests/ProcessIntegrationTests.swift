@@ -1,6 +1,56 @@
 import Foundation
 import Testing
 @testable import ShareXAgent
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
+
+@Test func mcpRespondsWhileItsInputRemainsOpen() throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let process = Process(), input = Pipe(), output = Pipe()
+    process.executableURL = try testHostExecutable()
+    process.arguments = ["--agent", "mcp"]
+    process.standardInput = input
+    process.standardOutput = output
+    process.standardError = FileHandle.nullDevice
+    process.environment = ProcessInfo.processInfo.environment.merging(["SHAREX_TEST_ENDPOINT": root.path]) { _, new in new }
+    try process.run()
+    defer {
+        try? input.fileHandleForWriting.close()
+        if process.isRunning { process.terminate() }
+        process.waitUntilExit()
+    }
+    let initialize = #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"interactive-test","version":"1"}}}"#
+    try input.fileHandleForWriting.write(contentsOf: Data((initialize + "\n").utf8))
+    let first = try readMessage(output.fileHandleForReading)
+    guard case .object(let response) = first else { Issue.record("Expected initialize response"); return }
+    #expect(response["id"] == .number(1))
+    #expect(response["result"] != nil)
+    #expect(process.isRunning)
+    try input.fileHandleForWriting.write(contentsOf: Data(#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#.utf8) + Data([10]))
+    guard case .object(let second) = try readMessage(output.fileHandleForReading) else { Issue.record("Expected ping response"); return }
+    #expect(second["id"] == .number(2))
+    #expect(process.isRunning)
+}
+
+private func readMessage(_ handle: FileHandle) throws -> JSONValue {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+    var data = Data()
+    while ContinuousClock.now < deadline, data.count < 65_536 {
+        var descriptor = pollfd(fd: handle.fileDescriptor, events: Int16(POLLIN), revents: 0)
+        let ready = poll(&descriptor, 1, 100)
+        if ready < 0, errno == EINTR { continue }
+        guard ready >= 0 else { throw AgentFailure(.internalError, "Cannot read MCP test response.") }
+        if ready == 0 { continue }
+        guard let byte = try handle.read(upToCount: 1), !byte.isEmpty else { break }
+        if byte[0] == 10 { return try JSONDecoder().decode(JSONValue.self, from: data) }
+        data.append(byte)
+    }
+    throw AgentFailure(.startupTimeout, "MCP did not reply while stdin remained open.")
+}
 
 @Test func cliAndMCPProcessesUseTheSameSocketService() throws {
     let root = try temporaryDirectory()
