@@ -162,13 +162,14 @@ private final class AccessibilityDriver {
     }
 
     func menu(_ title: String) throws {
-        let items = tree().filter {
+        guard let extras = element(application, "AXExtrasMenuBar") else {
+            throw GateError.failed("The owned app has no Accessibility status menu bar.")
+        }
+        let items = value(extras, "AXChildren") as? [AXUIElement] ?? []
+        let candidates = items.filter {
             text($0, "AXRole") == "AXMenuBarItem" &&
             [text($0, "AXTitle"), text($0, "AXDescription")].contains(where: { $0 == "ShareX" || $0 == "ShareX agent recording" })
         }
-        let extras = element(application, "AXExtrasMenuBar")
-        let fallback = extras.map { value($0, "AXChildren") as? [AXUIElement] ?? [] } ?? []
-        let candidates = items.isEmpty ? fallback.filter { text($0, "AXRole") == "AXMenuBarItem" } : items
         guard candidates.count == 1 else { throw GateError.failed("The owned app has no unique ShareX status menu item.") }
         try press(candidates[0])
         repeat {
