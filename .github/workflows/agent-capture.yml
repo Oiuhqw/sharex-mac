@@ -117,6 +117,36 @@ jobs:
             echo 'Native evaluation did not produce a report.'
           fi
 
+      - name: Prepare runtime for pinned agent clients
+        id: client-runtime
+        if: ${{ !cancelled() && steps.capture-permission.outcome == 'success' }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+
+      - name: Install pinned agent clients
+        id: clients
+        if: ${{ !cancelled() && steps.client-runtime.outcome == 'success' }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/sharex-agent-clients" --no-audit --no-fund \
+            @openai/codex@0.169.0 @anthropic-ai/claude-code@2.1.323
+
+      - name: Capture through actual Codex and Claude Code tools
+        if: ${{ !cancelled() && steps.clients.outcome == 'success' }}
+        timeout-minutes: 8
+        run: |
+          defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
+          python3 scripts/e2e-agent-clients.py --app /Applications/ShareX.app \
+            --build-settings "$PWD/agent-build-settings.json" \
+            --codex "$RUNNER_TEMP/sharex-agent-clients/node_modules/.bin/codex" \
+            --claude "$RUNNER_TEMP/sharex-agent-clients/node_modules/.bin/claude" \
+            --out "$PWD/agent-clients-out"
+
+      - name: Print actual client report
+        if: always()
+        run: |
+          if test -f agent-clients-out/result.json; then cat agent-clients-out/result.json; fi
+
       - name: Store validation evidence
         if: ${{ always() && inputs.store_artifacts }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -129,4 +159,6 @@ jobs:
             agent-build-settings.json
             agent-e2e-out
             agent-setup-out
+            agent-clients-out
+            !agent-clients-out/client-home/**
           if-no-files-found: warn
