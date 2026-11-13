@@ -5,6 +5,9 @@ DerivedData/
 Local.xcconfig
 build/
 build-agent/
+agent-e2e-out/
+agent-setup-out/
+.audit/agent-capture-runs/
 xcodebuild.log
 smoke.log
 __pycache__/

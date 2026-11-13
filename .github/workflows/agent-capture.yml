@@ -28,6 +28,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Select Apple Silicon toolchain
+        id: toolchain
         run: |
           test "$(uname -m)" = arm64
           sudo xcode-select -s /Applications/Xcode_26.3.app
@@ -42,11 +43,15 @@ jobs:
           swift test --package-path Packages/ShareXAgent 2>&1 | tee agent-tests.log
 
       - name: Generate project
+        id: project
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: |
           printf 'DEVELOPMENT_TEAM =\nSHAREX_LOCAL_CONFIG = present\nCODE_SIGN_IDENTITY = -\n' > Local.xcconfig
           scripts/ci-setup.sh
 
       - name: Build production Release app
+        id: release-build
+        if: ${{ !cancelled() && steps.project.outcome == 'success' }}
         run: |
           set -o pipefail
           xcodebuild build -project ShareXMac.xcodeproj -scheme ShareX -configuration Release \
@@ -59,6 +64,8 @@ jobs:
             CODE_SIGN_IDENTITY="" > agent-build-settings.json
 
       - name: Install and sign app
+        id: installed
+        if: ${{ !cancelled() && steps.release-build.outcome == 'success' }}
         run: |
           set -euo pipefail
           test ! -e /Applications/ShareX.app
@@ -70,12 +77,14 @@ jobs:
 
       - name: Prepare isolated runner permissions
         id: capture-permission
+        if: ${{ !cancelled() && steps.installed.outcome == 'success' }}
         run: |
           bash scripts/ci-capture-permissions.sh /Applications/ShareX.app
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool false
 
       - name: Build and authorize independent setup driver
         id: setup-helper
+        if: ${{ !cancelled() && steps.capture-permission.outcome == 'success' }}
         run: |
           xcrun swiftc -parse-as-library -swift-version 6 -O -target arm64-apple-macosx14.0 \
             scripts/e2e-agent-setup.swift -o "$RUNNER_TEMP/sharex-agent-setup-helper"

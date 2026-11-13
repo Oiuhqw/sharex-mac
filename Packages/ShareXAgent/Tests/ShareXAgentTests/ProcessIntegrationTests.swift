@@ -99,7 +99,7 @@ func atomicFileWriteFailureDoesNotPublish(replacing: Bool, interrupted: Bool) th
     if replacing { #expect(try Data(contentsOf: destination) == original) }
     else { #expect(!FileManager.default.fileExists(atPath: destination.path)) }
     let remaining = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-        .filter { $0 != destination }
+        .filter { $0.lastPathComponent != destination.lastPathComponent }
     if interrupted {
         let partial = try #require(remaining.count == 1 ? remaining.first : nil)
         #expect(partial.pathExtension == "tmp")
