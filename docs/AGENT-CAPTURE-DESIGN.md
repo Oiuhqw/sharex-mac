@@ -16,7 +16,7 @@ Capabilities includes the active session ID so a reconnecting client can find a 
 
 Operations are capabilities, targets.list, screenshot, recording.start, recording.status, recording.stop, session.mark, and artifacts.list. Target identifiers come from discovery. Region coordinates use top-left display-local logical points. Responses report actual pixel dimensions. No operation substitutes the frontmost window or mouse display for a lost target.
 
-The app owns private session directories and filenames. Explicit export may copy a completed artifact to a caller-selected destination without replacing an existing file. Request IDs and command content identify retries. The same ID with different arguments returns a conflict. A repeated recording start returns its session. Repeated stops join the same finalization and return the same terminal result.
+The app owns private session directories and filenames. Completed responses provide local file paths for the caller to read or copy. Request IDs and command content identify retries. The same ID with different arguments returns a conflict. A repeated recording start returns its session. Repeated stops join the same finalization and return the same terminal result.
 
 The service reserves an in-memory request task before durable admission can suspend. The storage actor applies each session mutation atomically. Screenshot completion, markers, and recording finalization cannot overwrite one another's changes through separate reads and writes.
 
@@ -38,4 +38,4 @@ Settings provides a permission action, CLI installation into the user's bin dire
 
 Compile the shared package and exercise protocol behavior on Linux. Run native installed-app E2E on macOS with real display, window, and region content. Independently decode PNGs and video frames, compare known visible state, check beginning and ending coverage, and verify hashes. Exercise screenshot checkpoints, client exit, reconnect, retry, lost targets, disk limits, permission denial, and interrupted recovery. Synthetic display fixtures cannot pass native capture gates.
 
-The current Windows host can run the Linux Swift toolchain. Native build, recording, installed app checks, and both real agent clients remain required before release readiness. No deployment or release publication is part of this work.
+The Windows development host runs shared tests through the Linux Swift toolchain. GitHub macOS runners build and evaluate the installed Release app. Client discovery is checked separately with installed Claude Code and Codex clients. Discovery does not prove that a model completed a capture task. No deployment or release publication is part of this work.

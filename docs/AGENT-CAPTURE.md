@@ -117,7 +117,9 @@ bash scripts/e2e-agent-capture.sh \
 
 Read `result.json` for passed, failed, and blocked checks. Exit code 3 means prerequisites blocked the run. The harness uses a separate visible test app and independently decodes media captured through production APIs. No generated image substitutes for native capture. Its MCP driver proves protocol behavior; it does not prove that an actual Claude Code or Codex session completed the same task.
 
-The manual **Agent capture** workflow builds and installs Release, then runs this harness on an isolated macOS runner. Its permission helper is restricted to disposable GitHub runners with SIP disabled. That setup does not validate the human permission flow. Actual client sessions and setup UI still require separate evidence.
+The manual **Agent capture** workflow builds and installs Release, then runs this harness on an isolated macOS runner. A separate Accessibility driver opens Settings, enables access, installs and updates the CLI, copies both registration commands, stops a real recording, and revokes access during another recording. Each gate writes its own report, so a setup failure cannot hide the media result.
+
+The permission helper is restricted to disposable GitHub runners with SIP disabled. This setup does not validate the human permission flow. Actual client discovery and model-driven capture tasks also require separate evidence. The media harness's resource samples are diagnostics, not a performance comparison.
 
 ## Design references
 
