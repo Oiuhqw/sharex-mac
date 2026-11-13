@@ -63,6 +63,57 @@ def write_json(path, value):
     temporary.replace(path)
 
 
+def installed_release_identity(app_path, build_settings_path, command):
+    if "SHAREX_E2E" in os.environ:
+        raise Blocked("Remove SHAREX_E2E from the environment. Production capture is required.")
+    app = app_path.expanduser().resolve()
+    if not any(app.is_relative_to(root) for root in (Path("/Applications"), Path.home() / "Applications")):
+        raise Blocked("Install the Release app in /Applications or ~/Applications before evaluation.")
+    if not (app / "Contents/Info.plist").is_file():
+        raise Blocked(f"Installed app is missing: {app}.")
+    with (app / "Contents/Info.plist").open("rb") as source:
+        info = plistlib.load(source)
+    binary = app / "Contents/MacOS" / info["CFBundleExecutable"]
+    if not build_settings_path or not build_settings_path.is_file():
+        raise Blocked("Pass --build-settings with the actual Release xcodebuild -showBuildSettings -json output.")
+    entries = json.loads(build_settings_path.read_text(encoding="utf-8"))
+    settings = [entry["buildSettings"] for entry in entries if entry.get("target") == "ShareX"]
+    require(len(settings) == 1 and settings[0].get("CONFIGURATION") == "Release",
+            "Build settings must identify exactly one ShareX Release product.")
+    settings = settings[0]
+    flags = str(settings.get("SWIFT_ACTIVE_COMPILATION_CONDITIONS", "")) + str(settings.get("OTHER_SWIFT_FLAGS", ""))
+    require("SHAREX_E2E" not in flags, "Release build settings include production-forbidden capture fixtures.")
+    built_binary = Path(settings["TARGET_BUILD_DIR"]) / settings["EXECUTABLE_PATH"]
+    require(built_binary.is_file(), "The recorded Release build output is unavailable for comparison.")
+    installed_hash = digest(binary)
+    require(digest(built_binary) == installed_hash, "Installed binary differs from the recorded Release build.")
+    strings = command(["/usr/bin/strings", "-a", binary])["stdout"]
+    require(not any(marker in strings for marker in ("--e2e", "E2E PERF", "e2e-helper", "CGVirtualDisplay")),
+            "Installed app contains production-forbidden capture fixtures.")
+    command(["/usr/bin/codesign", "--verify", "--deep", "--strict", app])
+    running = command(["/usr/bin/pgrep", "-x", info["CFBundleExecutable"]], check=False)
+    if running["exitCode"] == 0:
+        raise Blocked("Quit the existing ShareX app before evaluation. Only this run's app PID may be terminated.")
+    require(running["exitCode"] == 1, "Could not check for an existing app process.")
+    return {"app": str(app), "binary": str(binary), "bundleID": info["CFBundleIdentifier"],
+            "installedSHA256": installed_hash, "buildSettings": str(build_settings_path),
+            "macOS": command(["/usr/bin/sw_vers"])["stdout"], "architecture": platform.machine()}
+
+
+def static_window_proof(before, stop_requested, after):
+    fields = ("mode", "pid", "windowID", "draws", "tick", "stage", "uptime")
+    samples = [{key: state[key] for key in fields} for state in (before, stop_requested, after)]
+    require(before["mode"] == "static" and before["draws"] > 0 and before["pid"] > 0 and before["windowID"] > 0,
+            "Static recording requires a drawn fixture in static mode.")
+    for sample in samples[1:]:
+        require(all(sample[key] == before[key] for key in fields if key != "uptime"),
+                "Static fixture changed mode, identity, draw count, tick, or stage during recording.")
+    require(all(math.isfinite(sample["uptime"]) for sample in samples)
+            and before["uptime"] + 2 <= stop_requested["uptime"] <= after["uptime"],
+            "Static fixture must remain unchanged for at least two seconds before stop.")
+    return dict(zip(("before", "stopRequested", "after"), samples))
+
+
 def decode_response(response, request_id=None, error=None):
     require(isinstance(response, dict) and response.get("version") == 1,
             "Agent output is not a version 1 response envelope.")
@@ -82,7 +133,7 @@ def decode_response(response, request_id=None, error=None):
     return response["result"]
 
 
-def media_expectation(fixture, target, mode, kind, stages, minimum=0, maximum=60, fps=15):
+def media_expectation(fixture, target, mode, kind, stages, minimum=0, maximum=60, fps=15, static_window=None):
     window = fixture["windowBounds"]
     display = fixture["displayBounds"]
     window_rect = (window["X"] - display["x"], window["Y"] - display["y"],
@@ -107,11 +158,21 @@ def media_expectation(fixture, target, mode, kind, stages, minimum=0, maximum=60
                 "y": (window_rect[1] + window_rect[3] * y - source[1]) / source[3],
                 "rgb": rgb}
 
-    return {"width": width, "height": height,
+    expected = {"width": width, "height": height,
             "anchors": [anchor(x, y, list(rgb)) for (x, y), rgb in
                         zip(((0.3, 0.3), (0.7, 0.3), (0.3, 0.7), (0.7, 0.7)), COLORS)],
             "marker": anchor(0.5, 0.5, [0, 255, 255]), "stages": stages,
-            "minimumDuration": minimum, "maximumDuration": maximum, "fps": fps}
+            "minimumDuration": minimum, "maximumDuration": maximum, "fps": fps, "motion": "animated"}
+    if static_window is not None:
+        proof = static_window_proof(static_window["before"], static_window["stopRequested"], static_window["after"])
+        require(kind == "recording" and mode == "window" and stages == [proof["before"]["stage"]],
+                "Static evidence requires one unchanged window recording stage.")
+        expected.update(motion="static", staticWindow=proof)
+        expected["minimumDuration"] = max(minimum, proof["stopRequested"]["uptime"] - proof["before"]["uptime"])
+        bar_center = (proof["before"]["tick"] % 90) / 90 * 0.9 + 0.05
+        expected["anchors"].extend([anchor(bar_center, 0.92, [255, 255, 255]),
+                                    anchor(0.95 if bar_center < 0.5 else 0.05, 0.92, [0, 0, 0])])
+    return expected
 
 
 class Evidence:
@@ -379,41 +440,10 @@ class Run:
         with self.evidence.step("installed_release_and_desktop_prerequisites") as step:
             if sys.platform != "darwin":
                 raise Blocked("Native capture requires macOS. This run did not execute native capture.")
-            if "SHAREX_E2E" in os.environ:
-                raise Blocked("Remove SHAREX_E2E from the environment. Production capture is required.")
-            app = self.args.app.expanduser().resolve()
-            installed_roots = [Path("/Applications"), Path.home() / "Applications"]
-            if not any(app.is_relative_to(root) for root in installed_roots):
-                raise Blocked("Install the Release app in /Applications or ~/Applications before evaluation.")
-            if not (app / "Contents/Info.plist").is_file():
-                raise Blocked(f"Installed app is missing: {app}.")
-            with (app / "Contents/Info.plist").open("rb") as source:
-                info = plistlib.load(source)
-            self.binary = app / "Contents/MacOS" / info["CFBundleExecutable"]
-            self.bundle_id = info["CFBundleIdentifier"]
-            if not self.args.build_settings or not self.args.build_settings.is_file():
-                raise Blocked("Pass --build-settings with the actual Release xcodebuild -showBuildSettings -json output.")
-            build_entries = json.loads(self.args.build_settings.read_text(encoding="utf-8"))
-            settings = [entry["buildSettings"] for entry in build_entries
-                        if entry.get("target") == "ShareX"]
-            require(len(settings) == 1 and settings[0].get("CONFIGURATION") == "Release",
-                    "Build settings must identify exactly one ShareX Release product.")
-            settings = settings[0]
-            flags = str(settings.get("SWIFT_ACTIVE_COMPILATION_CONDITIONS", "")) + str(settings.get("OTHER_SWIFT_FLAGS", ""))
-            require("SHAREX_E2E" not in flags, "Release build settings include production-forbidden capture fixtures.")
-            built_binary = Path(settings["TARGET_BUILD_DIR"]) / settings["EXECUTABLE_PATH"]
-            require(built_binary.is_file(), "The recorded Release build output is unavailable for comparison.")
-            require(digest(built_binary) == digest(self.binary), "Installed binary differs from the recorded Release build.")
-            strings = self.command(["/usr/bin/strings", "-a", self.binary])["stdout"]
-            require(not any(marker in strings for marker in ("--e2e", "E2E PERF", "e2e-helper", "CGVirtualDisplay")),
-                    "Installed app contains production-forbidden capture fixtures.")
-            self.command(["/usr/bin/codesign", "--verify", "--deep", "--strict", app])
-            running = self.command(["/usr/bin/pgrep", "-x", info["CFBundleExecutable"]], check=False)
-            if running["exitCode"] == 0:
-                raise Blocked("Quit the existing ShareX app before evaluation. Only this run's app PID may be terminated.")
-            require(running["exitCode"] == 1, "Could not check for an existing app process.")
-            step.update(app=str(app), installedSHA256=digest(self.binary), buildSettings=str(self.args.build_settings),
-                        macOS=self.command(["/usr/bin/sw_vers"])["stdout"], architecture=platform.machine())
+            identity = installed_release_identity(self.args.app, self.args.build_settings, self.command)
+            self.binary = Path(identity["binary"])
+            self.bundle_id = identity["bundleID"]
+            step.update(identity)
         with self.evidence.step("agent_access_and_screen_recording_permission") as step:
             self.start_app()
             step["capabilities"] = self.capabilities
@@ -477,13 +507,14 @@ class Run:
         for key in ("clipboardChangeCount", "frontmostPID", "observedWindows"):
             require(current[key] == self.baseline[key], f"Agent capture changed {key}: {self.baseline[key]} -> {current[key]}.")
 
-    def validate_media(self, session, mode, kind, stages, minimum=0, maximum=60):
+    def validate_media(self, session, mode, kind, stages, minimum=0, maximum=60, static_window=None):
         target = self.window_target if mode == "window" else self.display_target
         artifacts = [artifact for artifact in session["artifacts"] if artifact["kind"] == kind]
         require(bool(artifacts), f"Session has no {kind} artifact.")
         artifact = artifacts[-1]
         require(artifact["state"] == "completed", "Incomplete media cannot pass native capture evaluation.")
-        expected = media_expectation(self.geometry, target, mode, kind, stages, minimum, maximum)
+        expected = media_expectation(self.geometry, target, mode, kind, stages, minimum, maximum,
+                                     static_window=static_window)
         expected_path = self.evidence.path("media-expectation", "json")
         write_json(expected_path, expected)
         media = Path(artifact["path"])
@@ -617,6 +648,25 @@ class Run:
                 step["media"] = self.validate_media(completed, mode, "recording", [0, 1, 2], minimum=2.5, maximum=8)
                 self.validate_manifest(completed)
                 self.unchanged()
+        with self.evidence.step("static_window_recording_covers_explicit_stop") as step:
+            self.control("stage", stage=0)
+            self.control("mode", mode="static")
+            started = client.call("recording.start", {**self.selection("window"), "fps": 15, "maxDurationSeconds": 20})
+            require(started["state"] == "recording" and started["acceptedFrames"] >= 1,
+                    "Static recording start did not acknowledge an accepted frame.")
+            before = self.control("observe")
+            time.sleep(2.5)
+            stop_requested = self.control("observe")
+            completed = self.cli("recording.stop", {"sessionID": started["id"]})
+            after = self.control("observe")
+            step["staticWindow"] = static_window_proof(before, stop_requested, after)
+            require(completed["state"] == "completed" and completed["stopReason"] == "user_stop",
+                    "Static recording did not complete after the explicit stop request.")
+            step["media"] = self.validate_media(completed, "window", "recording", [0], maximum=10,
+                                               static_window=step["staticWindow"])
+            self.validate_manifest(completed)
+            self.unchanged()
+            self.control("mode", mode="animated")
         with self.evidence.step("duration_limit_finalizes_readable_video") as step:
             self.control("stage", stage=0)
             started = self.cli("recording.start", {**self.selection("region"), "fps": 15, "maxDurationSeconds": 3})
@@ -777,7 +827,7 @@ def main():
                                  "medianPSCPUPercent": statistics.median(sample["psCPUPercent"] for sample in samples) if samples else None},
                   "metricContext": {"process": "Only app PIDs started by this evaluation.",
                                     "cpu": "ps %cpu is a process CPU average, not an instantaneous sample.",
-                                    "workload": "15 FPS, 640x480 point fixture, display/window/384x288 region, one noisy byte-limit test.",
+                                    "workload": "15 FPS, 640x480 point fixture, display/window/384x288 region, one static window and one noisy byte-limit test.",
                                     "comparison": "No baseline, speedup, or performance improvement is claimed."},
                   "sessions": run.sessions,
                   "remainingValidation": ["Real Claude Code and Codex client registration and invocation.",

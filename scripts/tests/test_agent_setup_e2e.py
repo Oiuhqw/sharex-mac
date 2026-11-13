@@ -5,7 +5,9 @@ import shlex
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 import uuid
 
 
@@ -131,6 +133,22 @@ class RecordingEvidenceTests(unittest.TestCase):
 
 
 class ReportTests(unittest.TestCase):
+    def test_setup_stops_when_the_shared_release_proof_fails(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        evidence = DRIVER.NATIVE.Evidence(Path(temporary.name))
+        self.addCleanup(evidence.events.close)
+        args = SimpleNamespace(app=Path("/Applications/ShareX.app"), build_settings=Path("release.json"))
+        run = DRIVER.Run(args, evidence)
+        with mock.patch.object(DRIVER.sys, "platform", "darwin"), \
+                mock.patch.object(DRIVER.NATIVE, "installed_release_identity",
+                                  side_effect=DRIVER.Failure("Release identity rejected")) as proof:
+            with self.assertRaisesRegex(DRIVER.Failure, "Release identity rejected"):
+                run.preflight()
+        proof.assert_called_once_with(args.app, args.build_settings, run.command)
+        self.assertEqual(evidence.steps[0]["status"], "failed")
+        self.assertEqual(run.children, [])
+
     @unittest.skipIf(sys.platform == "darwin", "This check exercises the unsupported-host gate.")
     def test_non_mac_host_emits_blocked_report_without_native_claim(self):
         with tempfile.TemporaryDirectory() as temporary:

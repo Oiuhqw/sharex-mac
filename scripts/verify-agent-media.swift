@@ -18,7 +18,41 @@ private struct Anchor: Decodable {
     let rgb: [Int]
 }
 
+private struct StaticSnapshot: Decodable {
+    let mode: String
+    let pid: Int
+    let windowID: Int
+    let draws: Int
+    let tick: Int
+    let stage: Int
+    let uptime: Double
+
+    func unchanged(since before: StaticSnapshot) -> Bool {
+        mode == "static" && pid == before.pid && windowID == before.windowID
+            && draws == before.draws && tick == before.tick && stage == before.stage
+    }
+}
+
+private struct StaticWindow: Decodable {
+    let before: StaticSnapshot
+    let stopRequested: StaticSnapshot
+    let after: StaticSnapshot
+
+    var duration: Double { stopRequested.uptime - before.uptime }
+
+    func validate(stages: [Int]) throws {
+        guard before.mode == "static", before.draws > 0, before.pid > 0, before.windowID > 0,
+              stopRequested.unchanged(since: before), after.unchanged(since: before),
+              before.uptime.isFinite, stopRequested.uptime.isFinite, after.uptime.isFinite,
+              duration >= 2, after.uptime >= stopRequested.uptime, stages == [before.stage] else {
+            throw VerificationError("Static fixture proof lacks two seconds of unchanged drawing through stop.")
+        }
+    }
+}
+
 private struct Expectation: Decodable {
+    enum Motion: String, Decodable { case animated, staticImage = "static" }
+
     let width: Int
     let height: Int
     let anchors: [Anchor]
@@ -27,6 +61,8 @@ private struct Expectation: Decodable {
     let minimumDuration: Double
     let maximumDuration: Double
     let fps: Double
+    let motion: Motion
+    let staticWindow: StaticWindow?
 }
 
 private struct Pixels {
@@ -114,6 +150,17 @@ private func verifyPNG(_ url: URL, expected: Expectation) throws -> [String: Any
 }
 
 private func verifyVideo(_ url: URL, expected: Expectation) async throws -> [String: Any] {
+    if expected.motion == .staticImage {
+        guard let proof = expected.staticWindow else {
+            throw VerificationError("Static video requires independent fixture draw evidence.")
+        }
+        try proof.validate(stages: expected.stages)
+        guard expected.minimumDuration >= proof.duration else {
+            throw VerificationError("Static video duration must cover the observed window through stop.")
+        }
+    } else if expected.staticWindow != nil {
+        throw VerificationError("Static fixture evidence requires an explicit static video expectation.")
+    }
     let file = try FileHandle(forReadingFrom: url)
     let header = try file.read(upToCount: 64) ?? Data()
     try file.close()
@@ -177,15 +224,26 @@ private func verifyVideo(_ url: URL, expected: Expectation) async throws -> [Str
     guard reader.status == .completed else {
         throw VerificationError("Video decoder did not complete: \(String(describing: reader.error))")
     }
-    guard frames.count >= max(3, Int(expected.minimumDuration * expected.fps * 0.65)) else {
+    let staticImage = expected.motion == .staticImage
+    let minimumFrames = staticImage ? 2 : max(3, Int(expected.minimumDuration * expected.fps * 0.65))
+    guard frames.count >= minimumFrames else {
         throw VerificationError("Video has too few decoded frames: \(frames.count).")
     }
     let first = frames[0]
     let last = frames[frames.count - 1]
     let firstTime = first["timeSeconds"] as! Double
     let lastTime = last["timeSeconds"] as! Double
-    guard firstTime <= 0.20, lastTime >= duration - max(0.25, 3 / expected.fps), maximumGap <= 0.5 else {
-        throw VerificationError("Frame timing lacks beginning, ending, or continuous coverage.")
+    guard firstTime >= 0, firstTime <= 0.20, lastTime <= duration,
+          lastTime >= duration - max(0.25, 3 / expected.fps) else {
+        throw VerificationError("Frame timing lacks beginning or ending coverage.")
+    }
+    if staticImage {
+        guard lastTime >= expected.minimumDuration - max(0.10, 1 / expected.fps),
+              stageCounts[expected.stages[0]] == frames.count else {
+            throw VerificationError("Static video lacks unchanged pixels or an ending frame through stop.")
+        }
+    } else if maximumGap > 0.5 {
+        throw VerificationError("Animated video frame timing lacks continuous coverage.")
     }
     let middle = frames.min { abs(($0["timeSeconds"] as! Double) - duration / 2)
         < abs(($1["timeSeconds"] as! Double) - duration / 2) }!
@@ -195,20 +253,30 @@ private func verifyVideo(_ url: URL, expected: Expectation) async throws -> [Str
         throw VerificationError("First, middle, last marker stages are \(observedStages), expected \(expectedStages).")
     }
     for stage in Set(expected.stages) {
-        guard stageCounts[stage, default: 0] >= max(2, Int(expected.fps * 0.25)) else {
+        let minimumStageFrames = staticImage ? 2 : max(2, Int(expected.fps * 0.25))
+        guard stageCounts[stage, default: 0] >= minimumStageFrames else {
             throw VerificationError("Fixture stage \(stage) has too little decoded coverage.")
         }
     }
     guard stageCounts[-1, default: 0] <= max(1, frames.count / 100) else {
         throw VerificationError("Video contains unrecognized marker frames.")
     }
-    return ["kind": "mp4", "containerBrand": brand, "codec": "H.264",
+    var result: [String: Any] = ["kind": "mp4", "containerBrand": brand, "codec": "H.264",
             "width": expected.width, "height": expected.height,
             "durationSeconds": duration, "frameCount": frames.count, "maximumFrameGapSeconds": maximumGap,
-            "estimatedMissingFrames": max(0, Int((duration * expected.fps).rounded()) - frames.count),
-            "estimatedMissingFramesBasis": "Decoded frame count compared with requested FPS times track duration.",
+            "motion": expected.motion.rawValue,
             "stageFrameCounts": Dictionary(uniqueKeysWithValues: stageCounts.map { (String($0.key), $0.value) }),
             "first": first, "middle": middle, "last": last]
+    if let proof = expected.staticWindow {
+        result["staticWindowSeconds"] = proof.duration
+        result["fixtureDrawCount"] = proof.before.draws
+        result["sparseFrameGapObserved"] = maximumGap > 0.5
+        result["frameCoverageBasis"] = "Static fixture did not redraw through stop; decoded pixels and ending frame cover that interval. The capture framework may repeat unchanged frames."
+    } else {
+        result["estimatedMissingFrames"] = max(0, Int((duration * expected.fps).rounded()) - frames.count)
+        result["estimatedMissingFramesBasis"] = "Decoded frame count compared with requested FPS times track duration."
+    }
+    return result
 }
 
 @main

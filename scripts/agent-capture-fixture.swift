@@ -7,9 +7,11 @@ private final class PatternView: NSView {
     var stage = 0
     var tick = 0
     var noisy = false
+    private(set) var draws = 0
     override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
+        draws += 1
         let colors: [(CGFloat, CGFloat, CGFloat)] = [
             (230, 32, 40), (32, 210, 80), (30, 80, 230), (240, 210, 40)
         ]
@@ -64,6 +66,8 @@ private final class FixtureWindow: NSWindow {
 
 @MainActor
 private final class Fixture: NSObject, NSApplicationDelegate {
+    enum Mode: String { case animated, staticImage = "static" }
+
     let directory: URL
     let title: String
     var window: NSWindow?
@@ -71,7 +75,7 @@ private final class Fixture: NSObject, NSApplicationDelegate {
     var timer: Timer?
     var lastCommand = ""
     var observedPID: Int32 = 0
-    var draws = 0
+    var mode = Mode.animated
     var displayID: CGDirectDisplayID = 0
     var failure: String?
 
@@ -119,8 +123,15 @@ private final class Fixture: NSObject, NSApplicationDelegate {
             if let pid = command["observedPID"] as? Int32 { observedPID = pid }
             switch command["action"] as? String {
             case "stage":
-                if let stage = command["stage"] as? Int, (0...2).contains(stage) { view?.stage = stage }
-            case "noise": view?.noisy = command["enabled"] as? Bool ?? false
+                if let stage = command["stage"] as? Int, (0...2).contains(stage) {
+                    view?.stage = stage
+                    view?.needsDisplay = true
+                }
+            case "noise":
+                view?.noisy = command["enabled"] as? Bool ?? false
+                view?.needsDisplay = true
+            case "mode":
+                if let value = command["mode"] as? String, let mode = Mode(rawValue: value) { self.mode = mode }
             case "close-window": window?.close()
             case "terminate-observed":
                 if observedPID > 0 { NSRunningApplication(processIdentifier: observedPID)?.terminate() }
@@ -129,10 +140,11 @@ private final class Fixture: NSObject, NSApplicationDelegate {
             }
             lastCommand = id
         }
-        view?.tick += 1
-        view?.needsDisplay = true
-        window?.displayIfNeeded()
-        draws += 1
+        if mode == .animated {
+            view?.tick += 1
+            view?.needsDisplay = true
+        }
+        if view?.needsDisplay == true { window?.displayIfNeeded() }
         writeState()
     }
 
@@ -147,7 +159,8 @@ private final class Fixture: NSObject, NSApplicationDelegate {
                 && ($0[kCGWindowLayer as String] as? Int) == 0
         }.compactMap { $0[kCGWindowNumber as String] as? Int }.sorted()
         var state: [String: Any] = [
-            "status": failure == nil ? "ready" : "blocked", "draws": draws,
+            "status": failure == nil ? "ready" : "blocked", "draws": view?.draws ?? 0,
+            "mode": mode.rawValue, "tick": view?.tick ?? 0,
             "pid": ProcessInfo.processInfo.processIdentifier, "title": title,
             "windowID": window?.windowNumber ?? 0, "displayID": displayID,
             "displayBounds": ["x": display.minX, "y": display.minY,

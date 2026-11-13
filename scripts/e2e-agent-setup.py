@@ -13,8 +13,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import platform
-import plistlib
 import shlex
 import shutil
 import signal
@@ -135,38 +133,10 @@ class Run(NATIVE.Run):
         with self.evidence.step("installed_release_and_desktop_prerequisites") as step:
             if sys.platform != "darwin":
                 raise Blocked("Agents setup requires macOS. This run did not execute native UI or capture.")
-            if "SHAREX_E2E" in os.environ:
-                raise Blocked("Remove SHAREX_E2E from the environment. Production UI is required.")
-            app = self.args.app.expanduser().resolve()
-            if not any(app.is_relative_to(root) for root in (Path("/Applications"), Path.home() / "Applications")):
-                raise Blocked("Install the Release app in /Applications or ~/Applications before evaluation.")
-            if not (app / "Contents/Info.plist").is_file():
-                raise Blocked(f"Installed app is missing: {app}.")
-            with (app / "Contents/Info.plist").open("rb") as source:
-                info = plistlib.load(source)
-            self.binary = app / "Contents/MacOS" / info["CFBundleExecutable"]
-            if not self.args.build_settings or not self.args.build_settings.is_file():
-                raise Blocked("Pass --build-settings with the actual Release xcodebuild -showBuildSettings -json output.")
-            entries = json.loads(self.args.build_settings.read_text(encoding="utf-8"))
-            settings = [entry["buildSettings"] for entry in entries if entry.get("target") == "ShareX"]
-            require(len(settings) == 1 and settings[0].get("CONFIGURATION") == "Release",
-                    "Build settings must identify exactly one ShareX Release product.")
-            settings = settings[0]
-            flags = str(settings.get("SWIFT_ACTIVE_COMPILATION_CONDITIONS", "")) + str(settings.get("OTHER_SWIFT_FLAGS", ""))
-            require("SHAREX_E2E" not in flags, "Release build settings include production-forbidden test flags.")
-            built_binary = Path(settings["TARGET_BUILD_DIR"]) / settings["EXECUTABLE_PATH"]
-            require(built_binary.is_file() and NATIVE.digest(built_binary) == NATIVE.digest(self.binary),
-                    "Installed binary differs from the recorded Release build.")
-            strings = self.command(["/usr/bin/strings", "-a", self.binary])["stdout"]
-            require(not any(marker in strings for marker in ("--e2e", "E2E PERF", "e2e-helper", "CGVirtualDisplay")),
-                    "Installed app contains production-forbidden test fixtures.")
-            self.command(["/usr/bin/codesign", "--verify", "--deep", "--strict", app])
-            running = self.command(["/usr/bin/pgrep", "-x", info["CFBundleExecutable"]], check=False)
-            if running["exitCode"] == 0:
-                raise Blocked("Quit the existing ShareX app. Only this evaluation's app PID may be terminated.")
-            require(running["exitCode"] == 1, "Could not check for an existing app process.")
-            step.update(app=str(app), installedSHA256=NATIVE.digest(self.binary), buildSettings=str(self.args.build_settings),
-                        architecture=platform.machine(), macOS=self.command(["/usr/bin/sw_vers"])["stdout"])
+            identity = NATIVE.installed_release_identity(self.args.app, self.args.build_settings, self.command)
+            self.binary = Path(identity["binary"])
+            self.bundle_id = identity["bundleID"]
+            step.update(identity)
         with self.evidence.step("external_accessibility_and_cli_destination") as step:
             if not self.args.helper or not self.args.helper.is_file() or not os.access(self.args.helper, os.X_OK):
                 raise Blocked("Pass --helper with the compiled, Accessibility-approved e2e-agent-setup executable.")

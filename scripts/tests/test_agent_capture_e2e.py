@@ -1,10 +1,12 @@
 import importlib.util
 import json
 from pathlib import Path
+import plistlib
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import uuid
 
 
@@ -43,7 +45,7 @@ class ResponseTests(unittest.TestCase):
             DRIVER.decode_response(response, error="busy")
 
 
-class GeometryTests(unittest.TestCase):
+class FixtureGeometry(unittest.TestCase):
     def setUp(self):
         self.fixture = {"windowBounds": {"X": -1760, "Y": 160, "Width": 640, "Height": 480},
                         "displayBounds": {"x": -1920, "y": 0, "width": 1920, "height": 1080}}
@@ -52,6 +54,8 @@ class GeometryTests(unittest.TestCase):
     def expectation(self, mode, kind="screenshot", target=None):
         return DRIVER.media_expectation(self.fixture, target or self.target, mode, kind, [0])
 
+
+class GeometryTests(FixtureGeometry):
     def test_region_uses_display_local_points_on_a_negative_origin_display(self):
         result = self.expectation("region")
         self.assertEqual((result["width"], result["height"]), (768, 576))
@@ -82,6 +86,160 @@ class GeometryTests(unittest.TestCase):
         target = {"widthPoints": 3024, "heightPoints": 1964, "pixelScale": 2}
         result = self.expectation("display", target=target)
         self.assertEqual((result["width"], result["height"]), (6048, 3928))
+
+
+class StaticWindowTests(FixtureGeometry):
+    def setUp(self):
+        super().setUp()
+        self.before = {"mode": "static", "pid": 123, "windowID": 456, "draws": 40,
+                       "tick": 40, "stage": 0, "uptime": 100.0}
+        self.stop = {**self.before, "uptime": 102.5}
+        self.after = {**self.before, "uptime": 102.8}
+
+    def proof(self):
+        return DRIVER.static_window_proof(self.before, self.stop, self.after)
+
+    def test_static_expectation_requires_playback_through_stop(self):
+        result = DRIVER.media_expectation(self.fixture, self.target, "window", "recording", [0],
+                                          static_window=self.proof())
+        self.assertEqual(result["motion"], "static")
+        self.assertEqual(result["minimumDuration"], 2.5)
+        self.assertEqual(result["staticWindow"]["after"]["draws"], 40)
+        self.assertAlmostEqual(result["anchors"][-2]["x"], 0.45)
+        self.assertEqual(result["anchors"][-2]["rgb"], [255, 255, 255])
+        self.assertEqual(result["anchors"][-1]["rgb"], [0, 0, 0])
+
+    def test_one_stage_without_static_proof_keeps_animated_checks(self):
+        result = self.expectation("window", "recording")
+        self.assertEqual(result["motion"], "animated")
+        self.assertNotIn("staticWindow", result)
+
+    def test_changed_draws_tick_stage_or_identity_cannot_unlock_sparse_validation(self):
+        for field in ("draws", "tick", "stage", "pid", "windowID"):
+            with self.subTest(field=field):
+                changed = {**self.after, field: self.after[field] + 1}
+                with self.assertRaisesRegex(DRIVER.Failure, "Static fixture changed"):
+                    DRIVER.static_window_proof(self.before, self.stop, changed)
+
+    def test_animated_or_never_drawn_fixture_is_rejected(self):
+        for change in ({"mode": "animated"}, {"draws": 0}):
+            with self.subTest(change=change), self.assertRaisesRegex(DRIVER.Failure, "drawn fixture in static mode"):
+                DRIVER.static_window_proof({**self.before, **change}, self.stop, self.after)
+
+    def test_short_unordered_or_nonfinite_window_is_rejected(self):
+        for stop, after in ((101.9, 102.8), (102.5, 102.4), (float("nan"), 102.8)):
+            with self.subTest(stop=stop, after=after), self.assertRaisesRegex(DRIVER.Failure, "two seconds"):
+                DRIVER.static_window_proof(self.before, {**self.stop, "uptime": stop}, {**self.after, "uptime": after})
+
+    def test_invalid_proof_cannot_be_injected_into_media_expectation(self):
+        proof = self.proof()
+        proof["after"]["draws"] += 1
+        with self.assertRaisesRegex(DRIVER.Failure, "Static fixture changed"):
+            DRIVER.media_expectation(self.fixture, self.target, "window", "recording", [0], static_window=proof)
+
+    def test_static_exception_does_not_apply_to_animated_stages_or_display_capture(self):
+        for mode, kind, stages in (("window", "recording", [0, 1, 2]), ("display", "recording", [0]),
+                                   ("window", "screenshot", [0])):
+            with self.subTest(mode=mode, kind=kind, stages=stages):
+                with self.assertRaisesRegex(DRIVER.Failure, "one unchanged window recording stage"):
+                    DRIVER.media_expectation(self.fixture, self.target, mode, kind, stages, static_window=self.proof())
+
+
+class InstalledReleaseTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.app = self.root / "Applications/ShareX.app"
+        self.binary = self.app / "Contents/MacOS/ShareX"
+        self.binary.parent.mkdir(parents=True)
+        self.binary.write_bytes(b"recorded Release product")
+        with (self.app / "Contents/Info.plist").open("wb") as stream:
+            plistlib.dump({"CFBundleExecutable": "ShareX", "CFBundleIdentifier": "test.sharex"}, stream)
+        self.built = self.root / "build/ShareX"
+        self.built.parent.mkdir()
+        self.built.write_bytes(self.binary.read_bytes())
+        self.settings_path = self.root / "build-settings.json"
+        self.entries = [{"target": "ShareX", "buildSettings": {"CONFIGURATION": "Release",
+                         "TARGET_BUILD_DIR": str(self.built.parent), "EXECUTABLE_PATH": self.built.name}}]
+        self.strings = "production symbols"
+        self.running_exit = 1
+        self.command = mock.Mock(side_effect=self.run_command)
+        for patcher in (mock.patch.object(DRIVER.Path, "home", return_value=self.root),
+                        mock.patch.dict(DRIVER.os.environ, {}, clear=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_command(self, command, **options):
+        if command[0] == "/usr/bin/strings":
+            return {"stdout": self.strings, "exitCode": 0}
+        if command[0] == "/usr/bin/pgrep":
+            return {"stdout": "", "exitCode": self.running_exit}
+        if command[0] == "/usr/bin/sw_vers":
+            return {"stdout": "test macOS", "exitCode": 0}
+        if command[0] == "/usr/bin/codesign":
+            return {"stdout": "", "exitCode": 0}
+        self.fail(f"Unexpected command {command}")
+
+    def identity(self):
+        self.settings_path.write_text(json.dumps(self.entries))
+        return DRIVER.installed_release_identity(self.app, self.settings_path, self.command)
+
+    def test_identity_proves_the_installed_binary_and_signature(self):
+        identity = self.identity()
+        self.assertEqual(identity["binary"], str(self.binary))
+        self.assertEqual(identity["installedSHA256"], DRIVER.digest(self.built))
+        self.assertEqual(identity["bundleID"], "test.sharex")
+        self.command.assert_any_call(["/usr/bin/codesign", "--verify", "--deep", "--strict", self.app])
+        self.command.assert_any_call(["/usr/bin/pgrep", "-x", "ShareX"], check=False)
+
+    def test_build_identity_requires_exactly_one_sharex_release_target(self):
+        original = self.entries[0]
+        cases = ([], [original, original], [{**original, "target": "ShareXTests"}],
+                 [{**original, "buildSettings": {**original["buildSettings"], "CONFIGURATION": "Debug"}}])
+        for entries in cases:
+            with self.subTest(entries=entries), self.assertRaisesRegex(DRIVER.Failure, "exactly one ShareX Release"):
+                self.entries = entries
+                self.identity()
+
+    def test_installed_build_mismatch_fails_before_signature_or_process_checks(self):
+        self.binary.write_bytes(b"a different product")
+        with self.assertRaisesRegex(DRIVER.Failure, "differs from the recorded Release"):
+            self.identity()
+        self.command.assert_not_called()
+
+    def test_e2e_build_flags_cannot_pass(self):
+        for flag in ("SWIFT_ACTIVE_COMPILATION_CONDITIONS", "OTHER_SWIFT_FLAGS"):
+            with self.subTest(flag=flag):
+                self.entries[0]["buildSettings"][flag] = "-DSHAREX_E2E"
+                with self.assertRaisesRegex(DRIVER.Failure, "production-forbidden"):
+                    self.identity()
+                del self.entries[0]["buildSettings"][flag]
+
+    def test_e2e_binary_markers_cannot_pass(self):
+        for marker in ("--e2e", "E2E PERF", "e2e-helper", "CGVirtualDisplay"):
+            with self.subTest(marker=marker), self.assertRaisesRegex(DRIVER.Failure, "production-forbidden"):
+                self.strings = marker
+                self.identity()
+
+    def test_existing_process_blocks_ownership(self):
+        self.running_exit = 0
+        with self.assertRaisesRegex(DRIVER.Blocked, "Only this run's app PID"):
+            self.identity()
+
+    def test_failed_process_check_cannot_claim_exclusive_ownership(self):
+        self.running_exit = 2
+        with self.assertRaisesRegex(DRIVER.Failure, "Could not check"):
+            self.identity()
+
+    def test_noninstalled_app_is_blocked(self):
+        with self.assertRaisesRegex(DRIVER.Blocked, "Install the Release app"):
+            DRIVER.installed_release_identity(self.root / "build/ShareX.app", self.settings_path, self.command)
+
+    def test_e2e_environment_is_blocked(self):
+        with mock.patch.dict(DRIVER.os.environ, {"SHAREX_E2E": "0"}):
+            with self.assertRaisesRegex(DRIVER.Blocked, "Remove SHAREX_E2E"):
+                self.identity()
 
 
 class ReportTests(unittest.TestCase):
