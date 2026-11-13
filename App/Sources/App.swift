@@ -1,11 +1,24 @@
 import AppKit
+import Observation
 import ShareXCore
+import ShareXAgent
 import SwiftUI
 
 @main
 @MainActor
 enum Main {
     static func main() {
+        if CommandLine.arguments.dropFirst().first == "--agent" {
+            let appURL = Bundle.main.bundleURL
+            let code = AgentCommandRunner.run(Array(CommandLine.arguments.dropFirst(2))) {
+                let launcher = Process()
+                launcher.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                launcher.arguments = ["-g", appURL.path, "--args", "--agent-background"]
+                launcher.standardOutput = FileHandle.standardError
+                try launcher.run()
+            }
+            exit(code)
+        }
         #if SHAREX_E2E
         if SettingsAXHelper.handlesHelperMode() { return }
         #endif
@@ -49,6 +62,10 @@ private func editMenuBar() -> NSMenu {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let settings = SettingsStore()
     let launchAtLogin = LaunchAtLogin()
+    let agent = AgentCaptureService()
+    private var agentServer: LocalAgentServer?
+    private var agentServerError: String?
+    private var isTerminating = false
     lazy var coordinator = CaptureCoordinator(settings: settings)
     var statusItem: NSStatusItem!
     var settingsWindow: NSWindow?
@@ -59,19 +76,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+        do {
+            let agent = agent
+            agentServer = try LocalAgentServer { request in await agent.execute(request) }
+        } catch {
+            agentServerError = error.localizedDescription
+            try? FileHandle.standardError.write(contentsOf: Data(("ShareX agent: \(error.localizedDescription)\n").utf8))
+        }
+        observeAgentRecording()
         Hotkeys.register { [weak self] in self?.coordinator.capture($0) }
         ScreenCapture.prefetch()
         #if SHAREX_E2E
         if E2E.enabled { E2E.start(self); return }
         #else
-        launchAtLogin.enableByDefaultIfNeeded()
+        if !CommandLine.arguments.contains("--agent-background") { launchAtLogin.enableByDefaultIfNeeded() }
         #endif
-        if !Permissions.hasScreenRecording { Permissions.requestScreenRecording() }
+        if !CommandLine.arguments.contains("--agent-background"), !Permissions.hasScreenRecording { Permissions.requestScreenRecording() }
     }
 
     /// Rebuilt on every open so checkmarks always match the settings.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        if let session = agent.recordingSnapshot, !session.state.isTerminal {
+            menu.addItem(NSMenuItem(title: "Agent recording · \(session.state.rawValue)", action: nil, keyEquivalent: ""))
+            let stop = item("Stop Agent Recording", #selector(stopAgentRecording))
+            stop.isEnabled = session.state != .finalizing
+            menu.addItem(stop)
+            menu.addItem(.separator())
+        }
         for style in CaptureStyle.allCases {
             let item = NSMenuItem(title: style.title, action: #selector(captureItem(_:)), keyEquivalent: "")
             item.target = self
@@ -142,7 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func openSettings() {
         if settingsWindow == nil {
-            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(store: settings, launchAtLogin: launchAtLogin)))
+            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(store: settings, launchAtLogin: launchAtLogin, agent: agent, agentServerError: agentServerError)))
             w.title = "ShareX Settings"
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             w.setContentSize(NSSize(width: 760, height: 560))
@@ -157,4 +189,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
+
+    @objc private func stopAgentRecording() { Task { await agent.stopActive() } }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isTerminating else { return .terminateLater }
+        isTerminating = true
+        Task {
+            await agent.shutdown()
+            agentServer?.stop()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
+    private func observeAgentRecording() {
+        withObservationTracking {
+            let active = agent.recordingSnapshot.map { !$0.state.isTerminal } ?? false
+            statusItem.button?.image = NSImage(systemSymbolName: active ? "record.circle" : "camera.viewfinder",
+                                               accessibilityDescription: active ? "ShareX agent recording" : "ShareX")
+            statusItem.button?.contentTintColor = active ? .systemRed : nil
+            statusItem.button?.toolTip = active ? "Agent recording is active. Open the menu to stop." : "ShareX"
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.observeAgentRecording() }
+        }
+    }
 }
