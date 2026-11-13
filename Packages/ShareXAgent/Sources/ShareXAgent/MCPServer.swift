@@ -54,7 +54,7 @@ public final class MCPServer {
             return result(requestID, .object(["protocolVersion": .string(Self.versions.contains(version) ? version : Self.versions[0]),
                 "capabilities": .object(["tools": .object(["listChanged": .bool(false)])]),
                 "serverInfo": .object(["name": .string("sharex"), "version": .string("1.0.0")]),
-                "instructions": .string("Discover targets before capture. Keep session IDs and requestID values. Recording continues after this connection closes. Call recording_stop to finalize evidence. PNG and MP4 paths are local files.")]))
+                "instructions": .string("Discover targets before capture. Keep session IDs and requestID values. Recording continues after this connection closes. Call recording.stop to finalize evidence. PNG and MP4 paths are local files.")]))
         case "ping": return result(requestID, .object([:]))
         case "tools/list":
             guard phase == .ready else { return rpcError(requestID, -32000, "Complete initialization first.") }

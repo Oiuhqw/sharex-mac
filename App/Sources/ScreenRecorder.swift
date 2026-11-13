@@ -110,7 +110,6 @@ private final class StopContinuation: @unchecked Sendable {
     }
 }
 
-// ScreenCaptureKit delivers frames and all writer mutations on this serial queue.
 private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     let queue = DispatchQueue(label: "com.sharexmac.agent.video", qos: .userInitiated)
     private let writer: AVAssetWriter

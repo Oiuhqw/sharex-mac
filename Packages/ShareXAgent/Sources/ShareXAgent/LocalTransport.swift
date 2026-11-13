@@ -172,9 +172,7 @@ public final class LocalAgentServer: @unchecked Sendable {
                     let encoded = try JSONEncoder().encode(response)
                     guard encoded.count <= 8 * 1024 * 1024 else { throw AgentFailure(.limitReached, "Response exceeds transport limit.") }
                     try writeFrame(encoded, client, deadline: Deadline(seconds: 5))
-                } catch {
-                    // A malformed or disconnected peer cannot receive a trustworthy response envelope.
-                }
+                } catch {}
             }
         }
     }
