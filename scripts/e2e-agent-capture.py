@@ -18,6 +18,7 @@ import plistlib
 import queue
 import shutil
 import signal
+import socket
 import statistics
 import subprocess
 import sys
@@ -407,16 +408,32 @@ class Run:
         return state
 
     def start_app(self):
-        self.app = self.launch([self.binary], "app")
+        self.app = self.launch([self.binary, "--agent-background"], "app")
+        endpoint = Path("/tmp").resolve() / f"sharex-agent-{os.getuid()}" / "agent.sock"
 
         def ready():
             require(self.app.poll() is None, "The installed ShareX app exited during startup.")
-            result = self.command([self.binary, "--agent", "capabilities"], timeout=5, check=False)
-            if result["exitCode"] != 0:
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                    connection.settimeout(0.25)
+                    connection.connect(str(endpoint))
+                return True
+            except (FileNotFoundError, ConnectionRefusedError, TimeoutError):
                 return None
-            return decode_response(json.loads(result["stdout"]))
 
-        self.capabilities = self.wait_for(ready, 15, "agent endpoint")
+        def require_owned_app():
+            require(self.app.poll() is None, "The installed ShareX app exited during startup.")
+            running = self.command(["/usr/bin/pgrep", "-x", self.binary.name], timeout=5, check=False)
+            pids = running["stdout"].split()
+            require(running["exitCode"] == 0 and pids == [str(self.app.pid)],
+                    f"Expected only the owned ShareX app PID {self.app.pid}; found {pids} "
+                    f"with process check exit code {running['exitCode']}.")
+
+        self.wait_for(ready, 15, "agent socket")
+        require_owned_app()
+        self.capabilities = self.cli("capabilities")
+        require_owned_app()
+        self.evidence.emit("app_ready", pid=self.app.pid, endpoint=str(endpoint))
         if self.fixture:
             self.control("observe", observedPID=self.app.pid)
 

@@ -93,11 +93,15 @@ private final class AccessibilityDriver {
     func snapshot() -> [[String: Any]] { tree().map { record($0) } }
 
     func find(identifier: String) throws -> AXUIElement {
-        let matches = tree().filter { text($0, "AXIdentifier") == identifier }
-        guard matches.count == 1 else {
-            throw GateError.failed("Expected one Accessibility element for \(identifier), found \(matches.count).")
-        }
-        return matches[0]
+        repeat {
+            let matches = tree().filter { text($0, "AXIdentifier") == identifier }
+            guard matches.count <= 1 else {
+                throw GateError.failed("Expected one Accessibility element for \(identifier), found \(matches.count).")
+            }
+            if let match = matches.first { return match }
+            RunLoop.current.run(until: min(Date().addingTimeInterval(0.1), deadline))
+        } while Date() < deadline
+        throw GateError.failed("Expected one Accessibility element for \(identifier), found 0 before the deadline.")
     }
 
     func ancestors(_ target: AXUIElement) -> [AXUIElement] {
