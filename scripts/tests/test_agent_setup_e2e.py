@@ -50,6 +50,30 @@ class HelperTests(unittest.TestCase):
         with self.assertRaisesRegex(DRIVER.Failure, "one JSON result"):
             DRIVER.decode_helper({"exitCode": 0, "stdout": "success\n{}"})
 
+    def test_selected_status_icon_does_not_turn_a_failed_menu_action_into_success(self):
+        response = {"status": "failed", "reason": "AXPress failed with code -25204.", "elements": [
+            {"role": "AXMenuBarItem", "description": "ShareX", "AXSelected": True},
+            {"role": "AXMenuItem", "title": "Settings…", "AXEnabled": True},
+        ]}
+        with self.assertRaisesRegex(DRIVER.Failure, "AXPress failed with code -25204"):
+            DRIVER.decode_helper({"exitCode": 1, "stdout": json.dumps(response)})
+
+    def test_setup_does_not_select_agents_when_the_menu_action_fails(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        evidence = DRIVER.NATIVE.Evidence(Path(temporary.name))
+        self.addCleanup(evidence.events.close)
+        run = DRIVER.Run(SimpleNamespace(), evidence)
+        run.capabilities = {"access": {"enabled": False}}
+        with mock.patch.object(run, "start_app"), \
+                mock.patch.object(run, "helper", side_effect=DRIVER.Failure("Menu did not open")) as helper, \
+                mock.patch.object(run, "access") as access:
+            with self.assertRaisesRegex(DRIVER.Failure, "Menu did not open"):
+                run.stories()
+        helper.assert_called_once_with("menu", title="Settings…")
+        access.assert_not_called()
+        self.assertEqual(evidence.steps[0]["status"], "failed")
+
 
 @unittest.skipIf(sys.platform == "win32", "POSIX ownership and executable modes are required.")
 class WrapperSafetyTests(unittest.TestCase):

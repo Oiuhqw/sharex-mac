@@ -171,13 +171,33 @@ private final class AccessibilityDriver {
             [text($0, "AXTitle"), text($0, "AXDescription")].contains(where: { $0 == "ShareX" || $0 == "ShareX agent recording" })
         }
         guard candidates.count == 1 else { throw GateError.failed("The owned app has no unique ShareX status menu item.") }
-        try press(candidates[0])
+        let statusItem = candidates[0]
+        guard (value(statusItem, "AXEnabled") as? NSNumber)?.boolValue == true,
+              actions(statusItem).contains("AXPress") else {
+            throw GateError.failed("The ShareX status menu item is not enabled for AXPress.")
+        }
+        let openingStatus = AXUIElementPerformAction(statusItem, "AXPress" as CFString)
+        guard openingStatus == .success || openingStatus == .cannotComplete else {
+            throw GateError.failed("Status menu AXPress failed with code \(openingStatus.rawValue).")
+        }
+        // NSMenu tracking can outlast the AX reply timeout, so require the opened menu before continuing.
         repeat {
-            let matches = tree().filter { text($0, "AXRole") == "AXMenuItem" && text($0, "AXTitle") == title }
-            if matches.count == 1 { try press(matches[0]); return }
+            if (value(statusItem, "AXSelected") as? NSNumber)?.boolValue == true {
+                let menus = (value(statusItem, "AXChildren") as? [AXUIElement] ?? []).filter {
+                    text($0, "AXRole") == "AXMenu"
+                }
+                guard menus.count <= 1 else { throw GateError.failed("The ShareX status item exposed multiple menus.") }
+                if let menu = menus.first {
+                    let matches = (value(menu, "AXChildren") as? [AXUIElement] ?? []).filter {
+                        text($0, "AXRole") == "AXMenuItem" && text($0, "AXTitle") == title
+                    }
+                    guard matches.count <= 1 else { throw GateError.failed("The ShareX status menu exposed multiple \(title) items.") }
+                    if let match = matches.first { try press(match); return }
+                }
+            }
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         } while Date() < deadline
-        throw GateError.failed("The ShareX menu did not expose \(title).")
+        throw GateError.failed("The selected ShareX status menu did not expose \(title). Opening AXPress returned \(openingStatus.rawValue).")
     }
 }
 
