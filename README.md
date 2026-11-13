@@ -99,7 +99,7 @@ The main validation workflow packages only after its validation job succeeds. Th
 
 The owner keeps the `macOS` and `DMG` workflows disabled between validation sessions. See [Build and publish a release](docs/RELEASING.md) for free standard-runner validation, draft uploads, package checks, and publication.
 
-The earlier 47-unit security audit covers `e8f9596`. It is not a security audit of the complete 0.1.6 patch. The full fuzz campaign remains incomplete. See the [review index](reviews/README.md) for the historical scope.
+The earlier 47-unit security audit covers `e8f9596`. It is not a security audit of the complete 0.2.0 patch. The full fuzz campaign remains incomplete. See the [review index](reviews/README.md) for the historical scope.
 
 ## Check on physical Macs
 
@@ -118,7 +118,7 @@ Developer ID signing and notarization require the owner's Apple credentials. The
 
 ## Install the DMG
 
-Download [ShareX.dmg from the 0.1.6 release](https://github.com/Oiuhqw/sharex-mac/releases/download/v0.1.6/ShareX.dmg).
+Download [ShareX.dmg from the 0.2.0 release](https://github.com/Oiuhqw/sharex-mac/releases/download/v0.2.0/ShareX.dmg).
 
 Open the DMG and drag ShareX to Applications. Gatekeeper may block the first launch because the app is not notarized. After the first launch attempt, use **System Settings > Privacy & Security > Open Anyway**.
 

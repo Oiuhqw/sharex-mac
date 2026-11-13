@@ -20,7 +20,7 @@ The installed app matched the Release build's executable hash and passed signatu
 
 ## Automated checks and review
 
-The shared agent package passed 38 tests on macOS and 39 on Linux. The extra Linux test checks inherited socket-lock ownership. The Python suite passed 88 tests on macOS. Windows passed 84 and skipped four POSIX-only checks.
+The shared agent package passed 38 tests on macOS and 39 on Linux. The extra Linux test checks inherited socket-lock ownership. The Python suite executed 88 tests on macOS, with 85 passed and three unsupported-host checks skipped. Windows passed 84 and skipped four POSIX-only checks.
 
 The full regression job passed 117 core tests normally and again with AddressSanitizer, interactive capture/editor checks, shortcut recovery, login registration and opt-out, mixed-scale virtual-display checks, and Release resource budgets. Its nine result files contain 929 passed observations and nine `unverifiable` observations. The latter cover uniform virtual-display pixels, compositor conditions, and physical multi-display input. They are not counted as passes. All 35 new agent steps passed without blocked or unverifiable results.
 

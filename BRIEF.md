@@ -40,6 +40,6 @@ The package is ad-hoc signed with Hardened Runtime and is not notarized. Develop
 
 Physical mouse transitions, separate Spaces, physical hot-plug, real mixed-density display capture, physical shortcuts, and interactive permission prompts remain hardware checks. Blur and pixelation do not guarantee that sensitive content is unrecoverable. An opaque filled rectangle provides complete coverage in the exported image.
 
-The earlier 47-unit security audit covers its recorded revision, `e8f9596`. It does not certify the complete 0.1.6 patch. The full fuzz campaign remains incomplete. Current deterministic property tests and AddressSanitizer checks retain their actual scale and revision in the assessment.
+The earlier 47-unit security audit covers its recorded revision, `e8f9596`. It does not certify the complete 0.2.0 patch. The full fuzz campaign remains incomplete. Current deterministic property tests and AddressSanitizer checks retain their actual scale and revision in the assessment.
 
 See [README.md](README.md) for the package and [PLAN.md](PLAN.md) for the design and verification requirements.
