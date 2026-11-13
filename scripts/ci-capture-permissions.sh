@@ -9,27 +9,39 @@ if ! /usr/bin/csrutil status | /usr/bin/grep -q 'disabled'; then
   echo 'Runner Screen Recording permission must be granted by an operator. SIP is enabled.' >&2
   exit 3
 fi
-if [[ $# -lt 1 || $# -gt 2 || ( $# == 2 && "$2" != --accessibility ) ]]; then
-  echo 'Usage: ci-capture-permissions.sh /absolute/ShareX.app [--accessibility]' >&2
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo 'Usage: ci-capture-permissions.sh APP [--accessibility] | --helper PATH' >&2
   exit 2
 fi
 
-binary="$1/Contents/MacOS/ShareX"
-test -x "$binary"
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$1/Contents/Info.plist")" = com.sharexmac.ShareX
 services=(kTCCServiceScreenCapture)
-if [[ "${2:-}" == --accessibility ]]; then
+if [[ "$1" == --helper ]]; then
+  test $# = 2
+  test -n "${RUNNER_TEMP:-}"
+  test "$2" = "$RUNNER_TEMP/sharex-agent-setup-helper"
+  binary="$2"
+  bundle_id=''
   services+=(kTCCServiceAccessibility)
+else
+  if [[ $# == 2 && "$2" != --accessibility ]]; then exit 2; fi
+  binary="$1/Contents/MacOS/ShareX"
+  bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$1/Contents/Info.plist")"
+  test "$bundle_id" = com.sharexmac.ShareX
+  if [[ "${2:-}" == --accessibility ]]; then services+=(kTCCServiceAccessibility); fi
 fi
+test -x "$binary"
 for database in '/Library/Application Support/com.apple.TCC/TCC.db' "$HOME/Library/Application Support/com.apple.TCC/TCC.db"; do
   if [[ -f "$database" ]]; then
-    sudo python3 - "$database" "$binary" "${services[@]}" <<'PY'
+    sudo python3 - "$database" "$binary" "$bundle_id" "${services[@]}" <<'PY'
 import sqlite3
 import sys
 
 with sqlite3.connect(sys.argv[1]) as connection:
-    for service in sys.argv[3:]:
-        for client, client_type in ((sys.argv[2], 1), ('com.sharexmac.ShareX', 0)):
+    identities = [(sys.argv[2], 1)]
+    if sys.argv[3]:
+        identities.append((sys.argv[3], 0))
+    for service in sys.argv[4:]:
+        for client, client_type in identities:
             connection.execute(
                 'INSERT OR REPLACE INTO access '
                 '(service,client,client_type,auth_value,auth_reason,auth_version,'

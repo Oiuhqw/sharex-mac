@@ -98,7 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         if let session = agent.recordingSnapshot, !session.state.isTerminal {
-            menu.addItem(NSMenuItem(title: "Agent recording · \(session.state.rawValue)", action: nil, keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: session.state.agentStatusTitle, action: nil, keyEquivalent: ""))
             let stop = item("Stop Agent Recording", #selector(stopAgentRecording))
             stop.isEnabled = session.state != .finalizing
             menu.addItem(stop)

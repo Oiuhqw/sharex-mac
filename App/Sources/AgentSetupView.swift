@@ -30,7 +30,11 @@ struct AgentSetupView: View {
                 }
                 if let session = service.recordingSnapshot, !session.state.isTerminal {
                     HStack {
-                        Label("Recording \(session.state.rawValue)", systemImage: "record.circle").foregroundStyle(.red)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label(session.state.agentStatusTitle, systemImage: "record.circle").foregroundStyle(.red)
+                                .accessibilityIdentifier("settings.agents.recordingStatus")
+                            Text(session.source.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
                             .accessibilityIdentifier("settings.agents.recordingStatus")
                         Spacer()
                         Button("Stop Recording") { Task { await service.stopActive() } }
@@ -119,6 +123,19 @@ struct AgentSetupView: View {
             case .success(let path): setupFailed = false; setupMessage = "Installed \(path.path)."
             case .failure(let error): setupFailed = true; setupMessage = error.localizedDescription
             }
+        }
+    }
+}
+
+extension RecordingState {
+    var agentStatusTitle: String {
+        switch self {
+        case .starting: "Starting agent recording…"
+        case .recording: "Agent recording is active"
+        case .finalizing: "Saving agent recording…"
+        case .completed: "Agent recording saved"
+        case .failed: "Agent recording failed"
+        case .interrupted: "Agent recording interrupted"
         }
     }
 }
