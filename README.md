@@ -1,8 +1,10 @@
 # ShareX for macOS
 
-ShareX is a native menu-bar app for screenshots and annotation. It supports macOS 14 or later on Apple Silicon. Intel Macs are unsupported. Uploads, video, GIF recording, and OCR are outside this version's scope.
+ShareX is a native menu-bar app for screenshots and annotation. It supports macOS 14 or later on Apple Silicon. Intel Macs are unsupported. The published 0.1.6 package does not include video recording. This development source adds agent screenshots and silent MP4 recording through a CLI and MCP. Uploads, GIF recording, and OCR remain outside scope.
 
 Use the [user guide](docs/USER-GUIDE.md) for capture, editing, shortcuts, and output recovery. The [review index](reviews/README.md) records validation evidence and its limits.
+
+Use the [agent capture guide](docs/AGENT-CAPTURE.md) for Claude Code and Codex setup, recording sessions, screenshots, evidence, and validation requirements. This feature has not been published in a release.
 
 ## Latest built package
 
@@ -137,6 +139,7 @@ tccutil reset ScreenCapture com.sharexmac.ShareX
 | Path | Contents |
 | --- | --- |
 | `Packages/ShareXCore/` | Geometry, capture options, annotations, the editor document, undo, desktop layout, settings, and tests. |
+| `Packages/ShareXAgent/` | Agent protocol, local transport, CLI, MCP, setup helpers, and tests. |
 | `App/Sources/` | AppKit windows, ScreenCaptureKit adapters, the shared editor session, native display tiles, rendering, output, and settings UI. |
 | `project.yml` | XcodeGen project and pinned KeyboardShortcuts 3.1.0 dependency. |
 | `scripts/` | Build, packaging, validation, and the external test-only virtual-display helper. |

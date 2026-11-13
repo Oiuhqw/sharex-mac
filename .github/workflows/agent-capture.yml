@@ -1,0 +1,102 @@
+name: Agent capture
+
+on:
+  workflow_call:
+    inputs:
+      store_artifacts:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      store_artifacts:
+        description: Upload native evidence and build logs
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-capture-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Select Apple Silicon toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          sudo xcode-select -s /Applications/Xcode_26.3.app
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Validate scripts and agent protocol
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s scripts/tests -v
+          swift test --package-path Packages/ShareXAgent 2>&1 | tee agent-tests.log
+
+      - name: Generate project
+        run: |
+          printf 'DEVELOPMENT_TEAM =\nSHAREX_LOCAL_CONFIG = present\nCODE_SIGN_IDENTITY = -\n' > Local.xcconfig
+          scripts/ci-setup.sh
+
+      - name: Build production Release app
+        run: |
+          set -o pipefail
+          xcodebuild build -project ShareXMac.xcodeproj -scheme ShareX -configuration Release \
+            -destination 'platform=macOS' -derivedDataPath build-agent -disableAutomaticPackageResolution \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee agent-build.log
+          xcodebuild -showBuildSettings -json -project ShareXMac.xcodeproj -scheme ShareX \
+            -configuration Release -destination 'platform=macOS' -derivedDataPath build-agent \
+            -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" > agent-build-settings.json
+
+      - name: Install and sign app
+        run: |
+          set -euo pipefail
+          test ! -e /Applications/ShareX.app
+          codesign --force --deep --options runtime -s - build-agent/Build/Products/Release/ShareX.app
+          ditto build-agent/Build/Products/Release/ShareX.app /Applications/ShareX.app
+          codesign --verify --deep --strict /Applications/ShareX.app
+          test "$(lipo -archs /Applications/ShareX.app/Contents/MacOS/ShareX)" = arm64
+          plutil -lint /Applications/ShareX.app/Contents/Info.plist
+
+      - name: Prepare isolated runner permissions
+        run: |
+          bash scripts/ci-capture-permissions.sh /Applications/ShareX.app
+          defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
+
+      - name: Capture real pixels and verify decoded media
+        timeout-minutes: 15
+        run: |
+          bash scripts/e2e-agent-capture.sh --app /Applications/ShareX.app \
+            --build-settings "$PWD/agent-build-settings.json" --out "$PWD/agent-e2e-out"
+
+      - name: Print native report
+        if: always()
+        run: |
+          if test -f agent-e2e-out/result.json; then
+            cat agent-e2e-out/result.json
+          else
+            echo 'Native evaluation did not produce a report.'
+          fi
+
+      - name: Store validation evidence
+        if: ${{ always() && inputs.store_artifacts }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: agent-capture-${{ github.sha }}
+          retention-days: 3
+          path: |
+            agent-tests.log
+            agent-build.log
+            agent-build-settings.json
+            agent-e2e-out
+          if-no-files-found: warn

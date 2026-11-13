@@ -4,6 +4,8 @@ ShareX requires macOS 14 or later on Apple Silicon. Intel Macs are unsupported. 
 
 ShareX runs in the menu bar. Open the camera icon to start a capture or open **Settings…**.
 
+The development source also includes agent screenshots and video recording. See the [agent capture guide](AGENT-CAPTURE.md) for setup and use with Claude Code, Codex, or scripts. This feature is not in the published 0.1.6 package.
+
 ## Make your first capture
 
 1. Open ShareX from Applications.

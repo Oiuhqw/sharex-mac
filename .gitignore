@@ -4,6 +4,7 @@ DerivedData/
 .swiftpm/
 Local.xcconfig
 build/
+build-agent/
 xcodebuild.log
 smoke.log
 __pycache__/
