@@ -69,15 +69,21 @@ jobs:
           plutil -lint /Applications/ShareX.app/Contents/Info.plist
 
       - name: Prepare isolated runner permissions
+        id: capture-permission
+        run: |
+          bash scripts/ci-capture-permissions.sh /Applications/ShareX.app
+          defaults write com.sharexmac.ShareX agentCaptureEnabled -bool false
+
+      - name: Build and authorize independent setup driver
+        id: setup-helper
         run: |
           xcrun swiftc -parse-as-library -swift-version 6 -O -target arm64-apple-macosx14.0 \
             scripts/e2e-agent-setup.swift -o "$RUNNER_TEMP/sharex-agent-setup-helper"
           codesign --force -s - "$RUNNER_TEMP/sharex-agent-setup-helper"
-          bash scripts/ci-capture-permissions.sh /Applications/ShareX.app
           bash scripts/ci-capture-permissions.sh --helper "$RUNNER_TEMP/sharex-agent-setup-helper"
-          defaults write com.sharexmac.ShareX agentCaptureEnabled -bool false
 
       - name: Validate setup UI and recording controls
+        if: ${{ !cancelled() && steps.setup-helper.outcome == 'success' }}
         timeout-minutes: 5
         run: |
           python3 scripts/e2e-agent-setup.py --app /Applications/ShareX.app \
@@ -85,8 +91,10 @@ jobs:
             --helper "$RUNNER_TEMP/sharex-agent-setup-helper" --out "$PWD/agent-setup-out"
 
       - name: Capture real pixels and verify decoded media
+        if: ${{ !cancelled() && steps.capture-permission.outcome == 'success' }}
         timeout-minutes: 15
         run: |
+          defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
           bash scripts/e2e-agent-capture.sh --app /Applications/ShareX.app \
             --build-settings "$PWD/agent-build-settings.json" --out "$PWD/agent-e2e-out"
 
