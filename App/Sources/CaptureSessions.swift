@@ -177,6 +177,7 @@ actor CaptureSessions {
         let data = try encoder().encode(value)
         guard data.count <= 2_097_152 else { throw AgentFailure(.limitReached, "The session metadata limit is reached.") }
         let temporary = url.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).tmp")
+        defer { _ = unlink(temporary.path) }
         try Self.exclusiveWrite(data, to: temporary)
         guard rename(temporary.path, url.path) == 0 else { throw storageError("Cannot commit agent metadata") }
         try Self.syncDirectory(url.deletingLastPathComponent())
