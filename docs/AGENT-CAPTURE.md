@@ -86,7 +86,7 @@ For a display region, add `--region x,y,width,height`. These coordinates are log
 
 ## Retry a request
 
-For a retryable mutation, generate a UUID and pass it with `--request-id`. After a lost connection, retry with the same request ID and the same arguments. ShareX returns the stored result and does not do the work twice. If you reuse the ID with different arguments, ShareX returns `request_conflict`.
+For a retryable mutation, generate a UUID and pass it with `--request-id`. After a lost connection, retry with the same request ID and the same arguments. ShareX returns the stored result and does not do the work twice. If you reuse the ID with different arguments while ShareX keeps the request record, ShareX returns `request_conflict`.
 
 ```sh
 REQUEST_ID="$(uuidgen)"
@@ -94,6 +94,8 @@ REQUEST_ID="$(uuidgen)"
 ```
 
 ShareX stores a result for a request ID only when the request created a session or an artifact. If ShareX refuses a request before work begins, it stores nothing for that ID. Examples are `busy`, `permission_denied`, `disk_full`, `limit_reached`, and a `target_not_found` that occurs before capture starts. Correct the cause, then retry with the same request ID. The request then runs.
+
+ShareX keeps a request record for 7 days. The first ShareX start after that time removes the record and its stored result. After the removal, a request ID that created a session returns `request_conflict` with any arguments while that session is stored. ShareX does not change the session. Use a new request ID for new work.
 
 If ShareX accepted a request and an app restart interrupted it, the request ID returns `interrupted`. That request never runs again. Use a new request ID for new work.
 
@@ -111,7 +113,7 @@ Agent capture does not open the annotation editor, copy to the clipboard, activa
 
 ## Manage stored captures
 
-ShareX keeps each session folder until you delete it. A screenshot without `--session` is a session of its own. No CLI command and no MCP tool deletes captures, so an agent client cannot delete evidence.
+ShareX keeps each session folder until you delete it. A screenshot without `--session` is a session of its own. No CLI command and no MCP tool deletes captures, so no ShareX operation deletes evidence. An agent that has a shell tool can still delete the session folders, because the files belong to your macOS user.
 
 To delete old captures:
 
@@ -120,33 +122,36 @@ To delete old captures:
 3. Read the confirmation text, `Delete N captures older than 30 days?`.
 4. Click **Delete** to delete those captures, or click **Cancel** to keep them.
 
-The status text in the same section shows `N captures stored`. **Delete** removes each finished session (`completed`, `failed`, or `interrupted`) that ended more than 30 days ago. If a session has no end time, ShareX uses its creation time. **Delete** never removes the active recording, a session that is not finished, or a folder that ShareX cannot read.
+If no capture is older than 30 days, ShareX shows `No captures are older than 30 days.` instead. Click **OK**.
+
+The status text in the same section shows `N captures stored`. **Delete** removes only the sessions that the confirmation text counted. The confirmation text counts a finished session (`completed`, `failed`, or `interrupted`) when its newest date is more than 30 days ago. The newest date is the latest of the session end time, the session creation time, and the creation time of each artifact. A finished session that holds a screenshot from the last 30 days stays. **Delete** never removes the active recording, a session that is not finished, or a folder that ShareX cannot read.
 
 ShareX limits the number of stored sessions. `capabilities` reports the counts in `storage`:
 
 - `sessionCount` is the number of stored sessions.
 - `sessionLimit` is the maximum number of sessions.
-- `unreadableSessions` is the number of session folders that ShareX skipped.
+- `unreadableSessions` is the number of session folders that ShareX skipped. ShareX counts these folders at the first command other than `capabilities` after it starts. Before that command, the value is 0.
 
 When the limit is reached, a new capture returns `limit_reached`. Delete old captures in Settings, or delete session folders in the session root yourself. ShareX counts the folders on disk at each check, so you do not need to restart it.
 
-When ShareX starts, it deletes retry records that are older than 7 days. These records are a retry cache, not evidence. Session folders and their manifests stay.
+When ShareX starts, it deletes request records that are older than 7 days. These records are a retry cache, not evidence. Session folders and their manifests stay.
 
-If a session folder has the wrong mode, the wrong owner, or a bad manifest, ShareX skips that folder when it starts. The other sessions keep working. A request that names the skipped session returns `storage_failed`, and the message names the folder. Correct the folder, then retry. If storage fails to start, ShareX tries again on the next request.
+If a session folder has the wrong mode, the wrong owner, or a bad manifest, ShareX skips that folder when it reads the session folders. The other sessions keep working. A request that names the skipped session returns `storage_failed`, and the message names the folder. Correct the folder, then retry. If storage fails to start, ShareX tries again on the next request.
 
 ## Troubleshooting
 
 | Result | Action |
 | --- | --- |
 | `disabled` | Enable local agent access in ShareX Settings. |
-| `permission_denied` | Grant ShareX Screen Recording permission, then reopen it if required. Retry with the same request ID. |
+| `permission_denied` | Grant ShareX Screen Recording permission, then reopen it if required. Then retry. The same request ID works when the failure occurs before capture starts. If the failure occurs later, ShareX stores it, so use a new request ID. |
 | `target_not_found` or `target_changed` | List targets again and select the intended source. |
 | `busy` | Wait for the active recording to end, or stop it. Then retry. The same request ID works, because ShareX stores no result for `busy`. |
-| `request_conflict` | Use the original arguments for a retry, or generate a new request ID for new work. |
-| `limit_reached` | Delete old captures in **Settings > Agents**, or delete session folders yourself. Then retry. You do not need to restart ShareX. |
-| `disk_full` | Free disk space, then retry. The same request ID works. |
+| `request_conflict` | Use the original arguments for a retry, or generate a new request ID for new work. If the message says that the request ID already created a session, the stored result is gone. Use a new request ID. |
+| `limit_reached` | Read the message. For the session limit, delete old captures in **Settings > Agents**, or delete session folders yourself. Then retry. You do not need to restart ShareX. For the stored request limit, quit and reopen ShareX, then retry. When ShareX starts, it deletes request records that are older than 7 days. |
+| `disk_full` | Free disk space, then retry. The same request ID works when the failure occurs before capture starts. If the failure occurs later, ShareX stores it, so use a new request ID. |
 | `storage_failed` | Read the folder path in the message. Make sure that your user owns the folder and that its mode is 700, for example with `chmod 700 '/path/from/message'`. Then retry. Other sessions keep working. |
 | `interrupted` | Preserve the failed session as incomplete evidence and start a new capture. |
+| `startup_timeout` with the message `ShareX did not become available.`, after an update from version 0.2.0, build 8 | Quit ShareX and open it again. The app that started before the update listens at the old socket location, and the CLI and MCP modes of the updated app cannot reach it. |
 
 Screen Recording permission belongs to the installed app and its signature. Replacing an ad-hoc signed build can require a new permission grant. An SSH session or a machine without a logged-in graphical desktop is not a screen-capture host.
 

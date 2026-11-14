@@ -20,7 +20,7 @@ The workflow runs three gates on a disposable `macos-15` runner. Each gate write
 
 | Gate | Script | What it checks |
 | --- | --- | --- |
-| Settings and controls | `scripts/e2e-agent-setup.py` | Enables access, installs and updates the CLI, runs the wrapper, and copies both registration commands. Stops a recording from the menu and revokes access during a recording. Deletes old captures with **Delete Old Captures…** and checks that **Cancel** deletes nothing. |
+| Settings and controls | `scripts/e2e-agent-setup.py` | Enables access, installs and updates the CLI, runs the wrapper, and copies both registration commands. Stops a recording from the menu and revokes access during a recording. Deletes old captures with **Delete Old Captures…** and checks that **Cancel** deletes nothing. Checks the text that Settings shows when no capture is old. |
 | Capture API and media | `scripts/e2e-agent-capture.py` | Real display, window, and region PNG and MP4 through the CLI and MCP. Checkpoint, retry, reconnect, markers, limits, quit, crash recovery, and target loss. Underscore MCP tool names, the screenshot image block, and the storage counts. A busy start that runs again with the same request ID, an unreadable session folder, and a nested socket frame. |
 | Actual agent clients | `scripts/e2e-agent-clients.py` | Both registration commands, `claude mcp list`, Codex app-server calls through its registered entry, and Claude Code Bash calls to the CLI. The tool names that each client offers a model, and Claude Code MCP calls driven by a scripted model stand-in. |
 
