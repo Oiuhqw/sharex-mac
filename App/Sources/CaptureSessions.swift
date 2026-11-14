@@ -11,9 +11,8 @@ actor CaptureSessions {
     }
     nonisolated let root: URL
     private let fileManager = FileManager.default
-    private let maximumSessions = 2048
     private let maximumRequests = 20_000
-    private var sessionCount = 0
+    private var unreadable: Set<UUID> = []
     private var requestCount = 0
 
     init() {
@@ -32,21 +31,39 @@ actor CaptureSessions {
         try recover()
     }
 
+    func storage() -> AgentStorageStatus {
+        let ids = (try? sessionIDs()) ?? []
+        return AgentStorageStatus(sessionCount: ids.count, unreadableSessions: unreadable.intersection(ids).count)
+    }
+
     func create(_ session: CaptureSession) throws {
-        guard sessionCount < maximumSessions else { throw AgentFailure(.limitReached, "The session limit is reached. Archive old session directories before continuing.") }
+        guard !storage().sessionLimitReached else { throw AgentFailure(.limitReached, "The session limit is reached. Delete old captures in ShareX Settings > Agents.") }
         try checkReserve()
         let directory = directory(session.id)
         guard mkdir(directory.path, 0o700) == 0 else { throw storageError("Cannot create the session directory") }
         try Self.syncDirectory(root)
-        sessionCount += 1
         try save(session)
     }
 
     func load(_ id: UUID) throws -> CaptureSession {
-        let url = directory(id).appendingPathComponent("manifest.json")
-        guard fileManager.fileExists(atPath: url.path) else { throw AgentFailure(.sessionNotFound, "No session exists with that ID.") }
-        try Self.checkPrivateDirectory(directory(id))
-        return try read(CaptureSession.self, at: url)
+        let folder = directory(id)
+        guard fileManager.fileExists(atPath: folder.path) else {
+            unreadable.remove(id)
+            throw AgentFailure(.sessionNotFound, "No session exists with that ID.")
+        }
+        do {
+            try Self.checkPrivateDirectory(folder)
+            let manifest = folder.appendingPathComponent("manifest.json")
+            var status = stat()
+            guard lstat(manifest.path, &status) == 0 || errno != ENOENT else { throw AgentFailure(.sessionNotFound, "No session exists with that ID.") }
+            let session = try read(CaptureSession.self, at: manifest)
+            unreadable.remove(id)
+            return session
+        } catch {
+            unreadable.insert(id)
+            if let failure = error as? AgentFailure, failure.code == .sessionNotFound { throw failure }
+            throw AgentFailure(.storageFailed, "The session folder \(folder.path) is unreadable. \(error.localizedDescription)")
+        }
     }
 
     func save(_ session: CaptureSession) throws {
@@ -68,15 +85,24 @@ actor CaptureSessions {
     }
 
     func accept(_ request: AgentRequest) throws {
-        guard requestCount < maximumRequests else { throw AgentFailure(.limitReached, "The durable request limit is reached. Archive old agent data before continuing.") }
+        guard requestCount < maximumRequests else { throw AgentFailure(.limitReached, "The stored request limit is reached. Restart ShareX to remove request records older than 7 days.") }
         try checkReserve()
         let bytes = try encoder().encode(RequestRecord(request: request, response: nil))
         try AtomicFile.create(bytes, at: requestURL(request.id))
         requestCount += 1
     }
 
-    func complete(_ request: AgentRequest, response: AgentResponse) throws {
-        try atomicJSON(RequestRecord(request: request, response: response), to: requestURL(request.id))
+    func settle(_ request: AgentRequest, command: AgentCommand, response: AgentResponse) throws {
+        var status = stat()
+        let keeps = RequestReplayPolicy.keepsResponse(response, to: command,
+            requestSessionExists: lstat(directory(request.id).path, &status) == 0,
+            targetSession: RequestReplayPolicy.targetSession(of: command).flatMap { try? load($0) })
+        if keeps {
+            try atomicJSON(RequestRecord(request: request, response: response), to: requestURL(request.id))
+        } else {
+            guard unlink(requestURL(request.id).path) == 0 || errno == ENOENT else { throw storageError("Cannot discard the request record") }
+            requestCount -= 1
+        }
     }
 
     func artifactURL(sessionID: UUID, artifactID: UUID, extension suffix: String) throws -> URL {
@@ -98,6 +124,12 @@ actor CaptureSessions {
     }
 
     func directory(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString, isDirectory: true) }
+
+    func oldCaptureCount() -> Int { oldCaptures().count }
+
+    func deleteOldCaptures() {
+        for id in oldCaptures() { try? fileManager.removeItem(at: directory(id)) }
+    }
 
     nonisolated static func publishPNG(_ png: Data, at partial: URL, width: Int, height: Int) throws -> (URL, Int64, String) {
         try AtomicFile.create(png, at: partial)
@@ -136,28 +168,32 @@ actor CaptureSessions {
     }
 
     private func recover() throws {
-        let children = try fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-        let ids = children.compactMap { UUID(uuidString: $0.lastPathComponent) }
-        guard ids.count <= maximumSessions else { throw AgentFailure(.limitReached, "Too many stored agent sessions. Archive old sessions before restarting ShareX.") }
-        sessionCount = ids.count
-        for id in ids {
-            if !fileManager.fileExists(atPath: directory(id).appendingPathComponent("manifest.json").path) { continue }
-            var session = try load(id)
+        for id in try sessionIDs() {
+            guard var session = try? load(id) else { continue }
             if session.recoverAfterRestart() {
-                try save(session)
+                do { try save(session) } catch { unreadable.insert(id) }
             }
         }
-        let requests = try fileManager.contentsOfDirectory(at: root.appendingPathComponent("requests"), includingPropertiesForKeys: nil)
+        let requests = try fileManager.contentsOfDirectory(at: root.appendingPathComponent("requests"), includingPropertiesForKeys: [.contentModificationDateKey])
             .filter { UUID(uuidString: $0.deletingPathExtension().lastPathComponent) != nil && $0.pathExtension == "json" }
-        guard requests.count <= maximumRequests else { throw AgentFailure(.limitReached, "Too many stored agent requests. Archive old agent data before restarting ShareX.") }
-        requestCount = requests.count
+        requestCount = 0
         for url in requests {
-            var record = try read(RequestRecord.self, at: url)
-            if record.response == nil {
-                record.response = .failure(record.request.id, AgentFailure(.interrupted, "This request was accepted before ShareX restarted. Inspect the session manifests; this request will not run again."))
-                try atomicJSON(record, to: url)
-            }
+            let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            if let modified, RequestReplayPolicy.recordExpired(modifiedAt: modified), unlink(url.path) == 0 { continue }
+            requestCount += 1
+            guard var record = try? read(RequestRecord.self, at: url), record.response == nil else { continue }
+            record.response = .failure(record.request.id, AgentFailure(.interrupted, "This request was accepted before ShareX restarted. Inspect the session manifests; this request will not run again."))
+            try? atomicJSON(record, to: url)
         }
+    }
+
+    private func sessionIDs() throws -> [UUID] {
+        do { return try fileManager.contentsOfDirectory(atPath: root.path).compactMap { UUID(uuidString: $0) } }
+        catch { throw AgentFailure(.storageFailed, "Cannot list the session folder \(root.path): \(error.localizedDescription)") }
+    }
+
+    private func oldCaptures() -> [UUID] {
+        ((try? sessionIDs()) ?? []).filter { (try? load($0))?.isOldCapture() ?? false }
     }
 
     private func requestURL(_ id: UUID) -> URL { root.appendingPathComponent("requests/\(id.uuidString).json") }

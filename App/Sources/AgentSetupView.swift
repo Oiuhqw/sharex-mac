@@ -10,6 +10,7 @@ struct AgentSetupView: View {
     @State private var setupMessage: String?
     @State private var setupFailed = false
     @State private var installing = false
+    @State private var oldCaptures: Int?
 
     private var executable: URL? { Bundle.main.executableURL?.resolvingSymlinksInPath() }
 
@@ -88,11 +89,40 @@ struct AgentSetupView: View {
                     .accessibilityIdentifier("settings.agents.sessionRoot")
                 Text("Each session contains PNG screenshots, a silent H.264 MP4 when recorded, and a JSON manifest with file hashes. Agent capture does not open the editor or change your clipboard.")
                     .font(.caption).foregroundStyle(.secondary)
+                Text(verbatim: "\(service.storage.sessionCount) captures stored")
+                    .font(.callout).accessibilityIdentifier("settings.agents.storage")
+                if let count = oldCaptures {
+                    HStack {
+                        Text(verbatim: "Delete \(count) captures older than \(CaptureSession.oldCaptureDays) days?")
+                            .accessibilityIdentifier("settings.agents.deleteOld.prompt")
+                        Button("Delete", role: .destructive) { deleteOldCaptures() }
+                            .accessibilityIdentifier("settings.agents.deleteOld.confirm")
+                        Button("Cancel", role: .cancel) { oldCaptures = nil }
+                            .accessibilityIdentifier("settings.agents.deleteOld.cancel")
+                    }
+                } else {
+                    Button("Delete Old Captures…") { countOldCaptures() }
+                        .accessibilityIdentifier("settings.agents.deleteOld")
+                }
             }
         }
-        .onAppear { permissionGranted = Permissions.hasScreenRecording }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            permissionGranted = Permissions.hasScreenRecording
+        .onAppear { refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
+    }
+
+    private func refresh() {
+        permissionGranted = Permissions.hasScreenRecording
+        Task { await service.refreshStorage() }
+    }
+
+    private func countOldCaptures() {
+        Task { oldCaptures = await service.oldCaptureCount() }
+    }
+
+    private func deleteOldCaptures() {
+        Task {
+            await service.deleteOldCaptures()
+            oldCaptures = nil
         }
     }
 
