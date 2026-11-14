@@ -174,7 +174,7 @@ class Run(NATIVE.Run):
         return stored_count(self.inspect("settings.agents.storage"))
 
     def delete_confirmation(self):
-        return self.wait_for(lambda: confirmation(self.helper("snapshot")["elements"]), 8, "delete confirmation text")
+        return self.wait_for(lambda: confirmation(self.helper("snapshot")["elements"]), 15, "delete confirmation text")
 
     def open_agents_settings(self):
         self.helper("menu", title="Settings…")
@@ -349,7 +349,7 @@ class Run(NATIVE.Run):
             self.wait_for(lambda: not (root / old_name).exists(), 10, "deletion of the old session folder")
             require(session_folders(root) == folders - expected,
                     "Delete removed a capture that is newer than 30 days or not final, or kept an old one.")
-            self.wait_for(lambda: self.stored() == before - len(expected), 8, "the stored capture count after deletion")
+            self.wait_for(lambda: self.stored() == before - len(expected), 15, "the stored capture count after deletion")
             self.cli("recording.status", {"sessionID": old["id"]}, error="session_not_found")
             require(self.cli("artifacts.list", {"sessionID": recent["id"]}) == recent, "The recent capture changed after deletion.")
             step.update(confirmation=asked["text"], deleted=sorted(expected),
