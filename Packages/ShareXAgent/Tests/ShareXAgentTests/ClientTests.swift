@@ -68,12 +68,51 @@ func initializedServer(request: @escaping MCPServer.Requester = { .success($0.id
     let server = try initializedServer()
     let response = try rpc(server, #"{"jsonrpc":"2.0","id":"list","method":"tools/list"}"#)
     guard case .object(let result) = response["result"], case .array(let tools) = result["tools"] else { Issue.record("Missing tools"); return }
-    #expect(tools.count == 8)
-    for (tool, definition) in zip(tools, OperationCatalog.definitions) {
-        guard case .object(let fields) = tool, case .object(let schema) = fields["inputSchema"], case .object(let properties) = schema["properties"] else { Issue.record("Missing schema"); continue }
-        #expect(fields["name"] == .string(definition.operation.rawValue))
+    var names: [JSONValue] = []
+    for tool in tools {
+        guard case .object(let fields) = tool, let name = fields["name"], case .object(let schema) = fields["inputSchema"],
+              case .object(let properties) = schema["properties"] else { Issue.record("Missing schema"); continue }
+        names.append(name)
         #expect(properties["requestID"] != nil)
     }
+    #expect(names == ["capabilities", "targets_list", "screenshot", "recording_start", "recording_status", "recording_stop",
+                      "session_mark", "artifacts_list"].map(JSONValue.string))
+}
+
+private let dottedNames = ["targets.list", "recording.start", "recording.status", "recording.stop", "session.mark", "artifacts.list"]
+
+@Test func mcpRoutesUnderscoreNamesAndRejectsDottedNames() throws {
+    let session = UUID().uuidString
+    let calls: [(String, AgentOperation, String)] = [
+        ("capabilities", .capabilities, "{}"), ("targets_list", .targetsList, "{}"),
+        ("screenshot", .screenshot, #"{"target":"display"}"#), ("recording_start", .recordingStart, #"{"target":"display"}"#),
+        ("recording_status", .recordingStatus, #"{"sessionID":"\#(session)"}"#), ("recording_stop", .recordingStop, #"{"sessionID":"\#(session)"}"#),
+        ("session_mark", .sessionMark, #"{"sessionID":"\#(session)","label":"step"}"#), ("artifacts_list", .artifactsList, #"{"sessionID":"\#(session)"}"#)]
+    var received: [AgentOperation] = []
+    let server = try initializedServer { request in
+        received.append(request.operation)
+        return .success(request.id, .object([:]))
+    }
+    for (name, _, arguments) in calls {
+        let response = try rpc(server, #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"\#(name)","arguments":\#(arguments)}}"#)
+        #expect(response["error"] == nil)
+    }
+    #expect(received == calls.map { $0.1 })
+    for name in dottedNames {
+        let response = try rpc(server, #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"\#(name)","arguments":{}}}"#)
+        guard case .object(let error) = response["error"] else { Issue.record("Expected an unknown tool error for \(name)"); continue }
+        #expect(error["code"] == .number(-32602))
+    }
+    #expect(received.count == calls.count)
+}
+
+@Test func mcpGuidanceNamesNoToolWithADot() throws {
+    let server = MCPServer { .success($0.id, .null) }
+    let initialized = try rpc(server, #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#)
+    #expect(server.handle(Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8)) == nil)
+    let listed = try rpc(server, #"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
+    let guidance = String(decoding: try JSONEncoder().encode([initialized, listed]), as: UTF8.self)
+    for name in dottedNames { #expect(!guidance.contains(name)) }
 }
 
 @Test func mcpReturnsStructuredEnvelopeAndRoutesRetryID() throws {
