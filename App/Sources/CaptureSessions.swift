@@ -130,10 +130,12 @@ actor CaptureSessions {
 
     func directory(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString, isDirectory: true) }
 
-    func oldCaptureCount() -> Int { oldCaptures().count }
+    func oldCaptures() -> [UUID] {
+        ((try? sessionIDs()) ?? []).filter { isOldCapture($0) }
+    }
 
-    func deleteOldCaptures() {
-        for id in oldCaptures() { try? fileManager.removeItem(at: directory(id)) }
+    func deleteOldCaptures(_ ids: [UUID]) {
+        for id in ids where isOldCapture(id) { try? fileManager.removeItem(at: directory(id)) }
     }
 
     nonisolated static func publishPNG(_ png: Data, at partial: URL, width: Int, height: Int) throws -> (URL, Int64, String) {
@@ -197,9 +199,7 @@ actor CaptureSessions {
         catch { throw AgentFailure(.storageFailed, "Cannot list the session folder \(root.path): \(error.localizedDescription)") }
     }
 
-    private func oldCaptures() -> [UUID] {
-        ((try? sessionIDs()) ?? []).filter { (try? load($0))?.isOldCapture() ?? false }
-    }
+    private func isOldCapture(_ id: UUID) -> Bool { (try? load(id))?.isOldCapture() ?? false }
 
     private func requestURL(_ id: UUID) -> URL { root.appendingPathComponent("requests/\(id.uuidString).json") }
     private func encoder() -> JSONEncoder {

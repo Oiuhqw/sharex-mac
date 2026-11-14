@@ -50,15 +50,15 @@ final class AgentCaptureService {
         if current != storage { storage = current }
     }
 
-    func oldCaptureCount() async -> Int {
-        do { try await startStorage() } catch { return 0 }
+    func oldCaptures() async -> [UUID] {
+        do { try await startStorage() } catch { return [] }
         await refreshStorage()
-        return await sessions.oldCaptureCount()
+        return await sessions.oldCaptures()
     }
 
-    func deleteOldCaptures() async {
+    func deleteOldCaptures(_ ids: [UUID]) async {
         do { try await startStorage() } catch { return }
-        await sessions.deleteOldCaptures()
+        await sessions.deleteOldCaptures(ids)
         await refreshStorage()
     }
 

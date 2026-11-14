@@ -10,7 +10,7 @@ struct AgentSetupView: View {
     @State private var setupMessage: String?
     @State private var setupFailed = false
     @State private var installing = false
-    @State private var oldCaptures: Int?
+    @State private var oldCaptures: [UUID]?
 
     private var executable: URL? { Bundle.main.executableURL?.resolvingSymlinksInPath() }
 
@@ -91,13 +91,16 @@ struct AgentSetupView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Text(verbatim: "\(Self.captures(service.storage.sessionCount)) stored")
                     .font(.callout).accessibilityIdentifier("settings.agents.storage")
-                if let count = oldCaptures {
+                if let captures = oldCaptures {
                     HStack {
-                        Text(verbatim: "Delete \(Self.captures(count)) older than \(CaptureSession.oldCaptureDays) days?")
+                        Text(verbatim: captures.isEmpty ? "No captures are older than \(CaptureSession.oldCaptureDays) days."
+                             : "Delete \(Self.captures(captures.count)) older than \(CaptureSession.oldCaptureDays) days?")
                             .accessibilityIdentifier("settings.agents.deleteOld.prompt")
-                        Button("Delete", role: .destructive) { deleteOldCaptures() }
-                            .accessibilityIdentifier("settings.agents.deleteOld.confirm")
-                        Button("Cancel", role: .cancel) { oldCaptures = nil }
+                        if !captures.isEmpty {
+                            Button("Delete", role: .destructive) { deleteOldCaptures(captures) }
+                                .accessibilityIdentifier("settings.agents.deleteOld.confirm")
+                        }
+                        Button(captures.isEmpty ? "OK" : "Cancel", role: .cancel) { oldCaptures = nil }
                             .accessibilityIdentifier("settings.agents.deleteOld.cancel")
                     }
                 } else {
@@ -118,12 +121,12 @@ struct AgentSetupView: View {
     }
 
     private func countOldCaptures() {
-        Task { oldCaptures = await service.oldCaptureCount() }
+        Task { oldCaptures = await service.oldCaptures() }
     }
 
-    private func deleteOldCaptures() {
+    private func deleteOldCaptures(_ captures: [UUID]) {
         Task {
-            await service.deleteOldCaptures()
+            await service.deleteOldCaptures(captures)
             oldCaptures = nil
         }
     }
