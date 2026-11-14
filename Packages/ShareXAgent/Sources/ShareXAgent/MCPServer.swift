@@ -112,8 +112,10 @@ public final class MCPServer {
             }
             for byte in buffer.prefix(count) {
                 if byte == 10 {
-                    let response = oversized ? rpcError(.null, -32600, "Message exceeds 65536 bytes.") : handle(line)
-                    if let response { try output.write(contentsOf: JSONEncoder().encode(response) + Data([10])) }
+                    try Self.drainingTemporaryObjects {
+                        let response = oversized ? rpcError(.null, -32600, "Message exceeds 65536 bytes.") : handle(line)
+                        if let response { try output.write(contentsOf: JSONEncoder().encode(response) + Data([10])) }
+                    }
                     line.removeAll(keepingCapacity: true)
                     oversized = false
                 } else if !oversized {
@@ -125,6 +127,15 @@ public final class MCPServer {
         if oversized || !line.isEmpty {
             try output.write(contentsOf: JSONEncoder().encode(rpcError(.null, -32700, "Input ended before the newline delimiter.")) + Data([10]))
         }
+    }
+
+    // The helper has no run loop. Without a pool per message, the Foundation objects of every reply stay until exit.
+    private static func drainingTemporaryObjects(_ body: () throws -> Void) rethrows {
+        #if canImport(ObjectiveC)
+        try autoreleasepool(invoking: body)
+        #else
+        try body()
+        #endif
     }
 
     private func validID(_ value: JSONValue) -> Bool {
