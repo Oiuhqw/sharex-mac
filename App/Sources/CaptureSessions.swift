@@ -85,6 +85,11 @@ actor CaptureSessions {
     }
 
     func accept(_ request: AgentRequest) throws {
+        // A session folder has the ID of the request that created it, and it stays after that request record expires.
+        var status = stat()
+        guard lstat(directory(request.id).path, &status) != 0 else {
+            throw AgentFailure(.requestConflict, "This request ID already created a session. Use a new request ID.")
+        }
         guard requestCount < maximumRequests else { throw AgentFailure(.limitReached, "The stored request limit is reached. Restart ShareX to remove request records older than 7 days.") }
         try checkReserve()
         let bytes = try encoder().encode(RequestRecord(request: request, response: nil))
