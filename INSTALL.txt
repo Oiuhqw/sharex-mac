@@ -34,6 +34,10 @@ If capture permission stops working after an ad-hoc update, remove the old
 ShareX entry from Screen Recording permissions. Add the updated
 /Applications/ShareX.app, then quit and reopen it.
 
+The agent access switch in Settings > Agents stops well-behaved agent
+clients only. Any program that runs as your macOS user can turn access
+on and capture the screen. Run only programs that you trust.
+
 Changes in 0.2.0:
 - Local agents can take PNG screenshots and record silent H.264 MP4 video.
 - Capture a display, a window, or a display region through the CLI or stdio MCP.

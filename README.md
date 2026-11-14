@@ -6,6 +6,8 @@ Use the [user guide](docs/USER-GUIDE.md) for capture, editing, shortcuts, and ou
 
 Use the [agent capture guide](docs/AGENT-CAPTURE.md) for Claude Code and Codex setup, recording sessions, screenshots, evidence, and validation requirements.
 
+The agent access switch in Settings stops well-behaved clients only. Any process that runs as your macOS user can turn access on and capture the screen. ShareX is ad-hoc signed and not sandboxed, so it cannot protect that setting. See [the access limit](docs/AGENT-CAPTURE.md#the-access-switch-stops-well-behaved-clients-only).
+
 ## Latest built package
 
 Version **0.2.0, build 8** supports **Apple Silicon Macs running macOS 14 or later**. The app contains arm64 code only. **Intel Macs are unsupported.** Download `ShareX.dmg` from the [0.2.0 GitHub release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.0).

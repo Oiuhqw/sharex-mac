@@ -24,7 +24,7 @@ One shared editing session owns the document, history, gesture, text editor, ren
 
 Smart Eraser estimates nearby background colors for small repairs on plain or smooth screenshot backgrounds. It runs locally and preserves protected content. General photo reconstruction is outside its scope. Style controls show immediate canvas feedback and commit one undo entry per slider drag. The circular loupe, output destination, and short shutter click provide capture feedback.
 
-Local agents use eight shared CLI and MCP operations for display, window, and region screenshots and silent H.264 MP4 recording. The app owns permission and recording lifetime. Settings controls access, CLI installation, and client setup. Private session manifests retain markers, hashes, output status, and recovery evidence. See the [agent capture guide](docs/AGENT-CAPTURE.md).
+Local agents use eight shared CLI and MCP operations for display, window, and region screenshots and silent H.264 MP4 recording. The app owns permission and recording lifetime. Settings controls access, CLI installation, client setup, and deletion of old captures. The access switch stops well-behaved clients only. Any process of the same macOS user can turn it on, because the app is ad-hoc signed and not sandboxed. Private session manifests retain markers, hashes, output status, and recovery evidence. See the [agent capture guide](docs/AGENT-CAPTURE.md).
 
 Uploads, audio, GIF recording, OCR, scrolling capture, and reopening a previous editing document are outside this version's scope.
 

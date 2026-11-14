@@ -1,3 +1,4 @@
+import base64
 import importlib.util
 import json
 from pathlib import Path
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 import uuid
+import zlib
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "e2e-agent-capture.py"
@@ -44,6 +46,129 @@ class ResponseTests(unittest.TestCase):
             DRIVER.decode_response(response, error="permission_denied")
         with self.assertRaisesRegex(DRIVER.Failure, "actionable message"):
             DRIVER.decode_response(response, error="busy")
+
+
+def png_header(width, height):
+    fields = width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes([8, 6, 0, 0, 0])
+    chunk = b"IHDR" + fields
+    return DRIVER.PNG_SIGNATURE + len(fields).to_bytes(4, "big") + chunk + zlib.crc32(chunk).to_bytes(4, "big")
+
+
+class ContractNameTests(unittest.TestCase):
+    def test_mcp_tool_names_replace_dots_with_underscores(self):
+        self.assertEqual([DRIVER.tool_name(operation) for operation in DRIVER.OPERATIONS],
+                         ["capabilities", "targets_list", "screenshot", "recording_start",
+                          "recording_status", "recording_stop", "session_mark", "artifacts_list"])
+
+    def test_dotted_names_in_instructions_or_descriptions_are_reported(self):
+        texts = ["Discover targets with targets_list. Call recording.stop to finalize.", "Use session.mark."]
+        self.assertEqual(DRIVER.dotted_tool_mentions(texts), ["recording.stop", "session.mark"])
+        self.assertEqual(DRIVER.dotted_tool_mentions(["Call recording_stop to finalize evidence."]), [])
+
+    def test_socket_path_uses_the_darwin_user_temp_directory(self):
+        expected = Path("/var/folders/ab/cd/T") / "sharex-agent" / "agent.sock"
+        self.assertEqual(DRIVER.agent_socket_path("/var/folders/ab/cd/T/\n"), expected)
+        self.assertEqual(DRIVER.agent_socket_path("/var/folders/ab/cd/T"), expected)
+
+    def test_socket_path_rejects_empty_or_relative_getconf_output(self):
+        for output in ("", "\n", "var/folders/T/"):
+            with self.subTest(output=output), self.assertRaisesRegex(DRIVER.Failure, "absolute directory"):
+                DRIVER.agent_socket_path(output)
+
+
+class StorageCountTests(unittest.TestCase):
+    def test_storage_counts_are_returned(self):
+        capabilities = {"storage": {"sessionCount": 4, "sessionLimit": 2048, "unreadableSessions": 1}}
+        self.assertEqual(DRIVER.storage_counts(capabilities),
+                         {"sessionCount": 4, "sessionLimit": 2048, "unreadableSessions": 1})
+
+    def test_missing_negative_boolean_or_fractional_counts_fail(self):
+        valid = {"sessionCount": 4, "sessionLimit": 2048, "unreadableSessions": 0}
+        for change in ({"sessionCount": None}, {"unreadableSessions": -1}, {"sessionLimit": 0},
+                       {"unreadableSessions": True}, {"sessionCount": 4.0}):
+            with self.subTest(change=change), self.assertRaisesRegex(DRIVER.Failure, "non-negative integers"):
+                DRIVER.storage_counts({"storage": {**valid, **change}})
+
+
+class ToolResultTests(unittest.TestCase):
+    def setUp(self):
+        self.request_id = str(uuid.uuid4()).upper()
+        self.artifact = {"id": self.request_id, "kind": "screenshot", "widthPixels": 1024, "heightPixels": 768}
+        self.structured = {"version": 1, "id": self.request_id, "ok": True,
+                           "result": {"id": self.request_id, "artifacts": [self.artifact]}}
+
+    def result(self, *blocks, structured=None):
+        structured = structured or self.structured
+        text = {"type": "text", "text": json.dumps(structured)}
+        return {"structuredContent": structured, "content": [text, *blocks], "isError": not structured["ok"]}
+
+    def image(self, data):
+        return {"type": "image", "mimeType": "image/png", "data": base64.b64encode(data).decode()}
+
+    def test_screenshot_carries_text_then_png_image(self):
+        preview = DRIVER.tool_result_content(self.result(self.image(png_header(1024, 768))), "screenshot")
+        self.assertEqual((preview["width"], preview["height"]), (1024, 768))
+
+    def test_large_screenshot_image_is_scaled_to_the_preview_limit(self):
+        self.artifact.update(widthPixels=3840, heightPixels=2160)
+        preview = DRIVER.tool_result_content(self.result(self.image(png_header(1568, 882))), "screenshot")
+        self.assertEqual((preview["width"], preview["height"]), (1568, 882))
+
+    def test_screenshot_without_a_valid_preview_fails(self):
+        cases = {"one block": ((), "one text block and one PNG image block"),
+                 "not a PNG": ((self.image(b"GIF89a" + bytes(40)),), "not a PNG"),
+                 "too large": ((self.image(png_header(1600, 1200)),), "at most 1568"),
+                 "not base64": (({"type": "image", "mimeType": "image/png", "data": "@@@"},), "not base64"),
+                 "wrong type": (({"type": "image", "mimeType": "image/jpeg",
+                                  "data": base64.b64encode(png_header(10, 10)).decode()},), "not an image/png")}
+        for name, (blocks, message) in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(DRIVER.Failure, message):
+                DRIVER.tool_result_content(self.result(*blocks), "screenshot")
+
+    def test_preview_must_match_the_new_artifact_at_preview_scale(self):
+        self.artifact.update(widthPixels=3136, heightPixels=1536)
+        with self.assertRaisesRegex(DRIVER.Failure, "at preview scale is 1568x768"):
+            DRIVER.tool_result_content(self.result(self.image(png_header(1024, 768))), "screenshot")
+        self.artifact["id"] = str(uuid.uuid4())
+        with self.assertRaisesRegex(DRIVER.Failure, "artifact whose ID equals the request ID"):
+            DRIVER.tool_result_content(self.result(self.image(png_header(1568, 768))), "screenshot")
+
+    def test_other_tools_and_failed_screenshots_keep_exactly_one_text_block(self):
+        failed = {"version": 1, "id": self.request_id, "ok": False,
+                  "error": {"code": "target_not_found", "message": "List targets again."}}
+        self.assertIsNone(DRIVER.tool_result_content(self.result(structured=failed), "screenshot"))
+        self.assertIsNone(DRIVER.tool_result_content(self.result(), "targets.list"))
+        with self.assertRaisesRegex(DRIVER.Failure, "exactly one text block"):
+            DRIVER.tool_result_content(self.result(self.image(png_header(10, 10))), "targets.list")
+
+    def test_text_block_must_equal_structured_content(self):
+        result = self.result(self.image(png_header(1024, 768)))
+        result["content"][0]["text"] = json.dumps({**self.structured, "ok": False})
+        with self.assertRaisesRegex(DRIVER.Failure, "text and structured content differ"):
+            DRIVER.tool_result_content(result, "screenshot")
+
+    def test_logged_responses_keep_the_image_size_but_not_its_data(self):
+        message = {"jsonrpc": "2.0", "id": 4, "result": self.result(self.image(png_header(1024, 768)))}
+        logged = DRIVER.loggable(message)
+        self.assertEqual(logged["result"]["content"][0], message["result"]["content"][0])
+        self.assertRegex(logged["result"]["content"][1]["data"], r"^<\d+ base64 characters>$")
+        self.assertNotEqual(message["result"]["content"][1]["data"], logged["result"]["content"][1]["data"])
+
+
+class NestedFrameTests(unittest.TestCase):
+    def test_frame_has_a_big_endian_length_and_the_requested_depth(self):
+        request_id = str(uuid.uuid4()).upper()
+        frame = DRIVER.nested_frame(request_id, 400)
+        body = frame[4:]
+        self.assertEqual(int.from_bytes(frame[:4], "big"), len(body))
+        request = json.loads(body)
+        self.assertEqual((request["version"], request["id"], request["operation"]), (1, request_id, "targets.list"))
+        depth, value = 0, request["arguments"]["target"]
+        while isinstance(value, list):
+            depth += 1
+            value = value[0] if value else None
+        self.assertEqual(depth, 400)
+        self.assertLess(len(frame), 65_536)
 
 
 class FixtureGeometry(unittest.TestCase):
@@ -259,26 +384,32 @@ class StartupTests(unittest.TestCase):
         self.connected = False
         self.connect_failures = []
         self.running = {"exitCode": 0, "stdout": "5623\n"}
-        self.capabilities = {"access": {"enabled": False}}
+        self.capabilities = {"access": {"enabled": False},
+                             "storage": {"sessionCount": 3, "sessionLimit": 2048, "unreadableSessions": 0}}
         self.connection = mock.MagicMock()
         self.connection.__enter__.return_value = self.connection
         self.connection.connect.side_effect = self.connect
         self.socket = SimpleNamespace(AF_UNIX=1, SOCK_STREAM=1,
                                       socket=mock.Mock(return_value=self.connection))
         for patcher in (mock.patch.object(DRIVER, "socket", self.socket, create=True),
-                        mock.patch.object(DRIVER.os, "getuid", return_value=501, create=True),
                         mock.patch.object(DRIVER.time, "sleep")):
             patcher.start()
             self.addCleanup(patcher.stop)
 
     def connect(self, address):
-        expected = Path("/tmp").resolve() / "sharex-agent-501/agent.sock"
+        expected = Path("/var/folders/zz/abc123/T") / "sharex-agent" / "agent.sock"
         self.assertEqual(address, str(expected))
         if self.connect_failures:
             raise self.connect_failures.pop(0)
         self.connected = True
 
+    def cli_calls(self):
+        return [call for call in self.run.command.call_args_list if call.args[0][0] == self.run.binary]
+
     def command(self, command, **options):
+        if command[0] == "/usr/bin/getconf":
+            self.assertEqual(command, ["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"])
+            return {"exitCode": 0, "stdout": "/var/folders/zz/abc123/T/\n"}
         if command[0] == "/usr/bin/pgrep":
             self.assertEqual(command, ["/usr/bin/pgrep", "-x", "ShareX"])
             return self.running
@@ -294,35 +425,46 @@ class StartupTests(unittest.TestCase):
         self.run.launch.assert_called_once_with([self.run.binary, "--agent-background"], "app")
         self.assertEqual(self.connection.connect.call_count, 3)
         self.assertEqual(self.run.capabilities, self.capabilities)
-        self.assertEqual(sum(call.args[0][0] == self.run.binary for call in self.run.command.call_args_list), 1)
+        self.assertEqual(len(self.cli_calls()), 1)
         self.assertEqual(self.connection.__exit__.call_count, 3)
+
+    def test_endpoint_is_looked_up_once_across_app_restarts(self):
+        self.run.start_app()
+        self.run.start_app()
+        lookups = [call for call in self.run.command.call_args_list if call.args[0][0] == "/usr/bin/getconf"]
+        self.assertEqual(len(lookups), 1)
+
+    def test_capabilities_without_storage_counts_fail_startup(self):
+        del self.capabilities["storage"]
+        with self.assertRaisesRegex(DRIVER.Failure, "no storage object"):
+            self.run.start_app()
 
     def test_unavailable_endpoint_times_out_without_calling_the_cli(self):
         self.connection.connect.side_effect = ConnectionRefusedError()
         with mock.patch.object(DRIVER.time, "monotonic", side_effect=range(20)):
             with self.assertRaisesRegex(DRIVER.Failure, "Timed out waiting for agent socket"):
                 self.run.start_app()
-        self.run.command.assert_not_called()
+        self.assertEqual(self.cli_calls(), [])
         self.assertIsNone(self.run.capabilities)
 
     def test_owned_app_exit_stops_readiness_without_calling_the_cli(self):
         self.app.poll.return_value = 1
         with self.assertRaisesRegex(DRIVER.Failure, "exited during startup"):
             self.run.start_app()
-        self.run.command.assert_not_called()
+        self.assertEqual(self.cli_calls(), [])
 
     def test_unexpected_socket_error_is_not_retried(self):
         self.connection.connect.side_effect = PermissionError("Endpoint is not accessible")
         with self.assertRaisesRegex(PermissionError, "Endpoint is not accessible"):
             self.run.start_app()
         self.connection.connect.assert_called_once()
-        self.run.command.assert_not_called()
+        self.assertEqual(self.cli_calls(), [])
 
     def test_extra_app_blocks_capabilities_and_cleanup_only_stops_owned_children(self):
         self.running["stdout"] = "5623\n5626\n"
         with self.assertRaisesRegex(DRIVER.Failure, "only the owned ShareX app PID"):
             self.run.start_app()
-        self.assertTrue(all(call.args[0][0] == "/usr/bin/pgrep" for call in self.run.command.call_args_list))
+        self.assertEqual(self.cli_calls(), [])
         with mock.patch.object(DRIVER, "stop_process") as stop:
             self.assertEqual(self.run.cleanup(failed=True), [])
         stop.assert_called_once_with(self.app)
@@ -331,7 +473,7 @@ class StartupTests(unittest.TestCase):
         self.running = {"exitCode": 2, "stdout": ""}
         with self.assertRaisesRegex(DRIVER.Failure, "only the owned ShareX app PID"):
             self.run.start_app()
-        self.assertTrue(all(call.args[0][0] == "/usr/bin/pgrep" for call in self.run.command.call_args_list))
+        self.assertEqual(self.cli_calls(), [])
 
     def test_app_spawned_by_capabilities_cannot_pass_startup(self):
         def command(arguments, **options):
