@@ -903,9 +903,10 @@ class Run:
             try:
                 self.quit_app()
                 self.start_app()
-                counts = storage_counts(self.capabilities)
-                require(counts["unreadableSessions"] >= 1, "Capabilities do not count the session folder with mode 755.")
+                # ShareX counts unreadable folders when storage starts. Capabilities does not start storage.
                 self.cli("targets.list")
+                counts = storage_counts(self.cli("capabilities"))
+                require(counts["unreadableSessions"] >= 1, "Capabilities do not count the session folder with mode 755.")
                 failure = self.cli("recording.status", {"sessionID": finished}, error="storage_failed")
                 require(str(directory) in failure["message"], "storage_failed does not name the unreadable session folder.")
             finally:
