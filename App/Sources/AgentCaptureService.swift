@@ -50,6 +50,18 @@ final class AgentCaptureService {
         if current != storage { storage = current }
     }
 
+    func oldCaptureCount() async -> Int {
+        do { try await startStorage() } catch { return 0 }
+        await refreshStorage()
+        return await sessions.oldCaptureCount()
+    }
+
+    func deleteOldCaptures() async {
+        do { try await startStorage() } catch { return }
+        await sessions.deleteOldCaptures()
+        await refreshStorage()
+    }
+
     func setEnabled(_ value: Bool) {
         enabled = value
         UserDefaults.standard.set(value, forKey: Self.enabledDefaultsKey)
