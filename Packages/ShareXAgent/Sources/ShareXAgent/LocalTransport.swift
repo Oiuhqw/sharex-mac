@@ -157,6 +157,7 @@ public final class LocalAgentServer: @unchecked Sendable {
                     try configureSocket(client)
                     try verifyPeer(client)
                     let data = try readFrame(client, maximum: CaptureLimits().maxRequestBytes, deadline: Deadline(seconds: 5))
+                    guard JSONDepth.isWithinLimit(data) else { return }
                     let request = try JSONDecoder().decode(AgentRequest.self, from: data)
                     let response: AgentResponse
                     do {

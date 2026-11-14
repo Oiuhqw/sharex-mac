@@ -30,6 +30,9 @@ public final class MCPServer {
     }
 
     public func handle(_ data: Data) -> JSONValue? {
+        guard JSONDepth.isWithinLimit(data) else {
+            return rpcError(.null, -32600, "Send UTF-8 JSON with at most \(JSONDepth.limit) nested levels.")
+        }
         let value: JSONValue
         do { value = try JSONDecoder().decode(JSONValue.self, from: data) }
         catch { return rpcError(.null, -32700, "Invalid JSON.") }
