@@ -14,6 +14,9 @@ actor CaptureSessions {
     private let maximumRequests = 20_000
     private var unreadable: Set<UUID> = []
     private var requestCount = 0
+    // The session IDs as listed when the root folder had this modification date. A filesystem can store coarse dates,
+    // so a method that adds or removes a session folder must clear this value and not rely on a new date.
+    private var listing: (modified: Date, ids: [UUID])?
 
     init() {
         root = fileManager.homeDirectoryForCurrentUser
@@ -41,6 +44,7 @@ actor CaptureSessions {
         try checkReserve()
         let directory = directory(session.id)
         guard mkdir(directory.path, 0o700) == 0 else { throw storageError("Cannot create the session directory") }
+        listing = nil
         try Self.syncDirectory(root)
         try save(session)
     }
@@ -136,6 +140,7 @@ actor CaptureSessions {
 
     func deleteOldCaptures(_ ids: [UUID]) {
         for id in ids where isOldCapture(id) { try? fileManager.removeItem(at: directory(id)) }
+        listing = nil
     }
 
     nonisolated static func publishPNG(_ png: Data, at partial: URL, width: Int, height: Int) throws -> (URL, Int64, String) {
@@ -195,8 +200,15 @@ actor CaptureSessions {
     }
 
     private func sessionIDs() throws -> [UUID] {
-        do { return try fileManager.contentsOfDirectory(atPath: root.path).compactMap { UUID(uuidString: $0) } }
-        catch { throw AgentFailure(.storageFailed, "Cannot list the session folder \(root.path): \(error.localizedDescription)") }
+        // The date is read before the list. A change between the two reads then makes the next call list again.
+        let modified = try? fileManager.attributesOfItem(atPath: root.path)[.modificationDate] as? Date
+        if let modified, let listing, listing.modified == modified { return listing.ids }
+        listing = nil
+        do {
+            let ids = try fileManager.contentsOfDirectory(atPath: root.path).compactMap { UUID(uuidString: $0) }
+            if let modified { listing = (modified, ids) }
+            return ids
+        } catch { throw AgentFailure(.storageFailed, "Cannot list the session folder \(root.path): \(error.localizedDescription)") }
     }
 
     private func isOldCapture(_ id: UUID) -> Bool { (try? load(id))?.isOldCapture() ?? false }
