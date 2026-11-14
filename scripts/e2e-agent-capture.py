@@ -740,10 +740,10 @@ class Run:
                     raise Failure("The app kept the connection open after a frame nested 400 levels deep.") from problem
             require(reply == b"", "The app replied to a frame nested beyond 32 levels. It must close without a reply.")
             time.sleep(0.5)
-            self.require_owned_app()
+            require(self.app.poll() is None, "The installed ShareX app exited after a nested socket frame.")
             require(self.cli("capabilities")["access"] == self.capabilities["access"],
                     "The app does not answer capabilities after a nested socket frame.")
-            self.require_owned_app()
+            require(self.app.poll() is None, "The installed ShareX app exited after it answered capabilities.")
             step.update(frameBytes=len(frame), depth=400, pid=pid)
         for mode, caller in (("window", self.cli), ("display", client.call), ("region", self.cli)):
             with self.evidence.step(f"real_{mode}_png_and_no_interactive_side_effects"):

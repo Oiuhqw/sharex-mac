@@ -226,6 +226,13 @@ class ClientCheckTests(unittest.TestCase):
         self.assertEqual(DRIVER.tool_result_images(body), 1)
         self.assertEqual(DRIVER.tool_result_images(["unexpected"]), 0)
 
+    def test_tool_result_envelope_reads_past_the_image_note_claude_code_prints(self):
+        printed = '[Image: source: /tmp/claude-home/tool-results/mcp-sharex-blob-1.png]{"ok":true,"result":{"id":"A"}}'
+        self.assertEqual(DRIVER.tool_result_envelope(printed), {"ok": True, "result": {"id": "A"}})
+        self.assertEqual(DRIVER.tool_result_envelope('{"ok":false}'), {"ok": False})
+        with self.assertRaises(DRIVER.NATIVE.Failure):
+            DRIVER.tool_result_envelope("[Image: source: /tmp/x.png]")
+
 
 class BoundedProtocolTests(unittest.TestCase):
     def exercise(self, source, action):

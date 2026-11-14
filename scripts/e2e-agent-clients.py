@@ -115,6 +115,13 @@ def claude_tool_exchange(stream):
     return calls, results
 
 
+def tool_result_envelope(text):
+    # Claude Code prints "[Image: source: <file>]" before the text of a result that carries an image block.
+    start = text.find("{")
+    require(start >= 0, f"A ShareX tool result holds no JSON response: {text[:200]}")
+    return json.JSONDecoder().raw_decode(text, start)[0]
+
+
 def isolated_environment(directory):
     directory.mkdir()
     allowed = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "SYSTEMDRIVE",
@@ -404,8 +411,8 @@ class Run(NATIVE.Run):
                     f"A ShareX tool call through Claude Code failed: {results}.")
             require(calls[1]["input"] == {"target": self.window_target["token"]},
                     "The scripted model did not pick the evaluation window token from targets_list.")
-            NATIVE.decode_response(json.loads(results[0]["text"]))
-            session = NATIVE.decode_response(json.loads(results[1]["text"]))
+            NATIVE.decode_response(tool_result_envelope(results[0]["text"]))
+            session = NATIVE.decode_response(tool_result_envelope(results[1]["text"]))
             self.owned_session_ids.add(session["id"])
             require(session["state"] == "completed", "The model-driven screenshot did not complete.")
             step["media"] = self.validate_media(session, "window", "screenshot", [0])
