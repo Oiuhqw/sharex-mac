@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Exercise installed Release capture through actual Codex and Claude Code tools.
+"""Exercise installed Release capture through actual Codex and Claude Code clients.
 
-Codex routes ShareX MCP calls through an ephemeral app-server thread. Claude Code
-exposes its real Bash tool through `--bare mcp serve` and executes the ShareX CLI.
-No prompt, model turn, API credential, or inference is used. This does not test
-LLM tool selection. Requires the same native desktop prerequisites as the media
-evaluation. Exit codes: 0 passed, 1 failed, 3 blocked.
+Each client runs the exact registration command that Settings copies. Codex routes
+ShareX MCP calls through an ephemeral app-server thread and its registered sharex
+entry. Claude Code exposes its real Bash tool through `--bare mcp serve` and runs
+the ShareX CLI. A scripted model stand-in on loopback then drives Claude Code to
+call targets_list and screenshot through MCP, and records the tool names that each
+client offers a model. No real model request and no credential is used, so this
+does not test how a real model selects tools. Requires the same native desktop
+prerequisites as the media evaluation. Exit codes: 0 passed, 1 failed, 3 blocked.
 """
 
 import argparse
@@ -25,15 +28,91 @@ import traceback
 import uuid
 
 
-SPEC = importlib.util.spec_from_file_location("agent_capture_e2e", Path(__file__).with_name("e2e-agent-capture.py"))
-NATIVE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(NATIVE)
+def load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(filename))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+NATIVE = load("agent_capture_e2e", "e2e-agent-capture.py")
+STANDIN = load("agent_model_standin", "agent-model-standin.py")
+STANDIN_SCRIPT = Path(__file__).with_name("agent-model-standin.py")
 Failure, Blocked, require = NATIVE.Failure, NATIVE.Blocked, NATIVE.require
 VERSIONS = {"codex": "codex-cli 0.169.0", "claude": "2.1.323 (Claude Code)"}
 SOURCES = ["https://learn.chatgpt.com/docs/app-server",
            "https://code.claude.com/docs/en/mcp#use-claude-code-as-an-mcp-server",
            "https://registry.npmjs.org/@openai/codex/0.169.0",
            "https://registry.npmjs.org/@anthropic-ai/claude-code/2.1.323"]
+SERVER = "sharex"
+EXPECTED_TOOLS = {"claude": {f"mcp__{SERVER}__{NATIVE.tool_name(operation)}" for operation in NATIVE.OPERATIONS},
+                  "codex": {f"mcp__{SERVER}/{NATIVE.tool_name(operation)}" for operation in NATIVE.OPERATIONS}}
+MODEL_REQUESTS = "model-requests.jsonl"
+STANDIN_KEY = "SHAREX_STANDIN_KEY"
+STANDIN_PROMPT = "List ShareX capture targets, then take one screenshot of the evaluation window."
+
+
+def client_registration(client, client_path, binary):
+    return [str(client_path), *shlex.split(NATIVE.registration_command(client, binary))[1:]]
+
+
+def codex_config(registered, standin_port=None):
+    top = ['cli_auth_credentials_store = "file"']
+    tables = ["[analytics]", "enabled = false", "[feedback]", "enabled = false", "[history]", 'persistence = "none"']
+    if standin_port is not None:
+        top += ['model = "standin-model"', 'model_provider = "standin"']
+        tables += ["[model_providers.standin]", 'name = "standin"',
+                   f'base_url = "http://{STANDIN.LOOPBACK}:{standin_port}/v1"', 'wire_api = "responses"',
+                   f'env_key = "{STANDIN_KEY}"', "request_max_retries = 0", "stream_max_retries = 0"]
+    return "\n".join([*top, registered.strip(), *tables]) + "\n"
+
+
+def offered_sharex_tools(bodies):
+    names = set()
+    for body in bodies:
+        tools = body.get("tools") if isinstance(body, dict) else None
+        for tool in tools if isinstance(tools, list) else []:
+            if not isinstance(tool, dict) or SERVER not in str(tool.get("name", "")).lower():
+                continue
+            if tool.get("type") == "namespace":
+                names.update(f"{tool['name']}/{member.get('name')}" for member in tool.get("tools", [])
+                             if isinstance(member, dict))
+            else:
+                names.add(tool["name"])
+    return names
+
+
+def tool_result_images(body):
+    count = 0
+    for message in body.get("messages", []) if isinstance(body, dict) else []:
+        content = message.get("content") if isinstance(message, dict) else None
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_result" and isinstance(block.get("content"), list):
+                count += sum(isinstance(part, dict) and part.get("type") == "image" for part in block["content"])
+    return count
+
+
+def claude_tool_exchange(stream):
+    calls, results = [], []
+    for line in stream.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict) or event.get("type") not in ("assistant", "user"):
+            continue
+        content = (event.get("message") or {}).get("content")
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                calls.append({"name": block.get("name"), "input": block.get("input")})
+            elif block.get("type") == "tool_result":
+                inner = block.get("content")
+                text = inner if isinstance(inner, str) else "".join(
+                    part.get("text", "") for part in inner or [] if isinstance(part, dict))
+                results.append({"isError": bool(block.get("is_error")), "text": text})
+    return calls, results
 
 
 def isolated_environment(directory):
@@ -59,6 +138,13 @@ def isolated_environment(directory):
         if git_bash.is_file():
             environment["CLAUDE_CODE_GIT_BASH_PATH"] = str(git_bash)
     return environment
+
+
+def registered_claude_environment(environment):
+    # Simple (bare) mode does not load MCP servers that `claude mcp add` registered.
+    registered = {key: value for key, value in environment.items() if key != "CLAUDE_CODE_SIMPLE"}
+    registered["DISABLE_TELEMETRY"] = "1"
+    return registered
 
 
 def close_client(process):
@@ -169,7 +255,7 @@ class Codex(ClientRPC):
         require(thread["ephemeral"] is True and thread.get("path") is None and thread["turns"] == [],
                 "Codex must use an ephemeral thread with no model turns.")
         self.thread_id = thread["id"]
-        catalog = self.rpc("mcpServerStatus/list", {"threadId": self.thread_id, "serverName": "sharex_evaluation",
+        catalog = self.rpc("mcpServerStatus/list", {"threadId": self.thread_id, "serverName": SERVER,
                                                     "detail": "toolsAndAuthOnly", "limit": 1})["data"]
         require(len(catalog) == 1 and set(catalog[0]["tools"]) == {NATIVE.tool_name(op) for op in NATIVE.OPERATIONS}
                 and catalog[0].get("toolsError") is None, "Codex did not discover all eight ShareX tools.")
@@ -178,7 +264,7 @@ class Codex(ClientRPC):
     def call(self, operation, arguments=None, request_id=None):
         request_id = request_id or str(uuid.uuid4())
         self.run.track_request(operation, arguments or {}, request_id)
-        result = self.rpc("mcpServer/tool/call", {"threadId": self.thread_id, "server": "sharex_evaluation",
+        result = self.rpc("mcpServer/tool/call", {"threadId": self.thread_id, "server": SERVER,
                                                  "tool": NATIVE.tool_name(operation),
                                                  "arguments": {**(arguments or {}), "requestID": request_id}})
         self.calls += 1
@@ -243,13 +329,91 @@ class Run(NATIVE.Run):
             step["versions"] = VERSIONS
             step["sources"] = SOURCES
         super().preflight()
-        config = '\n'.join(['cli_auth_credentials_store = "file"', '[analytics]', 'enabled = false',
-                            '[feedback]', 'enabled = false', '[history]', 'persistence = "none"',
-                            '[mcp_servers.sharex_evaluation]', f'command = {json.dumps(str(self.binary))}',
-                            'args = ["--agent", "mcp"]', 'startup_timeout_sec = 15', 'tool_timeout_sec = 20']) + '\n'
-        (Path(self.environment["CODEX_HOME"]) / "config.toml").write_text(config, encoding="utf-8")
+
+    def client_command(self, command, environment=None, timeout=90, check=True):
+        return self.command(command, timeout=timeout, check=check,
+                            env=environment or self.environment, cwd=self.client_home)
+
+    def start_model_standin(self):
+        ready = self.evidence.directory / "model-standin.json"
+        self.launch([sys.executable, STANDIN_SCRIPT, "--capture", self.evidence.directory / MODEL_REQUESTS,
+                     "--ready", ready, "--target-name", self.geometry["title"]], "model-standin")
+        address = self.wait_for(lambda: json.loads(ready.read_text(encoding="utf-8")) if ready.is_file() else None,
+                                10, "model stand-in address")
+        require(address["host"] == STANDIN.LOOPBACK, "The model stand-in is not bound to loopback.")
+        return address["port"]
+
+    def model_requests(self, path_suffix):
+        return STANDIN.recorded_bodies(self.evidence.directory / MODEL_REQUESTS, path_suffix)
+
+    def register_clients(self):
+        with self.evidence.step("settings_registration_commands_run_in_each_client") as step:
+            claude_environment = registered_claude_environment(self.environment)
+            for client in ("claude", "codex"):
+                command = client_registration(client, self.client_paths[client], self.binary.resolve())
+                added = self.client_command(command, claude_environment if client == "claude" else None, timeout=60)
+                step[client] = {"command": command, "stdout": added["stdout"][-400:]}
+            listed = self.client_command([self.client_paths["claude"], "mcp", "list"], claude_environment)
+            line = next((line for line in listed["stdout"].splitlines() if line.startswith(SERVER)), "")
+            require("Connected" in line and "Failed" not in line,
+                    f"claude mcp list does not report the ShareX server connected: {line or listed['stdout'][-400:]}")
+            step["claudeList"] = line
+            listed = self.client_command([self.client_paths["codex"], "mcp", "list"])
+            require(any(line.split()[:1] == [SERVER] for line in listed["stdout"].splitlines()),
+                    f"codex mcp list does not show the ShareX server: {listed['stdout'][-400:]}")
+            config = Path(self.environment["CODEX_HOME"]) / "config.toml"
+            self.codex_registration = config.read_text(encoding="utf-8")
+            require(f"[mcp_servers.{SERVER}]" in self.codex_registration,
+                    "codex mcp add did not write a sharex server entry.")
+            config.write_text(codex_config(self.codex_registration), encoding="utf-8")
+            step["codexRegistration"] = self.codex_registration
+
+    def codex_offered_tools(self, port):
+        with self.evidence.step("codex_offers_the_sharex_tools_to_a_model") as step:
+            config = Path(self.environment["CODEX_HOME"]) / "config.toml"
+            config.write_text(codex_config(self.codex_registration, port), encoding="utf-8")
+            environment = dict(self.environment, **{STANDIN_KEY: "standin-not-a-credential"})
+            ran = self.client_command([self.client_paths["codex"], "exec", "--skip-git-repo-check", "--sandbox",
+                                       "read-only", "List ShareX capture targets."], environment, timeout=120, check=False)
+            bodies = self.model_requests("/responses")
+            require(bool(bodies), "Codex sent no request to the model stand-in.")
+            offered = offered_sharex_tools(bodies)
+            require(offered == EXPECTED_TOOLS["codex"],
+                    f"Codex offers {sorted(offered)}. Expected {sorted(EXPECTED_TOOLS['codex'])}.")
+            step.update(exitCode=ran["exitCode"], requests=len(bodies), tools=sorted(offered))
+
+    def claude_model_screenshot(self, port):
+        with self.evidence.step("claude_model_calls_sharex_tools_through_mcp") as step:
+            self.control("stage", stage=0)
+            environment = dict(registered_claude_environment(self.environment),
+                               ANTHROPIC_BASE_URL=f"http://{STANDIN.LOOPBACK}:{port}",
+                               ANTHROPIC_API_KEY="sk-ant-standin-not-a-credential", ENABLE_TOOL_SEARCH="false")
+            ran = self.client_command([self.client_paths["claude"], "-p", STANDIN_PROMPT, "--output-format", "stream-json",
+                                       "--verbose", "--allowedTools", f"mcp__{SERVER}", "--max-turns", "5"],
+                                      environment, timeout=180, check=False)
+            bodies = self.model_requests("/v1/messages")
+            offered = offered_sharex_tools(bodies)
+            require(offered == EXPECTED_TOOLS["claude"],
+                    f"Claude Code offers {sorted(offered)}. Expected {sorted(EXPECTED_TOOLS['claude'])}.")
+            calls, results = claude_tool_exchange(ran["stdout"])
+            step.update(exitCode=ran["exitCode"], requests=len(bodies), tools=sorted(offered), calls=calls,
+                        imageBlocksSentToModel=max(map(tool_result_images, bodies)))
+            require([call["name"] for call in calls] == [f"mcp__{SERVER}__targets_list", f"mcp__{SERVER}__screenshot"],
+                    f"Claude Code did not call targets_list and then screenshot: {calls}.")
+            require(len(results) == 2 and not any(result["isError"] for result in results),
+                    f"A ShareX tool call through Claude Code failed: {results}.")
+            require(calls[1]["input"] == {"target": self.window_target["token"]},
+                    "The scripted model did not pick the evaluation window token from targets_list.")
+            NATIVE.decode_response(json.loads(results[0]["text"]))
+            session = NATIVE.decode_response(json.loads(results[1]["text"]))
+            self.owned_session_ids.add(session["id"])
+            require(session["state"] == "completed", "The model-driven screenshot did not complete.")
+            step["media"] = self.validate_media(session, "window", "screenshot", [0])
+            self.validate_manifest(session)
+            self.unchanged()
 
     def stories(self):
+        self.register_clients()
         for name, client_type, suffix in (("codex", Codex, ["app-server", "--listen", "stdio://"]),
                                           ("claude", Claude, ["--bare", "mcp", "serve"])):
             with self.evidence.step(f"{name}_capabilities_and_discovery") as step:
@@ -293,6 +457,9 @@ class Run(NATIVE.Run):
                 self.unchanged()
                 step["toolCalls"] = client.calls
                 client.close()
+        port = self.start_model_standin()
+        self.codex_offered_tools(port)
+        self.claude_model_screenshot(port)
 
 
 def main():
@@ -335,15 +502,19 @@ def main():
         if errors:
             status, code, reason = "failed", 1, "Cleanup failed: " + "; ".join(errors)
         report = {"schemaVersion": 1, "status": status, "reason": reason,
-                  "scope": "Actual Codex MCP routing and Claude Code Bash CLI execution; no LLM selection or inference.",
+                  "scope": "Settings registration commands in both clients, Codex MCP routing through its registered "
+                           "sharex entry, Claude Code Bash CLI execution, and Claude Code MCP calls driven by a "
+                           "scripted loopback model stand-in. No real model request and no credential.",
                   "durationSeconds": time.monotonic() - evidence.start, "steps": evidence.steps,
                   "statistics": {"passedSteps": sum(step["status"] == "passed" for step in evidence.steps),
                                  "failedSteps": sum(step["status"] == "failed" for step in evidence.steps),
                                  "blockedSteps": sum(step["status"] == "blocked" for step in evidence.steps),
                                  "sessions": len(run.sessions), "artifacts": sum(item["artifacts"] for item in run.sessions),
-                                 "clientToolCalls": sum(client.calls for client in run.clients), "modelTurns": 0},
+                                 "clientToolCalls": sum(client.calls for client in run.clients),
+                                 "standinModelRequests": len(STANDIN.recorded_bodies(output / MODEL_REQUESTS, ""))},
                   "sessions": run.sessions, "sources": SOURCES,
-                  "remainingValidation": ["LLM selection of tools from a natural-language prompt is outside this credential-free check."]}
+                  "remainingValidation": ["Tool selection by a real model from a natural-language prompt. "
+                                          "The stand-in model follows a fixed script."]}
         NATIVE.write_json(output / "result.json", report)
         evidence.emit("run_finished", status=status, reason=reason, exitCode=code)
         evidence.events.close()
