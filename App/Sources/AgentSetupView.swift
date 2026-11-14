@@ -89,11 +89,11 @@ struct AgentSetupView: View {
                     .accessibilityIdentifier("settings.agents.sessionRoot")
                 Text("Each session contains PNG screenshots, a silent H.264 MP4 when recorded, and a JSON manifest with file hashes. Agent capture does not open the editor or change your clipboard.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text(verbatim: "\(service.storage.sessionCount) captures stored")
+                Text(verbatim: "\(Self.captures(service.storage.sessionCount)) stored")
                     .font(.callout).accessibilityIdentifier("settings.agents.storage")
                 if let count = oldCaptures {
                     HStack {
-                        Text(verbatim: "Delete \(count) captures older than \(CaptureSession.oldCaptureDays) days?")
+                        Text(verbatim: "Delete \(Self.captures(count)) older than \(CaptureSession.oldCaptureDays) days?")
                             .accessibilityIdentifier("settings.agents.deleteOld.prompt")
                         Button("Delete", role: .destructive) { deleteOldCaptures() }
                             .accessibilityIdentifier("settings.agents.deleteOld.confirm")
@@ -109,6 +109,8 @@ struct AgentSetupView: View {
         .onAppear { refresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
     }
+
+    private static func captures(_ count: Int) -> String { count == 1 ? "1 capture" : "\(count) captures" }
 
     private func refresh() {
         permissionGranted = Permissions.hasScreenRecording
