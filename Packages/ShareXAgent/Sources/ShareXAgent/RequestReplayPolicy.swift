@@ -12,6 +12,7 @@ public enum RequestReplayPolicy {
         }
     }
 
+    /// A success is always replayed. A failure is replayed only when the request left durable state under its own ID.
     /// - Parameters:
     ///   - requestSessionExists: A session folder with the request ID as its name is on disk.
     ///   - targetSession: The manifest of `targetSession(of:)`, when it loads.

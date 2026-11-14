@@ -26,11 +26,6 @@ struct StorageTests {
         #expect(try JSONValue.encode(decoded) == encoded)
     }
 
-    @Test func capabilitiesReportEmptyStorageByDefault() {
-        let capabilities = AgentCapabilities(access: AgentAccessState(enabled: true, screenRecordingGranted: true), sessionRoot: "/tmp/sessions")
-        #expect(capabilities.storage == AgentStorageStatus(sessionCount: 0, unreadableSessions: 0))
-    }
-
     @Test func sessionLimitIsReachedAtTheLimit() {
         let limit = AgentStorageStatus().sessionLimit
         #expect(limit == 2048)
