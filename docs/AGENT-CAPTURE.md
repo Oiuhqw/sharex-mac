@@ -95,7 +95,7 @@ REQUEST_ID="$(uuidgen)"
 
 ShareX stores a result for a request ID only when the request created a session or an artifact. If ShareX refuses a request before work begins, it stores nothing for that ID. Examples are `busy`, `permission_denied`, `disk_full`, `limit_reached`, and a `target_not_found` that occurs before capture starts. Correct the cause, then retry with the same request ID. The request then runs.
 
-ShareX keeps a request record for 7 days. The first ShareX start after that time removes the record and its stored result. After the removal, a request ID that created a session returns `request_conflict` with any arguments while that session is stored. ShareX does not change the session. Use a new request ID for new work.
+ShareX keeps a request record for 7 days. The first ShareX start after that time removes the record and its stored result. After the removal, a capture command (`screenshot`, `recording start`, `recording stop`, or `session mark`) that reuses a request ID that created a session returns `request_conflict` while that session is stored. ShareX does not change the session. Use a new request ID for new work.
 
 If ShareX accepted a request and an app restart interrupted it, the request ID returns `interrupted`. That request never runs again. Use a new request ID for new work.
 
@@ -130,7 +130,7 @@ ShareX limits the number of stored sessions. `capabilities` reports the counts i
 
 - `sessionCount` is the number of stored sessions.
 - `sessionLimit` is the maximum number of sessions.
-- `unreadableSessions` is the number of session folders that ShareX skipped. ShareX counts these folders at the first command other than `capabilities` after it starts. Before that command, the value is 0.
+- `unreadableSessions` is the number of session folders that ShareX skipped. ShareX counts these folders when storage starts. Storage starts at the first capture command while agent access is on, or when you press **Delete Old Captures…** in Settings. Before that, the value is 0.
 
 When the limit is reached, a new capture returns `limit_reached`. Delete old captures in Settings, or delete session folders in the session root yourself. ShareX counts the folders on disk at each check, so you do not need to restart it.
 
@@ -151,7 +151,7 @@ If a session folder has the wrong mode, the wrong owner, or a bad manifest, Shar
 | `disk_full` | Free disk space, then retry. The same request ID works when the failure occurs before capture starts. If the failure occurs later, ShareX stores it, so use a new request ID. |
 | `storage_failed` | Read the folder path in the message. Make sure that your user owns the folder and that its mode is 700, for example with `chmod 700 '/path/from/message'`. Then retry. Other sessions keep working. |
 | `interrupted` | Preserve the failed session as incomplete evidence and start a new capture. |
-| `startup_timeout` with the message `ShareX did not become available.`, after an update from version 0.2.0, build 8 | Quit ShareX and open it again. The app that started before the update listens at the old socket location, and the CLI and MCP modes of the updated app cannot reach it. |
+| `startup_timeout` with the message `ShareX did not become available.`, after an update from a build that used the socket in `/tmp` | Quit ShareX and open it again. The app that started before the update listens at the old socket location, and the CLI and MCP modes of the updated app cannot reach it. |
 
 Screen Recording permission belongs to the installed app and its signature. Replacing an ad-hoc signed build can require a new permission grant. An SSH session or a machine without a logged-in graphical desktop is not a screen-capture host.
 
