@@ -28,3 +28,12 @@ enum JSONDepth {
         return true
     }
 }
+
+extension JSONDecoder {
+    /// JSONDecoder in swift-foundation 6.0 traps on a malformed object key. JSONSerialization throws for the same
+    /// bytes, so it reads them first. Call `JSONDepth.isWithinLimit` before this function.
+    func decodeUntrusted<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        _ = try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
+        return try decode(type, from: data)
+    }
+}

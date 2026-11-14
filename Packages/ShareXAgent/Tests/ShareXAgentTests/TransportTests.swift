@@ -133,13 +133,19 @@ struct TransportTests {
         defer { server.stop() }
         let utf16 = try #require(nestedRequest(key: #"a\""#, depth: 400).data(using: .utf16LittleEndian))
         for body in [Data(nestedRequest(depth: 33).utf8), Data(nestedRequest(depth: 400).utf8), utf16] {
-            let descriptor = try rawConnection(endpoint)
-            defer { close(descriptor) }
-            let bytes = frame(body)
-            #expect(bytes.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) } == bytes.count)
-            var byte: UInt8 = 0
-            #expect(read(descriptor, &byte, 1) == 0)
-            #expect(try LocalAgentClient(endpoint: endpoint).send(AgentRequest(operation: .capabilities)).ok)
+            try expectClosedWithoutReply(body, endpoint)
+        }
+    }
+
+    @Test func framesWithMalformedObjectKeysCloseWithoutReplyAndTheListenerKeepsServing() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let endpoint = AgentEndpoint(directory: root.path)
+        let server = try LocalAgentServer(endpoint: endpoint) { .success($0.id, .object([:])) }
+        defer { server.stop() }
+        try expectClosedWithoutReply(Data(#"{"\q":1}"#.utf8), endpoint)
+        for key in malformedKeys {
+            try expectClosedWithoutReply(Data(#"{"version":1,"id":"\#(UUID().uuidString)","operation":"capabilities","arguments":{""#.utf8) + key + Data(#"":1}}"#.utf8), endpoint)
         }
     }
 
@@ -199,6 +205,16 @@ private func nestedRequest(key: String = "a", depth: Int) -> String {
 
 private func frame(_ body: Data) -> [UInt8] {
     withUnsafeBytes(of: UInt32(body.count).bigEndian) { Array($0) } + body
+}
+
+private func expectClosedWithoutReply(_ body: Data, _ endpoint: AgentEndpoint) throws {
+    let descriptor = try rawConnection(endpoint)
+    defer { close(descriptor) }
+    let bytes = frame(body)
+    #expect(bytes.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) } == bytes.count)
+    var byte: UInt8 = 0
+    #expect(read(descriptor, &byte, 1) == 0)
+    #expect(try LocalAgentClient(endpoint: endpoint).send(AgentRequest(operation: .capabilities)).ok)
 }
 
 private func readToEnd(_ descriptor: Int32) -> [UInt8] {

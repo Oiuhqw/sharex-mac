@@ -34,7 +34,7 @@ public final class MCPServer {
             return rpcError(.null, -32600, "Send UTF-8 JSON with at most \(JSONDepth.limit) nested levels.")
         }
         let value: JSONValue
-        do { value = try JSONDecoder().decode(JSONValue.self, from: data) }
+        do { value = try JSONDecoder().decodeUntrusted(JSONValue.self, from: data) }
         catch { return rpcError(.null, -32700, "Invalid JSON.") }
         guard case .object(let object) = value, object["jsonrpc"] == .string("2.0"), case .string(let method) = object["method"] else {
             return rpcError(.null, -32600, "Expected a JSON-RPC 2.0 request.")
