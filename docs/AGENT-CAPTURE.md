@@ -1,6 +1,6 @@
 # Capture screenshots and video from agents
 
-Agent capture is available in version 0.2.0, build 8. Native validation and client compatibility evidence identify the tested build in the [validation report](AGENT-CAPTURE-VALIDATION.md). The release notes identify the final package and checksum.
+This guide describes agent capture in version 0.2.1, build 9. Native validation and client compatibility evidence identify the tested build in the [validation report](AGENT-CAPTURE-VALIDATION.md). The release notes identify the final package and checksum.
 
 ShareX can save PNG screenshots and silent H.264 MP4 recordings of a display, window, or rectangular display region. Claude Code and Codex use the same capture service through MCP. Scripts can use the command line. The menu-bar app owns each recording, so closing a command or reconnecting an agent does not end it.
 
@@ -151,7 +151,7 @@ If a session folder has the wrong mode, the wrong owner, or a bad manifest, Shar
 | `disk_full` | Free disk space, then retry. The same request ID works when the failure occurs before capture starts. If the failure occurs later, ShareX stores it, so use a new request ID. |
 | `storage_failed` | Read the folder path in the message. Make sure that your user owns the folder and that its mode is 700, for example with `chmod 700 '/path/from/message'`. Then retry. Other sessions keep working. |
 | `interrupted` | Preserve the failed session as incomplete evidence and start a new capture. |
-| `startup_timeout` with the message `ShareX did not become available.`, after an update from a build that used the socket in `/tmp` | Quit ShareX and open it again. The app that started before the update listens at the old socket location, and the CLI and MCP modes of the updated app cannot reach it. |
+| `startup_timeout` with the message `ShareX did not become available.`, after an update from version 0.2.0 | Quit ShareX and open it again. The app that started before the update listens at the old socket location, and the CLI and MCP modes of the updated app cannot reach it. |
 
 Screen Recording permission belongs to the installed app and its signature. Replacing an ad-hoc signed build can require a new permission grant. An SSH session or a machine without a logged-in graphical desktop is not a screen-capture host.
 
