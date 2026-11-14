@@ -75,8 +75,17 @@ actor CaptureSessions {
         requestCount += 1
     }
 
-    func complete(_ request: AgentRequest, response: AgentResponse) throws {
-        try atomicJSON(RequestRecord(request: request, response: response), to: requestURL(request.id))
+    func settle(_ request: AgentRequest, command: AgentCommand, response: AgentResponse) throws {
+        var status = stat()
+        let keeps = RequestReplayPolicy.keepsResponse(response, to: command,
+            requestSessionExists: lstat(directory(request.id).path, &status) == 0,
+            targetSession: RequestReplayPolicy.targetSession(of: command).flatMap { try? load($0) })
+        if keeps {
+            try atomicJSON(RequestRecord(request: request, response: response), to: requestURL(request.id))
+        } else {
+            guard unlink(requestURL(request.id).path) == 0 || errno == ENOENT else { throw storageError("Cannot discard the request record") }
+            requestCount -= 1
+        }
     }
 
     func artifactURL(sessionID: UUID, artifactID: UUID, extension suffix: String) throws -> URL {

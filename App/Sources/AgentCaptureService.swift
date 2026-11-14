@@ -85,7 +85,7 @@ final class AgentCaptureService {
                 do { response = .success(request.id, try await run(command, requestID: request.id)) }
                 catch { response = .failure(request.id, Self.failure(error)) }
                 do {
-                    try await sessions.complete(request, response: response)
+                    try await sessions.settle(request, command: command, response: response)
                     return response
                 } catch {
                     return .failure(request.id, Self.failure(error, defaultCode: .storageFailed))
