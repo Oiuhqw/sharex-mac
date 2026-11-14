@@ -168,13 +168,15 @@ class ManifestDateTests(unittest.TestCase):
 
     def test_aged_manifest_ends_forty_days_ago_and_keeps_its_order(self):
         manifest = {"id": "A", "state": "completed", "createdAt": 816337908.33,
-                    "startedAt": 816337908.34, "endedAt": 816337908.47, "artifacts": [{"createdAt": 1.0}]}
+                    "startedAt": 816337908.34, "endedAt": 816337908.47,
+                    "artifacts": [{"id": "B", "createdAt": 816337908.4}]}
         aged = DRIVER.aged_manifest(manifest, 40, NOW)
         self.assertAlmostEqual(aged["endedAt"], DRIVER.wire_date(NOW - 40 * 86_400))
         self.assertAlmostEqual(aged["endedAt"] - aged["createdAt"], manifest["endedAt"] - manifest["createdAt"])
         self.assertLess(aged["createdAt"], aged["startedAt"])
-        self.assertEqual((aged["state"], aged["artifacts"]), (manifest["state"], manifest["artifacts"]))
-        self.assertEqual(manifest["endedAt"], 816337908.47)
+        self.assertEqual((aged["state"], aged["artifacts"][0]["id"]), (manifest["state"], "B"))
+        self.assertAlmostEqual(aged["endedAt"] - aged["artifacts"][0]["createdAt"], 816337908.47 - 816337908.4)
+        self.assertEqual((manifest["endedAt"], manifest["artifacts"]), (816337908.47, [{"id": "B", "createdAt": 816337908.4}]))
 
     def test_private_json_replaces_the_manifest_without_a_leftover_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -205,16 +207,17 @@ class OldSessionTests(unittest.TestCase):
         return name
 
     def test_only_final_readable_sessions_older_than_thirty_days_are_old(self):
-        completed = self.session(createdAt=self.old_end - 5, endedAt=self.old_end)
+        completed = self.session(createdAt=self.old_end - 5, endedAt=self.old_end, artifacts=[{"createdAt": self.old_end - 1}])
         failed_without_end = self.session("failed", createdAt=self.old_end)
         interrupted = self.session("interrupted", createdAt=self.old_end, endedAt=self.old_end)
         self.session(createdAt=self.old_end, endedAt=DRIVER.wire_date(NOW - 86_400))
+        self.session(createdAt=self.old_end, endedAt=self.old_end, artifacts=[{"createdAt": DRIVER.wire_date(NOW - 86_400)}])
         self.session("recording", createdAt=self.old_end)
         self.session(mode=0o755, createdAt=self.old_end, endedAt=self.old_end)
         self.session(manifest="{not json")
         (self.root / "requests").mkdir()
         self.assertEqual(DRIVER.old_final_sessions(self.root, NOW), {completed, failed_without_end, interrupted})
-        self.assertEqual(len(DRIVER.session_folders(self.root)), 7)
+        self.assertEqual(len(DRIVER.session_folders(self.root)), 8)
 
 
 class SettingsTextTests(unittest.TestCase):

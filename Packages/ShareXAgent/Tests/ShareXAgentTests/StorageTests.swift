@@ -53,6 +53,17 @@ struct StorageTests {
         #expect(session.isOldCapture(at: session.createdAt.addingTimeInterval(51 * day)))
     }
 
+    @Test func artifactAddedAfterTheEndDecidesTheAge() {
+        var session = CaptureSession(source: display, selection: selection, options: RecordingOptions())
+        let created = session.createdAt
+        session.state = .completed
+        session.endedAt = created.addingTimeInterval(day)
+        session.artifacts = [CaptureArtifact(kind: .recording, state: .completed, createdAt: created),
+                             CaptureArtifact(kind: .screenshot, state: .completed, createdAt: created.addingTimeInterval(40 * day))]
+        #expect(!session.isOldCapture(at: created.addingTimeInterval(70 * day - 1)))
+        #expect(session.isOldCapture(at: created.addingTimeInterval(70 * day + 1)))
+    }
+
     @Test func unfinishedSessionIsNeverOld() {
         var session = CaptureSession(source: display, selection: selection, options: RecordingOptions())
         let later = session.createdAt.addingTimeInterval(365 * day)

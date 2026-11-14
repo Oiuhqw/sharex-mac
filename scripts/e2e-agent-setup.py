@@ -46,8 +46,12 @@ def wire_date(unix_seconds):
 
 def aged_manifest(manifest, days, now):
     shift = wire_date(now - days * DAY_SECONDS) - manifest["endedAt"]
-    return {**manifest, **{key: manifest[key] + shift for key in ("createdAt", "startedAt", "endedAt")
-                           if isinstance(manifest.get(key), (int, float))}}
+
+    def shifted(record, keys):
+        return {**record, **{key: record[key] + shift for key in keys if isinstance(record.get(key), (int, float))}}
+
+    return {**shifted(manifest, ("createdAt", "startedAt", "endedAt")),
+            "artifacts": [shifted(artifact, ("createdAt",)) for artifact in manifest["artifacts"]]}
 
 
 def write_private_json(path, value):
@@ -81,9 +85,11 @@ def old_final_sessions(root, now):
             session = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        ended = session.get("endedAt") if session.get("endedAt") is not None else session.get("createdAt")
-        if (session.get("state") in NATIVE.TERMINAL and isinstance(ended, (int, float))
-                and wire_date(now) - ended > CAPTURE_AGE_DAYS * DAY_SECONDS):
+        dates = [session.get("createdAt"), *(artifact.get("createdAt") for artifact in session.get("artifacts", []))]
+        if session.get("endedAt") is not None:
+            dates.append(session["endedAt"])
+        if (session.get("state") in NATIVE.TERMINAL and all(isinstance(date, (int, float)) for date in dates)
+                and wire_date(now) - max(dates) > CAPTURE_AGE_DAYS * DAY_SECONDS):
             found.add(name)
     return found
 

@@ -130,7 +130,9 @@ public struct CaptureSession: Codable, Equatable, Sendable {
     public func isOldCapture(at date: Date = Date()) -> Bool {
         // A pending artifact means a screenshot is being written into this session now.
         guard state.isTerminal, !artifacts.contains(where: { $0.state == .pending }) else { return false }
-        return date.timeIntervalSince(endedAt ?? createdAt) > Double(Self.oldCaptureDays) * 86_400
+        // A screenshot added to a finished session is newer than the end of that session.
+        let newest = artifacts.map(\.createdAt).reduce(max(createdAt, endedAt ?? createdAt), max)
+        return date.timeIntervalSince(newest) > Double(Self.oldCaptureDays) * 86_400
     }
 }
 
