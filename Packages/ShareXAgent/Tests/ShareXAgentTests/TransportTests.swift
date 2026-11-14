@@ -125,6 +125,45 @@ struct TransportTests {
         #expect(try LocalAgentClient(endpoint: endpoint).send(AgentRequest(operation: .capabilities)).ok)
     }
 
+    @Test func framesNestedBeyondLimitCloseWithoutReplyAndTheListenerKeepsServing() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let endpoint = AgentEndpoint(directory: root.path)
+        let server = try LocalAgentServer(endpoint: endpoint) { .success($0.id, .object([:])) }
+        defer { server.stop() }
+        let utf16 = try #require(nestedRequest(key: #"a\""#, depth: 400).data(using: .utf16LittleEndian))
+        for body in [Data(nestedRequest(depth: 33).utf8), Data(nestedRequest(depth: 400).utf8), utf16] {
+            try expectClosedWithoutReply(body, endpoint)
+        }
+    }
+
+    @Test func framesWithMalformedObjectKeysCloseWithoutReplyAndTheListenerKeepsServing() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let endpoint = AgentEndpoint(directory: root.path)
+        let server = try LocalAgentServer(endpoint: endpoint) { .success($0.id, .object([:])) }
+        defer { server.stop() }
+        try expectClosedWithoutReply(Data(#"{"\q":1}"#.utf8), endpoint)
+        for key in malformedKeys {
+            try expectClosedWithoutReply(Data(#"{"version":1,"id":"\#(UUID().uuidString)","operation":"capabilities","arguments":{""#.utf8) + key + Data(#"":1}}"#.utf8), endpoint)
+        }
+    }
+
+    @Test func frameNestedToLimitGetsAReply() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let endpoint = AgentEndpoint(directory: root.path)
+        let server = try LocalAgentServer(endpoint: endpoint) { .success($0.id, .object([:])) }
+        defer { server.stop() }
+        let descriptor = try rawConnection(endpoint)
+        defer { close(descriptor) }
+        let bytes = frame(Data(nestedRequest(depth: 32).utf8))
+        #expect(bytes.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) } == bytes.count)
+        let reply = readToEnd(descriptor)
+        let response = try JSONDecoder().decode(AgentResponse.self, from: Data(reply.dropFirst(4)))
+        #expect(response.error?.code == .invalidRequest)
+    }
+
     @Test func socketBoundsConcurrentIncompleteRequests() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -157,6 +196,34 @@ struct TransportTests {
         #expect(write(descriptor, &byte, 1) == 1)
         #expect(read(descriptor, &byte, 1) == 0)
         #expect(try LocalAgentClient(endpoint: endpoint).send(AgentRequest(operation: .capabilities)).ok)
+    }
+}
+
+private func nestedRequest(key: String = "a", depth: Int) -> String {
+    #"{"version":1,"id":"\#(UUID().uuidString)","operation":"capabilities","arguments":{"\#(key)":\#(nestedArrays(depth - 2))}}"#
+}
+
+private func frame(_ body: Data) -> [UInt8] {
+    withUnsafeBytes(of: UInt32(body.count).bigEndian) { Array($0) } + body
+}
+
+private func expectClosedWithoutReply(_ body: Data, _ endpoint: AgentEndpoint) throws {
+    let descriptor = try rawConnection(endpoint)
+    defer { close(descriptor) }
+    let bytes = frame(body)
+    #expect(bytes.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) } == bytes.count)
+    var byte: UInt8 = 0
+    #expect(read(descriptor, &byte, 1) == 0)
+    #expect(try LocalAgentClient(endpoint: endpoint).send(AgentRequest(operation: .capabilities)).ok)
+}
+
+private func readToEnd(_ descriptor: Int32) -> [UInt8] {
+    var reply: [UInt8] = []
+    var chunk = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let count = chunk.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
+        guard count > 0 else { return reply }
+        reply.append(contentsOf: chunk[..<count])
     }
 }
 

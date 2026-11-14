@@ -23,15 +23,18 @@ public final class MCPServer {
                 object["properties"] = .object(properties)
                 schema = .object(object)
             }
-            return .object(["name": .string(definition.operation.rawValue), "description": .string(definition.description),
+            return .object(["name": .string(definition.operation.toolName), "description": .string(definition.description),
                 "inputSchema": schema, "annotations": .object(["readOnlyHint": .bool(!definition.operation.mutates),
                     "destructiveHint": .bool(false), "idempotentHint": .bool(!definition.operation.mutates), "openWorldHint": .bool(false)])])
         }
     }
 
     public func handle(_ data: Data) -> JSONValue? {
+        guard JSONDepth.isWithinLimit(data) else {
+            return rpcError(.null, -32600, "Send UTF-8 JSON with at most \(JSONDepth.limit) nested levels.")
+        }
         let value: JSONValue
-        do { value = try JSONDecoder().decode(JSONValue.self, from: data) }
+        do { value = try JSONDecoder().decodeUntrusted(JSONValue.self, from: data) }
         catch { return rpcError(.null, -32700, "Invalid JSON.") }
         guard case .object(let object) = value, object["jsonrpc"] == .string("2.0"), case .string(let method) = object["method"] else {
             return rpcError(.null, -32600, "Expected a JSON-RPC 2.0 request.")
@@ -59,7 +62,7 @@ public final class MCPServer {
             return result(requestID, .object(["protocolVersion": .string(Self.versions.contains(version) ? version : Self.versions[0]),
                 "capabilities": .object(["tools": .object(["listChanged": .bool(false)])]),
                 "serverInfo": .object(["name": .string("sharex"), "version": .string("1.0.0")]),
-                "instructions": .string("Discover targets before capture. Keep session IDs and requestID values. Recording continues after this connection closes. Call recording.stop to finalize evidence. PNG and MP4 paths are local files.")]))
+                "instructions": .string("Discover targets before capture. Keep session IDs and requestID values. Recording continues after this connection closes. Call recording_stop to finalize evidence. PNG and MP4 paths are local files.")]))
         case "ping": return result(requestID, .object([:]))
         case "tools/list":
             guard phase == .ready else { return rpcError(requestID, -32000, "Complete initialization first.") }
@@ -67,7 +70,7 @@ public final class MCPServer {
             return result(requestID, .object(["tools": .array(Self.tools)]))
         case "tools/call":
             guard phase == .ready else { return rpcError(requestID, -32000, "Complete initialization first.") }
-            guard case .string(let name) = params["name"], let operation = AgentOperation(rawValue: name) else {
+            guard case .string(let name) = params["name"], let operation = AgentOperation.allCases.first(where: { $0.toolName == name }) else {
                 return rpcError(requestID, -32602, "Unknown tool name.")
             }
             var arguments: [String: JSONValue] = [:]
@@ -88,8 +91,9 @@ public final class MCPServer {
             do {
                 let structured = try JSONValue.encode(response)
                 let text = String(decoding: try JSONEncoder().encode(structured), as: UTF8.self)
-                return result(requestID, .object(["content": .array([.object(["type": .string("text"), "text": .string(text)])]),
-                    "structuredContent": structured, "isError": .bool(!response.ok)]))
+                var content: [JSONValue] = [.object(["type": .string("text"), "text": .string(text)])]
+                if operation == .screenshot, let image = ScreenshotPreview.imageBlock(for: response) { content.append(image) }
+                return result(requestID, .object(["content": .array(content), "structuredContent": structured, "isError": .bool(!response.ok)]))
             } catch { return rpcError(requestID, -32603, "Cannot encode capture response.") }
         default: return rpcError(requestID, -32601, "Unknown method.")
         }
@@ -134,4 +138,9 @@ public final class MCPServer {
     private func rpcError(_ id: JSONValue, _ code: Int, _ message: String) -> JSONValue {
         .object(["jsonrpc": .string("2.0"), "id": id, "error": .object(["code": .number(Double(code)), "message": .string(message)])])
     }
+}
+
+extension AgentOperation {
+    /// Claude Code and Codex show a model each tool name with the dots replaced by underscores, so the server publishes that form.
+    var toolName: String { rawValue.replacingOccurrences(of: ".", with: "_") }
 }

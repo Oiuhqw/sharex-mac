@@ -38,6 +38,11 @@ if CommandLine.arguments.dropFirst().first == "--atomic-write-failure" {
     }
 }
 
+if CommandLine.arguments.dropFirst().first == "--default-endpoint" {
+    try FileHandle.standardOutput.write(contentsOf: Data((AgentEndpoint().directory + "\n").utf8))
+    exit(0)
+}
+
 guard let directory = ProcessInfo.processInfo.environment["SHAREX_TEST_ENDPOINT"] else {
     fatalError("This transport test host requires SHAREX_TEST_ENDPOINT.")
 }
