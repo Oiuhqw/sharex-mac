@@ -23,7 +23,7 @@ concurrency:
 jobs:
   native:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
@@ -91,9 +91,9 @@ jobs:
           codesign --force -s - "$RUNNER_TEMP/sharex-agent-setup-helper"
           bash scripts/ci-capture-permissions.sh --helper "$RUNNER_TEMP/sharex-agent-setup-helper"
 
-      - name: Validate setup UI and recording controls
+      - name: Validate setup UI, recording controls, and old capture deletion
         if: ${{ !cancelled() && steps.setup-helper.outcome == 'success' }}
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: |
           python3 scripts/e2e-agent-setup.py --app /Applications/ShareX.app \
             --build-settings "$PWD/agent-build-settings.json" \
@@ -101,7 +101,7 @@ jobs:
 
       - name: Capture real pixels and verify decoded media
         if: ${{ !cancelled() && steps.capture-permission.outcome == 'success' }}
-        timeout-minutes: 15
+        timeout-minutes: 18
         run: |
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
           bash scripts/e2e-agent-capture.sh --app /Applications/ShareX.app \
@@ -131,9 +131,9 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/sharex-agent-clients" --no-audit --no-fund \
             @openai/codex@0.169.0 @anthropic-ai/claude-code@2.1.323
 
-      - name: Capture through actual Codex and Claude Code tools
+      - name: Register and capture through actual Codex and Claude Code clients
         if: ${{ !cancelled() && steps.clients.outcome == 'success' }}
-        timeout-minutes: 8
+        timeout-minutes: 12
         run: |
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
           python3 scripts/e2e-agent-clients.py --app /Applications/ShareX.app \
