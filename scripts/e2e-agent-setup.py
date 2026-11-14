@@ -33,6 +33,7 @@ REFERENCE_DATE_UNIX_SECONDS = 978_307_200
 DAY_SECONDS = 86_400
 CAPTURE_AGE_DAYS = 30
 CONFIRMATION = re.compile(r"Delete (\d+) captures? older than 30 days\?")
+NOTHING_OLD = "No captures are older than 30 days."
 STORED = re.compile(r"(\d+) captures? stored")
 
 
@@ -101,6 +102,14 @@ def confirmation(elements):
     counts = {count for _, count in matches}
     require(len(counts) <= 1, f"Settings shows conflicting delete confirmations: {sorted(matches)}.")
     return {"text": min(matches)[0], "count": counts.pop()} if matches else None
+
+
+def nothing_old(elements):
+    shown = any(NOTHING_OLD in element[key] for element in elements
+                for key in ("title", "description", "AXValue") if isinstance(element.get(key), str))
+    require(not shown or all(element.get("identifier") != "settings.agents.deleteOld.confirm" for element in elements),
+            "Settings offers Delete when no capture is older than 30 days.")
+    return shown
 
 
 def stored_count(element):
@@ -358,6 +367,9 @@ class Run(NATIVE.Run):
             self.wait_for(lambda: self.stored() == before - len(expected), 15, "the stored capture count after deletion")
             self.cli("recording.status", {"sessionID": old["id"]}, error="session_not_found")
             require(self.cli("artifacts.list", {"sessionID": recent["id"]}) == recent, "The recent capture changed after deletion.")
+            self.press("settings.agents.deleteOld")
+            self.wait_for(lambda: nothing_old(self.helper("snapshot")["elements"]), 15, "the text for no old captures")
+            self.press("settings.agents.deleteOld.cancel")
             step.update(confirmation=asked["text"], deleted=sorted(expected),
                         storedBefore=before, storedAfter=before - len(expected))
             self.screenshot("agents-old-captures-deleted")

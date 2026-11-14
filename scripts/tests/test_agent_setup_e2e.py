@@ -234,6 +234,16 @@ class SettingsTextTests(unittest.TestCase):
             DRIVER.confirmation([{"AXValue": "Delete 2 captures older than 30 days?"},
                                  {"title": "Delete 5 captures older than 30 days?"}])
 
+    def test_no_old_captures_text_must_come_without_a_delete_button(self):
+        text = {"role": "AXStaticText", "AXValue": "No captures are older than 30 days."}
+        dismiss = {"role": "AXButton", "title": "OK", "identifier": "settings.agents.deleteOld.cancel"}
+        self.assertTrue(DRIVER.nothing_old([text, dismiss]))
+        self.assertFalse(DRIVER.nothing_old([{"title": "Delete Old Captures…", "identifier": "settings.agents.deleteOld"}]))
+        self.assertFalse(DRIVER.nothing_old([{"AXValue": "Delete 2 captures older than 30 days?"},
+                                             {"identifier": "settings.agents.deleteOld.confirm"}]))
+        with self.assertRaisesRegex(DRIVER.Failure, "offers Delete"):
+            DRIVER.nothing_old([text, dismiss, {"title": "Delete", "identifier": "settings.agents.deleteOld.confirm"}])
+
     def test_storage_status_count(self):
         self.assertEqual(DRIVER.stored_count({"identifier": "settings.agents.storage", "AXValue": "12 captures stored"}), 12)
         with self.assertRaisesRegex(DRIVER.Failure, "captures stored"):
