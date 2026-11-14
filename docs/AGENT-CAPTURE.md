@@ -130,7 +130,7 @@ ShareX limits the number of stored sessions. `capabilities` reports the counts i
 
 - `sessionCount` is the number of stored sessions.
 - `sessionLimit` is the maximum number of sessions.
-- `unreadableSessions` is the number of session folders that ShareX skipped. ShareX counts these folders when storage starts. Storage starts at the first capture command while agent access is on, or when you press **Delete Old Captures…** in Settings. Before that, the value is 0.
+- `unreadableSessions` is the number of session folders that ShareX skipped. ShareX counts these folders when storage starts. Storage starts at the first command other than `capabilities` while agent access is on, or when you press **Delete Old Captures…** in Settings. Before that, the value is 0.
 
 When the limit is reached, a new capture returns `limit_reached`. Delete old captures in Settings, or delete session folders in the session root yourself. ShareX counts the folders on disk at each check, so you do not need to restart it.
 
