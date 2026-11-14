@@ -8,8 +8,25 @@ import Glibc
 public struct AgentEndpoint: Sendable {
     public let directory: String
     public var socketPath: String { directory + "/agent.sock" }
-    public init(directory: String = URL(fileURLWithPath: "/tmp").resolvingSymlinksInPath().path + "/sharex-agent-\(getuid())") {
+    public init(directory: String = AgentEndpoint.defaultDirectory) {
         self.directory = directory
+    }
+
+    /// Agent clients change TMPDIR for the processes they start. The app and its helper must compute the same path,
+    /// so the path never comes from TMPDIR.
+    public static var defaultDirectory: String {
+        #if canImport(Darwin)
+        let capacity = Int(PATH_MAX)
+        var buffer = [CChar](repeating: 0, count: capacity)
+        let length = confstr(_CS_DARWIN_USER_TEMP_DIR, &buffer, capacity)
+        if length > 1, length <= capacity {
+            let userTemporary = buffer.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+            return (userTemporary.hasSuffix("/") ? String(userTemporary.dropLast()) : userTemporary) + "/sharex-agent"
+        }
+        #else
+        if let runtime = ProcessInfo.processInfo.environment["XDG_RUNTIME_DIR"], !runtime.isEmpty { return runtime + "/sharex-agent" }
+        #endif
+        return "/tmp/sharex-agent-\(getuid())"
     }
 
     func validateDirectory(create: Bool) throws {
@@ -157,6 +174,7 @@ public final class LocalAgentServer: @unchecked Sendable {
                     try configureSocket(client)
                     try verifyPeer(client)
                     let data = try readFrame(client, maximum: CaptureLimits().maxRequestBytes, deadline: Deadline(seconds: 5))
+                    guard JSONDepth.isWithinLimit(data) else { return }
                     let request = try JSONDecoder().decode(AgentRequest.self, from: data)
                     let response: AgentResponse
                     do {

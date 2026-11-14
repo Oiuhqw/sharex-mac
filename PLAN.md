@@ -1,6 +1,6 @@
 # ShareX for macOS implementation and verification
 
-Version 0.2.0, build 8 adds local agent screenshots, silent MP4 recording, CLI and MCP control, durable capture sessions, and native setup controls. The older proposals in `plans/` are historical.
+Version 0.2.1, build 9 fixes defects in agent capture. It adds Delete Old Captures to Settings, uses underscores in MCP tool names, and moves the agent socket to the per-user temporary folder. Version 0.2.0 added local agent screenshots, silent MP4 recording, CLI and MCP control, durable capture sessions, and native setup controls. The older proposals in `plans/` are historical.
 
 ## Implemented design
 
@@ -56,7 +56,7 @@ Memory checks record repeated sessions, buffer limits, object release, current R
 
 ## Delivery status
 
-Version 0.2.0, build 8 targets arm64 only. The [release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.0) provides the DMG, checksum, and installation instructions. The release notes identify the verified PR, merged source, production package run, and DMG checksum. [Build and publish a release](docs/RELEASING.md) defines the release steps.
+Version 0.2.1, build 9 targets arm64 only. The [release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.1) provides the DMG, checksum, and installation instructions. The release notes identify the verified PR, merged source, production package run, and DMG checksum. [Build and publish a release](docs/RELEASING.md) defines the release steps.
 
 The diagnostic package, final PR package, and merged-main package have separate identities. `INSTALL.txt` is included in the DMG. Diagnostic validation therefore does not establish the final release checksum. The checksum in the release notes is the reference for download verification.
 

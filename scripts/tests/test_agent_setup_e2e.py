@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import importlib.util
 import json
 from pathlib import Path
@@ -23,7 +24,7 @@ class CommandTests(unittest.TestCase):
         for client, prefix in (("claude", ["claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "sharex", "--"]),
                                ("codex", ["codex", "mcp", "add", "sharex", "--"])):
             with self.subTest(client=client):
-                command = DRIVER.registration_command(client, binary)
+                command = DRIVER.NATIVE.registration_command(client, binary)
                 self.assertEqual(shlex.split(command), prefix + [binary, "--agent", "mcp"])
                 self.assertIn("'\"'\"'", command)
 
@@ -154,6 +155,99 @@ class RecordingEvidenceTests(unittest.TestCase):
         self.validate()
         with self.assertRaisesRegex(DRIVER.Failure, "already exists"):
             self.validate()
+
+
+NOW = 1_794_960_000.0
+
+
+class ManifestDateTests(unittest.TestCase):
+    def test_wire_dates_count_seconds_from_2001_utc(self):
+        reference = datetime(2001, 1, 1, tzinfo=timezone.utc).timestamp()
+        self.assertEqual(DRIVER.wire_date(reference), 0)
+        self.assertEqual(DRIVER.wire_date(reference + 86_400), 86_400)
+
+    def test_aged_manifest_ends_forty_days_ago_and_keeps_its_order(self):
+        manifest = {"id": "A", "state": "completed", "createdAt": 816337908.33,
+                    "startedAt": 816337908.34, "endedAt": 816337908.47,
+                    "artifacts": [{"id": "B", "createdAt": 816337908.4}]}
+        aged = DRIVER.aged_manifest(manifest, 40, NOW)
+        self.assertAlmostEqual(aged["endedAt"], DRIVER.wire_date(NOW - 40 * 86_400))
+        self.assertAlmostEqual(aged["endedAt"] - aged["createdAt"], manifest["endedAt"] - manifest["createdAt"])
+        self.assertLess(aged["createdAt"], aged["startedAt"])
+        self.assertEqual((aged["state"], aged["artifacts"][0]["id"]), (manifest["state"], "B"))
+        self.assertAlmostEqual(aged["endedAt"] - aged["artifacts"][0]["createdAt"], 816337908.47 - 816337908.4)
+        self.assertEqual((manifest["endedAt"], manifest["artifacts"]), (816337908.47, [{"id": "B", "createdAt": 816337908.4}]))
+
+    def test_private_json_replaces_the_manifest_without_a_leftover_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            path.write_text('{"old": true}')
+            DRIVER.write_private_json(path, {"endedAt": 1.5})
+            self.assertEqual(json.loads(path.read_text()), {"endedAt": 1.5})
+            self.assertEqual([item.name for item in Path(directory).iterdir()], ["manifest.json"])
+            if sys.platform != "win32":
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+
+@unittest.skipIf(sys.platform == "win32", "POSIX directory modes are required.")
+class OldSessionTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.old_end = DRIVER.wire_date(NOW - 31 * 86_400)
+
+    def session(self, state="completed", mode=0o700, manifest=None, **dates):
+        name = str(uuid.uuid4()).upper()
+        directory = self.root / name
+        directory.mkdir()
+        (directory / "manifest.json").write_text(manifest if manifest is not None else json.dumps({"state": state, **dates}))
+        directory.chmod(mode)
+        self.addCleanup(directory.chmod, 0o700)
+        return name
+
+    def test_only_final_readable_sessions_older_than_thirty_days_are_old(self):
+        completed = self.session(createdAt=self.old_end - 5, endedAt=self.old_end, artifacts=[{"createdAt": self.old_end - 1}])
+        failed_without_end = self.session("failed", createdAt=self.old_end)
+        interrupted = self.session("interrupted", createdAt=self.old_end, endedAt=self.old_end)
+        self.session(createdAt=self.old_end, endedAt=DRIVER.wire_date(NOW - 86_400))
+        self.session(createdAt=self.old_end, endedAt=self.old_end, artifacts=[{"createdAt": DRIVER.wire_date(NOW - 86_400)}])
+        self.session("recording", createdAt=self.old_end)
+        self.session(mode=0o755, createdAt=self.old_end, endedAt=self.old_end)
+        self.session(manifest="{not json")
+        (self.root / "requests").mkdir()
+        self.assertEqual(DRIVER.old_final_sessions(self.root, NOW), {completed, failed_without_end, interrupted})
+        self.assertEqual(len(DRIVER.session_folders(self.root)), 8)
+
+
+class SettingsTextTests(unittest.TestCase):
+    def test_confirmation_reads_the_count_from_any_text_attribute(self):
+        elements = [{"role": "AXButton", "title": "Delete Old Captures…"},
+                    {"role": "AXStaticText", "AXValue": "Delete 3 captures older than 30 days?"},
+                    {"role": "AXGroup", "description": "Delete 3 captures older than 30 days?, Delete, Cancel"}]
+        self.assertEqual(DRIVER.confirmation(elements), {"text": "Delete 3 captures older than 30 days?", "count": 3})
+        self.assertEqual(DRIVER.confirmation([{"AXValue": "Delete 1 capture older than 30 days?"}])["count"], 1)
+
+    def test_missing_confirmation_waits_and_conflicting_counts_fail(self):
+        self.assertIsNone(DRIVER.confirmation([{"title": "Delete Old Captures…"}, {"AXValue": 7}]))
+        with self.assertRaisesRegex(DRIVER.Failure, "conflicting delete confirmations"):
+            DRIVER.confirmation([{"AXValue": "Delete 2 captures older than 30 days?"},
+                                 {"title": "Delete 5 captures older than 30 days?"}])
+
+    def test_no_old_captures_text_must_come_without_a_delete_button(self):
+        text = {"role": "AXStaticText", "AXValue": "No captures are older than 30 days."}
+        dismiss = {"role": "AXButton", "title": "OK", "identifier": "settings.agents.deleteOld.cancel"}
+        self.assertTrue(DRIVER.nothing_old([text, dismiss]))
+        self.assertFalse(DRIVER.nothing_old([{"title": "Delete Old Captures…", "identifier": "settings.agents.deleteOld"}]))
+        self.assertFalse(DRIVER.nothing_old([{"AXValue": "Delete 2 captures older than 30 days?"},
+                                             {"identifier": "settings.agents.deleteOld.confirm"}]))
+        with self.assertRaisesRegex(DRIVER.Failure, "offers Delete"):
+            DRIVER.nothing_old([text, dismiss, {"title": "Delete", "identifier": "settings.agents.deleteOld.confirm"}])
+
+    def test_storage_status_count(self):
+        self.assertEqual(DRIVER.stored_count({"identifier": "settings.agents.storage", "AXValue": "12 captures stored"}), 12)
+        with self.assertRaisesRegex(DRIVER.Failure, "captures stored"):
+            DRIVER.stored_count({"identifier": "settings.agents.storage", "AXValue": "Storage is unavailable."})
 
 
 class ReportTests(unittest.TestCase):

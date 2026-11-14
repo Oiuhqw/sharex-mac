@@ -6,10 +6,13 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
 from unittest import mock
+import urllib.error
+import urllib.request
 import uuid
 
 
@@ -90,6 +93,145 @@ class ClaudeResultTests(unittest.TestCase):
         self.output["stdout"] = json.dumps({**self.envelope, "id": str(uuid.uuid4())})
         with self.assertRaisesRegex(DRIVER.Failure, "request ID changed"):
             self.client.call("capabilities", request_id=self.request_id)
+
+
+TARGETS = {"version": 1, "id": str(uuid.uuid4()).upper(), "ok": True, "result": {"targets": [
+    {"kind": "display", "name": "Apple Virtual", "token": "display-token"},
+    {"kind": "window", "name": "ShareX capture evaluation 1", "token": "window-token"}]}}
+CLAUDE_TOOLS = [{"name": "Bash"}, *({"name": name} for name in sorted(DRIVER.EXPECTED_TOOLS["claude"]))]
+
+
+def tool_result(text, *extra):
+    return {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1",
+                                         "content": [{"type": "text", "text": text}, *extra]}]}
+
+
+class StandinModelTests(unittest.TestCase):
+    def step(self, *messages, tools=CLAUDE_TOOLS):
+        body = {"tools": tools, "messages": [{"role": "user", "content": "List targets."}, *messages]}
+        return DRIVER.STANDIN.scripted_step(body, "ShareX capture evaluation 1")
+
+    def test_script_lists_targets_then_captures_the_named_target_then_stops(self):
+        self.assertEqual(self.step(), ("mcp__sharex__targets_list", {}))
+        image = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AA=="}}
+        self.assertEqual(self.step(tool_result(json.dumps(TARGETS))), ("mcp__sharex__screenshot", {"target": "window-token"}))
+        self.assertEqual(self.step(tool_result(json.dumps(TARGETS)), tool_result("{}", image)),
+                         (None, DRIVER.STANDIN.DONE))
+
+    def test_script_stops_with_a_reason_when_it_cannot_continue(self):
+        self.assertEqual(self.step(tools=[{"name": "Bash"}]), (None, DRIVER.STANDIN.TOOL_NOT_OFFERED))
+        self.assertEqual(self.step(tool_result("not json")), (None, DRIVER.STANDIN.TARGETS_UNREADABLE))
+        other = {**TARGETS, "result": {"targets": [TARGETS["result"]["targets"][0]]}}
+        self.assertEqual(self.step(tool_result(json.dumps(other))), (None, DRIVER.STANDIN.TARGET_MISSING))
+
+    def test_streamed_tool_call_carries_the_input_as_one_json_delta(self):
+        message = DRIVER.STANDIN.anthropic_message({"tools": CLAUDE_TOOLS, "messages": [tool_result(json.dumps(TARGETS))]},
+                                                   "ShareX capture evaluation 1")
+        events = DRIVER.STANDIN.anthropic_events(message)
+        self.assertEqual([event["type"] for event in events],
+                         ["message_start", "content_block_start", "content_block_delta", "content_block_stop",
+                          "message_delta", "message_stop"])
+        self.assertEqual(events[1]["content_block"]["input"], {})
+        self.assertEqual(json.loads(events[2]["delta"]["partial_json"]), {"target": "window-token"})
+        self.assertEqual(events[4]["delta"]["stop_reason"], "tool_use")
+        self.assertTrue(DRIVER.STANDIN.sse(events).startswith(b"event: message_start\ndata: {"))
+
+    def test_server_binds_loopback_records_bodies_and_refuses_other_model_apis(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "requests.jsonl"
+            server = DRIVER.STANDIN.StandinServer(capture, "ShareX capture evaluation 1")
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address[:2]
+                self.assertEqual(host, "127.0.0.1")
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+                def post(path, body):
+                    request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", json.dumps(body).encode(),
+                                                     {"Content-Type": "application/json"})
+                    try:
+                        with opener.open(request, timeout=5) as response:
+                            return response.status, json.loads(response.read())
+                    except urllib.error.HTTPError as error:
+                        return error.code, json.loads(error.read())
+
+                status, reply = post("/v1/messages?beta=true", {"tools": CLAUDE_TOOLS, "messages": []})
+                self.assertEqual((status, reply["content"][0]["name"]), (200, "mcp__sharex__targets_list"))
+                self.assertEqual(post("/v1/responses", {"tools": []})[0], 500)
+            finally:
+                server.shutdown()
+                server.server_close()
+            self.assertEqual(len(DRIVER.STANDIN.recorded_bodies(capture, "/v1/messages")), 1)
+            self.assertEqual(DRIVER.STANDIN.recorded_bodies(capture, "/responses"), [{"tools": []}])
+            self.assertEqual(DRIVER.STANDIN.recorded_bodies(Path(directory) / "missing.jsonl", ""), [])
+
+
+class ClientCheckTests(unittest.TestCase):
+    def test_expected_tool_names_follow_each_client_naming(self):
+        self.assertIn("mcp__sharex__targets_list", DRIVER.EXPECTED_TOOLS["claude"])
+        self.assertIn("mcp__sharex/recording_start", DRIVER.EXPECTED_TOOLS["codex"])
+        self.assertEqual(len(DRIVER.EXPECTED_TOOLS["claude"]), 8)
+        self.assertEqual(len(DRIVER.EXPECTED_TOOLS["codex"]), 8)
+
+    def test_offered_tools_read_claude_names_and_codex_namespaces(self):
+        codex = {"tools": [{"type": "function", "name": "shell"}, {"type": "web_search"},
+                           {"type": "namespace", "name": "mcp__sharex", "tools": [
+                               {"type": "function", "name": DRIVER.NATIVE.tool_name(operation)}
+                               for operation in DRIVER.NATIVE.OPERATIONS]}]}
+        self.assertEqual(DRIVER.offered_sharex_tools([codex]), DRIVER.EXPECTED_TOOLS["codex"])
+        self.assertEqual(DRIVER.offered_sharex_tools([{"tools": CLAUDE_TOOLS}, {"messages": []}, ["unexpected"]]),
+                         DRIVER.EXPECTED_TOOLS["claude"])
+        dotted = {"tools": [{"name": "mcp__sharex__targets.list"}]}
+        self.assertNotEqual(DRIVER.offered_sharex_tools([dotted]), DRIVER.EXPECTED_TOOLS["claude"])
+
+    def test_registration_runs_the_settings_command_with_the_pinned_client(self):
+        binary = "/Applications/ShareX 'QA'.app/Contents/MacOS/ShareX"
+        self.assertEqual(DRIVER.client_registration("claude", "/runner/bin/claude", binary),
+                         ["/runner/bin/claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "sharex", "--",
+                          binary, "--agent", "mcp"])
+        self.assertEqual(DRIVER.client_registration("codex", "/runner/bin/codex", binary),
+                         ["/runner/bin/codex", "mcp", "add", "sharex", "--", binary, "--agent", "mcp"])
+
+    def test_codex_config_keeps_the_registered_entry_and_adds_the_standin_only_on_request(self):
+        registered = '[mcp_servers.sharex]\ncommand = "/Applications/ShareX.app/Contents/MacOS/ShareX"\n'
+        plain = DRIVER.codex_config(registered)
+        self.assertIn(registered.strip(), plain)
+        self.assertNotIn("model_provider", plain)
+        first_table = plain.index("[")
+        self.assertIn('cli_auth_credentials_store = "file"', plain[:first_table])
+        provider = DRIVER.codex_config(registered, 43123)
+        self.assertIn('model_provider = "standin"', provider[:provider.index("[")])
+        self.assertIn('base_url = "http://127.0.0.1:43123/v1"', provider)
+        self.assertIn(f'env_key = "{DRIVER.STANDIN_KEY}"', provider)
+
+    def test_registered_claude_environment_leaves_simple_mode(self):
+        environment = DRIVER.registered_claude_environment({"CLAUDE_CODE_SIMPLE": "1", "HOME": "/isolated"})
+        self.assertEqual(environment, {"HOME": "/isolated", "DISABLE_TELEMETRY": "1"})
+
+    def test_claude_stream_yields_tool_calls_results_and_images(self):
+        events = [{"type": "system", "subtype": "init"},
+                  {"type": "assistant", "message": {"content": [
+                      {"type": "tool_use", "name": "mcp__sharex__targets_list", "input": {}}]}},
+                  {"type": "user", "message": {"content": [
+                      {"type": "tool_result", "content": [{"type": "text", "text": '{"ok":true}'}]}]}},
+                  {"type": "user", "message": {"content": "plain prompt"}},
+                  {"type": "result", "subtype": "success"}]
+        stream = "\n".join(json.dumps(event) for event in events) + "\nnot json\n"
+        calls, results = DRIVER.claude_tool_exchange(stream)
+        self.assertEqual(calls, [{"name": "mcp__sharex__targets_list", "input": {}}])
+        self.assertEqual(results, [{"isError": False, "text": '{"ok":true}'}])
+        image = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AA=="}}
+        body = {"messages": [tool_result("{}"), tool_result("{}", image)]}
+        self.assertEqual(DRIVER.tool_result_images(body), 1)
+        self.assertEqual(DRIVER.tool_result_images(["unexpected"]), 0)
+
+    def test_tool_result_envelope_reads_past_the_image_note_claude_code_prints(self):
+        printed = '[Image: source: /tmp/claude-home/tool-results/mcp-sharex-blob-1.png]{"ok":true,"result":{"id":"A"}}'
+        self.assertEqual(DRIVER.tool_result_envelope(printed), {"ok": True, "result": {"id": "A"}})
+        self.assertEqual(DRIVER.tool_result_envelope('{"ok":false}'), {"ok": False})
+        with self.assertRaises(DRIVER.NATIVE.Failure):
+            DRIVER.tool_result_envelope("[Image: source: /tmp/x.png]")
 
 
 class BoundedProtocolTests(unittest.TestCase):

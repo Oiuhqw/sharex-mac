@@ -1,6 +1,8 @@
 # Review evidence
 
-The [0.2.0 agent validation report](../docs/AGENT-CAPTURE-VALIDATION.md) records native capture, setup, and actual-client checks. [PR 8](https://github.com/Oiuhqw/sharex-mac/pull/8) records final review and exact-head validation. The [0.2.0 release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.0) identifies the merged source, package run, and checksum.
+The [agent validation report](../docs/AGENT-CAPTURE-VALIDATION.md) records native capture, setup, and actual-client checks for the 0.2.1 change. [PR 9](https://github.com/Oiuhqw/sharex-mac/pull/9) records final review and exact-head validation. The [0.2.1 release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.1) identifies the merged source, package run, and checksum.
+
+Agent capture was first released in version 0.2.0. [PR 8](https://github.com/Oiuhqw/sharex-mac/pull/8) records its review and validation. The [0.2.0 release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.0) identifies its merged source, package run, and checksum.
 
 The capture and editor baseline is documented in the [0.1.6 verification report](../.audit/capture-polish-verification.md). The full native run recorded 938 checks, with 929 passed, zero failures, and nine unverified instances across seven labels. It also passed 117 core tests, the same 117 under AddressSanitizer, 26 CI script tests, and seven startup scenarios plus cleanup.
 

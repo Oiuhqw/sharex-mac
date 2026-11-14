@@ -159,6 +159,29 @@ func atomicFileWriteFailureDoesNotPublish(replacing: Bool, interrupted: Bool) th
     #expect(try LocalAgentClient(endpoint: AgentEndpoint(directory: endpoint.path)).send(AgentRequest(operation: .capabilities)).ok)
 }
 
+@Test func defaultEndpointIgnoresTheClientTemporaryDirectory() throws {
+    let executable = try testHostExecutable()
+    var environment = ProcessInfo.processInfo.environment
+    environment["TMPDIR"] = "/tmp/agent-client"
+    environment["XDG_RUNTIME_DIR"] = nil
+    func helperDirectory() throws -> String {
+        let result = try runProcess(executable, arguments: ["--default-endpoint"], environment: environment)
+        return String(decoding: result.output, as: UTF8.self).trimmingCharacters(in: .newlines)
+    }
+    #if canImport(Darwin)
+    let system = try runProcess(URL(fileURLWithPath: "/usr/bin/getconf"), arguments: ["DARWIN_USER_TEMP_DIR"], environment: environment)
+    var userTemporary = String(decoding: system.output, as: UTF8.self).trimmingCharacters(in: .newlines)
+    if userTemporary.hasSuffix("/") { userTemporary.removeLast() }
+    #expect(userTemporary.hasPrefix("/") && !userTemporary.hasPrefix("/tmp") && !userTemporary.hasPrefix("/private/tmp"))
+    #expect(try helperDirectory() == userTemporary + "/sharex-agent")
+    #expect(AgentEndpoint().directory == userTemporary + "/sharex-agent")
+    #else
+    #expect(try helperDirectory() == "/tmp/sharex-agent-\(getuid())")
+    environment["XDG_RUNTIME_DIR"] = "/run/user/agent-test"
+    #expect(try helperDirectory() == "/run/user/agent-test/sharex-agent")
+    #endif
+}
+
 private final class TestBundleAnchor: NSObject {}
 
 private func testHostExecutable() throws -> URL {

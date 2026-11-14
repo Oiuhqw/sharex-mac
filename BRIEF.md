@@ -1,6 +1,6 @@
 # ShareX for macOS product brief
 
-ShareX is a native screenshot, annotation, and recording app for macOS. Version 0.2.0, build 8 supports macOS 14 or later on Apple Silicon. Intel Macs are unsupported.
+ShareX is a native screenshot, annotation, and recording app for macOS. Version 0.2.1, build 9 supports macOS 14 or later on Apple Silicon. Intel Macs are unsupported.
 
 ## Required workflow
 
@@ -24,7 +24,7 @@ One shared editing session owns the document, history, gesture, text editor, ren
 
 Smart Eraser estimates nearby background colors for small repairs on plain or smooth screenshot backgrounds. It runs locally and preserves protected content. General photo reconstruction is outside its scope. Style controls show immediate canvas feedback and commit one undo entry per slider drag. The circular loupe, output destination, and short shutter click provide capture feedback.
 
-Local agents use eight shared CLI and MCP operations for display, window, and region screenshots and silent H.264 MP4 recording. The app owns permission and recording lifetime. Settings controls access, CLI installation, and client setup. Private session manifests retain markers, hashes, output status, and recovery evidence. See the [agent capture guide](docs/AGENT-CAPTURE.md).
+Local agents use eight shared CLI and MCP operations for display, window, and region screenshots and silent H.264 MP4 recording. The app owns permission and recording lifetime. Settings controls access, CLI installation, client setup, and deletion of old captures. The access switch stops well-behaved clients only. Any process of the same macOS user can turn it on, because the app is ad-hoc signed and not sandboxed. Private session manifests retain markers, hashes, output status, and recovery evidence. See the [agent capture guide](docs/AGENT-CAPTURE.md).
 
 Uploads, audio, GIF recording, OCR, scrolling capture, and reopening a previous editing document are outside this version's scope.
 
@@ -34,7 +34,7 @@ The development host uses native Windows tools without WSL. Apple Silicon `macos
 
 The [current verification report](.audit/capture-polish-verification.md) records the diagnostic source, native results, and capture improvements. The [performance assessment](.audit/performance-finalization.md) records measured CPU, RAM, and remaining profiling work. Automated display checks use deterministic frozen tiles on real 1x and 2x `NSScreen` geometry. ScreenCaptureKit captures actual editor windows to check visible content. These checks cover both horizontal and vertical layouts with negative origins.
 
-Native E2E and independent source review must pass before merge. Confirmed findings require fixes and repeat checks. Documentation belongs in the final reviewed head. The PR records that head's independent native run. The [release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.0) identifies the merged-main package and its checksum. The [agent validation report](docs/AGENT-CAPTURE-VALIDATION.md) records media, setup, and actual-client checks with their limits.
+Native E2E and independent source review must pass before merge. Confirmed findings require fixes and repeat checks. Documentation belongs in the final reviewed head. The PR records that head's independent native run. The [release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.1) identifies the merged-main package and its checksum. The [agent validation report](docs/AGENT-CAPTURE-VALIDATION.md) records media, setup, and actual-client checks with their limits.
 
 The package is ad-hoc signed with Hardened Runtime and is not notarized. Developer ID signing and notarization require the owner's Apple credentials.
 

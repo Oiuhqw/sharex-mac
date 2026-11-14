@@ -124,6 +124,16 @@ public struct CaptureSession: Codable, Equatable, Sendable {
         }
         return true
     }
+
+    public static let oldCaptureDays = 30
+
+    public func isOldCapture(at date: Date = Date()) -> Bool {
+        // A pending artifact means a screenshot is being written into this session now.
+        guard state.isTerminal, !artifacts.contains(where: { $0.state == .pending }) else { return false }
+        // A screenshot added to a finished session is newer than the end of that session.
+        let newest = artifacts.map(\.createdAt).reduce(max(createdAt, endedAt ?? createdAt), max)
+        return date.timeIntervalSince(newest) > Double(Self.oldCaptureDays) * 86_400
+    }
 }
 
 public struct AgentAccessState: Codable, Equatable, Sendable {
@@ -149,6 +159,16 @@ public struct CaptureLimits: Codable, Equatable, Sendable {
     }
 }
 
+public struct AgentStorageStatus: Codable, Equatable, Sendable {
+    public let sessionCount: Int
+    public let sessionLimit: Int
+    public let unreadableSessions: Int
+    public init(sessionCount: Int = 0, unreadableSessions: Int = 0) {
+        self.sessionCount = sessionCount; sessionLimit = 2048; self.unreadableSessions = unreadableSessions
+    }
+    public var sessionLimitReached: Bool { sessionCount >= sessionLimit }
+}
+
 public struct AgentCapabilities: Codable, Sendable {
     public let protocolVersion: Int
     public let access: AgentAccessState
@@ -158,9 +178,11 @@ public struct AgentCapabilities: Codable, Sendable {
     public let activeSessionID: UUID?
     public let coordinateSpace: String
     public let targetChangePolicy: String
-    public init(access: AgentAccessState, sessionRoot: String, activeSessionID: UUID? = nil) {
+    public let storage: AgentStorageStatus
+    public init(access: AgentAccessState, sessionRoot: String, activeSessionID: UUID? = nil,
+                storage: AgentStorageStatus = AgentStorageStatus()) {
         protocolVersion = 1; self.access = access; self.sessionRoot = sessionRoot
-        self.activeSessionID = activeSessionID
+        self.activeSessionID = activeSessionID; self.storage = storage
         operations = AgentOperation.allCases; limits = CaptureLimits()
         coordinateSpace = "top-left display-local logical points"
         targetChangePolicy = "Stop on target loss, resize, scale change, or display geometry change. Never switch targets. Window movement is allowed."

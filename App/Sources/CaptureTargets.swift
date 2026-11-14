@@ -45,14 +45,14 @@ final class CaptureTargets {
 
     func resolve(_ selection: CaptureSelection, recording: Bool = false) async throws -> Resolved {
         guard let entry = entries[selection.target] else {
-            throw AgentFailure(.targetNotFound, "The target token expired. Call targets.list and select a current target.")
+            throw AgentFailure(.targetNotFound, "The target token expired. List the targets again and select a current target.")
         }
         let content = try await content()
         guard let candidate = current(content, matching: entry.identity).first else {
             throw AgentFailure(.targetNotFound, "The selected target is no longer available.")
         }
         guard candidate.identity == entry.identity else {
-            throw AgentFailure(.targetChanged, "The target identity, size, or scale changed. Call targets.list and select it again.")
+            throw AgentFailure(.targetChanged, "The target identity, size, or scale changed. List the targets again and select it.")
         }
         let filter: SCContentFilter
         switch entry.identity.kind {

@@ -7,6 +7,8 @@ Exit codes are 0 for passed, 1 for failed, and 3 for blocked. Evidence is retain
 """
 
 import argparse
+import base64
+import binascii
 from contextlib import contextmanager
 import hashlib
 import json
@@ -35,6 +37,9 @@ OPERATIONS = (
 TERMINAL = {"completed", "failed", "interrupted"}
 COLORS = ((230, 32, 40), (32, 210, 80), (30, 80, 230), (240, 210, 40))
 ROOT = Path(__file__).resolve().parent
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+PREVIEW_LONGEST_SIDE = 1568
+STORAGE_FIELDS = ("sessionCount", "sessionLimit", "unreadableSessions")
 
 
 class Failure(Exception):
@@ -48,6 +53,97 @@ class Blocked(Exception):
 def require(condition, message):
     if not condition:
         raise Failure(message)
+
+
+def tool_name(operation):
+    return operation.replace(".", "_")
+
+
+def dotted_tool_mentions(texts):
+    return sorted({operation for operation in OPERATIONS if "." in operation
+                   for text in texts if operation in str(text)})
+
+
+def agent_socket_path(darwin_user_temp_dir):
+    directory = darwin_user_temp_dir.strip()
+    require(directory.startswith("/"), "getconf DARWIN_USER_TEMP_DIR did not print an absolute directory.")
+    return Path(directory) / "sharex-agent" / "agent.sock"
+
+
+def shell_quote(value):
+    return "'" + str(value).replace("'", "'\"'\"'") + "'"
+
+
+def registration_command(client, binary):
+    prefix = {"claude": "claude mcp add --transport stdio --scope user sharex -- ",
+              "codex": "codex mcp add sharex -- "}[client]
+    return prefix + shell_quote(binary) + " --agent mcp"
+
+
+def storage_counts(capabilities):
+    storage = capabilities.get("storage")
+    require(isinstance(storage, dict), "Capabilities have no storage object.")
+    counts = {field: storage.get(field) for field in STORAGE_FIELDS}
+    require(all(type(value) is int and value >= 0 for value in counts.values()) and counts["sessionLimit"] > 0,
+            f"Capabilities storage must hold non-negative integers {', '.join(STORAGE_FIELDS)}: {storage}.")
+    return counts
+
+
+def png_size(data):
+    require(data[:8] == PNG_SIGNATURE and data[12:16] == b"IHDR" and len(data) >= 24,
+            "MCP image block bytes are not a PNG.")
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
+def preview_size(width, height):
+    scale = min(1, PREVIEW_LONGEST_SIDE / max(width, height))
+    return width * scale, height * scale
+
+
+def tool_result_content(result, operation):
+    structured = result.get("structuredContent")
+    require(isinstance(structured, dict), "MCP result has no structured content.")
+    content = result.get("content")
+    require(isinstance(content, list) and content and isinstance(content[0], dict)
+            and content[0].get("type") == "text", "MCP text result is missing.")
+    require(json.loads(content[0]["text"]) == structured, "MCP text and structured content differ.")
+    if operation != "screenshot" or structured.get("ok") is not True:
+        require(len(content) == 1, f"MCP {operation} must return exactly one text block.")
+        return None
+    require(len(content) == 2, "MCP screenshot must return one text block and one PNG image block.")
+    image = content[1]
+    require(isinstance(image, dict) and image.get("type") == "image" and image.get("mimeType") == "image/png",
+            "MCP screenshot second block is not an image/png block.")
+    try:
+        data = base64.b64decode(image.get("data") or "", validate=True)
+    except (binascii.Error, ValueError) as problem:
+        raise Failure("MCP image block data is not base64.") from problem
+    width, height = png_size(data)
+    require(max(width, height) <= PREVIEW_LONGEST_SIDE,
+            f"MCP image block is {width}x{height}. The longest side must be at most {PREVIEW_LONGEST_SIDE} pixels.")
+    artifacts = [artifact for artifact in structured["result"].get("artifacts", [])
+                 if uuid.UUID(artifact["id"]) == uuid.UUID(structured["id"])]
+    require(len(artifacts) == 1, "Screenshot result has no artifact whose ID equals the request ID.")
+    expected = preview_size(artifacts[0]["widthPixels"], artifacts[0]["heightPixels"])
+    require(abs(width - expected[0]) <= 1 and abs(height - expected[1]) <= 1,
+            f"MCP image block is {width}x{height}. The screenshot artifact at preview scale is "
+            f"{expected[0]:.0f}x{expected[1]:.0f}.")
+    return {"width": width, "height": height, "bytes": len(data)}
+
+
+def loggable(message):
+    result = message.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("content"), list):
+        return message
+    content = [dict(block, data=f"<{len(block.get('data') or '')} base64 characters>")
+               if isinstance(block, dict) and block.get("type") == "image" else block for block in result["content"]]
+    return {**message, "result": {**result, "content": content}}
+
+
+def nested_frame(request_id, depth):
+    body = ('{"version":1,"id":"%s","operation":"targets.list","arguments":{"target":%s%s}}'
+            % (request_id, "[" * depth, "]" * depth)).encode()
+    return len(body).to_bytes(4, "big") + body
 
 
 def digest(path):
@@ -241,6 +337,7 @@ class MCP:
         initialized = self.rpc("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
                                              "clientInfo": {"name": "sharex-native-evaluation", "version": "1"}})
         require(initialized["result"]["protocolVersion"] == "2025-11-25", "MCP protocol version changed.")
+        self.instructions = initialized["result"].get("instructions", "")
         self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
     def _read(self):
@@ -267,7 +364,7 @@ class MCP:
             response = json.loads(line)
         except json.JSONDecodeError as problem:
             raise Failure("MCP wrote non-JSON protocol output.") from problem
-        self.run.evidence.emit("mcp_response", message=response, pid=self.process.pid)
+        self.run.evidence.emit("mcp_response", message=loggable(response), pid=self.process.pid)
         require(response.get("jsonrpc") == "2.0" and response.get("id") == self.serial,
                 "MCP response does not match the request.")
         if expected_error is not None:
@@ -281,11 +378,10 @@ class MCP:
         request_id = request_id or str(uuid.uuid4())
         self.run.track_request(operation, arguments or {}, request_id)
         arguments = {**(arguments or {}), "requestID": request_id}
-        result = self.rpc("tools/call", {"name": operation, "arguments": arguments})["result"]
-        require(isinstance(result.get("structuredContent"), dict), "MCP result has no structured content.")
-        content = result.get("content", [])
-        require(len(content) == 1 and content[0].get("type") == "text", "MCP text result is missing.")
-        require(json.loads(content[0]["text"]) == result["structuredContent"], "MCP text and structured content differ.")
+        result = self.rpc("tools/call", {"name": tool_name(operation), "arguments": arguments})["result"]
+        preview = tool_result_content(result, operation)
+        if preview:
+            self.run.evidence.emit("mcp_image", requestID=request_id, **preview)
         require(bool(result.get("isError", False)) == bool(error), "MCP tool error flag is incorrect.")
         return decode_response(result["structuredContent"], request_id, error)
 
@@ -309,6 +405,7 @@ class Run:
         self.handles = []
         self.clients = []
         self.app = None
+        self.endpoint = None
         self.fixture = None
         self.capabilities = None
         self.sessions = []
@@ -319,12 +416,12 @@ class Run:
         self.fixture_directory = evidence.directory / "fixture"
         self.fixture_directory.mkdir()
 
-    def command(self, command, timeout=25, check=True):
+    def command(self, command, timeout=25, check=True, env=None, cwd=None):
         log = self.evidence.path("command", "json")
         started = time.monotonic()
         self.evidence.emit("command_started", command=[str(part) for part in command], log=str(log))
         process = subprocess.Popen([str(part) for part in command], stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd)
         self.children.append(process)
         try:
             stdout, stderr = process.communicate(timeout=timeout)
@@ -407,9 +504,23 @@ class Run:
         self.evidence.emit("fixture_command", action=action, values=values, state=state)
         return state
 
+    def agent_endpoint(self):
+        if self.endpoint is None:
+            temporary = self.command(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"], timeout=5)["stdout"]
+            self.endpoint = agent_socket_path(temporary)
+        return self.endpoint
+
+    def require_owned_app(self):
+        require(self.app.poll() is None, "The installed ShareX app exited.")
+        running = self.command(["/usr/bin/pgrep", "-x", self.binary.name], timeout=5, check=False)
+        pids = running["stdout"].split()
+        require(running["exitCode"] == 0 and pids == [str(self.app.pid)],
+                f"Expected only the owned ShareX app PID {self.app.pid}; found {pids} "
+                f"with process check exit code {running['exitCode']}.")
+
     def start_app(self):
         self.app = self.launch([self.binary, "--agent-background"], "app")
-        endpoint = Path("/tmp").resolve() / f"sharex-agent-{os.getuid()}" / "agent.sock"
+        endpoint = self.agent_endpoint()
 
         def ready():
             require(self.app.poll() is None, "The installed ShareX app exited during startup.")
@@ -421,21 +532,21 @@ class Run:
             except (FileNotFoundError, ConnectionRefusedError, TimeoutError):
                 return None
 
-        def require_owned_app():
-            require(self.app.poll() is None, "The installed ShareX app exited during startup.")
-            running = self.command(["/usr/bin/pgrep", "-x", self.binary.name], timeout=5, check=False)
-            pids = running["stdout"].split()
-            require(running["exitCode"] == 0 and pids == [str(self.app.pid)],
-                    f"Expected only the owned ShareX app PID {self.app.pid}; found {pids} "
-                    f"with process check exit code {running['exitCode']}.")
-
         self.wait_for(ready, 15, "agent socket")
-        require_owned_app()
+        self.require_owned_app()
         self.capabilities = self.cli("capabilities")
-        require_owned_app()
+        self.require_owned_app()
+        storage_counts(self.capabilities)
         self.evidence.emit("app_ready", pid=self.app.pid, endpoint=str(endpoint))
         if self.fixture:
             self.control("observe", observedPID=self.app.pid)
+
+    def quit_app(self):
+        self.control("terminate-observed", observedPID=self.app.pid)
+        try:
+            self.app.wait(timeout=20)
+        except subprocess.TimeoutExpired as problem:
+            raise Failure("App quit did not finish within 20 seconds.") from problem
 
     def _measure(self):
         while not self.metrics_stop.wait(0.5):
@@ -597,11 +708,15 @@ class Run:
             client = self.connect()
             catalog = client.rpc("tools/list", {})["result"]["tools"]
             require(len(catalog) == 8 and {tool["name"] for tool in catalog}
-                    == set(OPERATIONS), "MCP tool catalog differs from the shared eight operations.")
+                    == {tool_name(operation) for operation in OPERATIONS},
+                    "MCP tool catalog differs from the eight underscore tool names.")
+            dotted = dotted_tool_mentions([client.instructions, *(tool.get("description", "") for tool in catalog)])
+            require(not dotted, f"MCP instructions or tool descriptions name tools by dotted names: {dotted}.")
             require(client.call("capabilities") == self.capabilities, "CLI and MCP capabilities differ.")
             self.discover(client)
             step["toolNames"] = [tool["name"] for tool in catalog]
         with self.evidence.step("malformed_payload_invalid_target_and_limits"):
+            client.rpc("tools/call", {"name": "targets.list", "arguments": {}}, expected_error=-32602)
             client.rpc("tools/call", {"name": "screenshot", "arguments": []}, expected_error=-32602)
             client.call("recording.start", {**self.selection("window"), "fps": 0}, error="invalid_request")
             client.call("recording.start", {**self.selection("window"), "maxBytes": 1024}, error="invalid_request")
@@ -610,6 +725,26 @@ class Run:
             client.call("screenshot", {**self.selection("display"), "region": {"x": -1, "y": 0, "width": 10, "height": 10}},
                         error="invalid_request")
             self.cli("recording.status", {"sessionID": str(uuid.uuid4())}, error="session_not_found")
+        with self.evidence.step("nested_socket_frame_leaves_the_app_running") as step:
+            pid = self.app.pid
+            frame = nested_frame(str(uuid.uuid4()).upper(), 400)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(5)
+                connection.connect(str(self.agent_endpoint()))
+                connection.sendall(frame)
+                try:
+                    reply = connection.recv(65536)
+                except ConnectionResetError:
+                    reply = b""
+                except TimeoutError as problem:
+                    raise Failure("The app kept the connection open after a frame nested 400 levels deep.") from problem
+            require(reply == b"", "The app replied to a frame nested beyond 32 levels. It must close without a reply.")
+            time.sleep(0.5)
+            require(self.app.poll() is None, "The installed ShareX app exited after a nested socket frame.")
+            require(self.cli("capabilities")["access"] == self.capabilities["access"],
+                    "The app does not answer capabilities after a nested socket frame.")
+            require(self.app.poll() is None, "The installed ShareX app exited after it answered capabilities.")
+            step.update(frameBytes=len(frame), depth=400, pid=pid)
         for mode, caller in (("window", self.cli), ("display", client.call), ("region", self.cli)):
             with self.evidence.step(f"real_{mode}_png_and_no_interactive_side_effects"):
                 session = caller("screenshot", self.selection(mode))
@@ -665,6 +800,27 @@ class Run:
                 step["media"] = self.validate_media(completed, mode, "recording", [0, 1, 2], minimum=2.5, maximum=8)
                 self.validate_manifest(completed)
                 self.unchanged()
+        with self.evidence.step("busy_start_runs_again_with_the_same_request_id") as step:
+            self.control("stage", stage=0)
+            first = client.call("recording.start", {**self.selection("window"), "fps": 15, "maxDurationSeconds": 30})
+            retry_id = str(uuid.uuid4())
+            options = {**self.selection("display"), "fps": 15, "maxDurationSeconds": 30}
+            self.cli("recording.start", options, retry_id, error="busy")
+            time.sleep(1.2)
+            first = client.call("recording.stop", {"sessionID": first["id"]})
+            require(first["state"] == "completed", "The recording that made the retry busy did not complete.")
+            self.validate_media(first, "window", "recording", [0], minimum=1, maximum=8)
+            self.validate_manifest(first)
+            retried = self.cli("recording.start", options, retry_id)
+            require(retried["state"] == "recording", "The same request ID did not start a recording after the busy refusal.")
+            replayed = self.cli("recording.start", options, retry_id)
+            require(replayed["id"] == retried["id"], "A successful start was not replayed for its request ID.")
+            time.sleep(1.2)
+            retried = client.call("recording.stop", {"sessionID": retried["id"]})
+            require(retried["state"] == "completed", "The retried recording did not complete.")
+            step["media"] = self.validate_media(retried, "display", "recording", [0], minimum=1, maximum=8)
+            self.validate_manifest(retried)
+            self.unchanged()
         with self.evidence.step("static_window_recording_covers_explicit_stop") as step:
             self.control("stage", stage=0)
             self.control("mode", mode="static")
@@ -706,11 +862,7 @@ class Run:
             started = self.cli("recording.start", {**self.selection("window"), "fps": 15, "maxDurationSeconds": 30})
             time.sleep(1.5)
             client.close()
-            self.control("terminate-observed", observedPID=self.app.pid)
-            try:
-                self.app.wait(timeout=20)
-            except subprocess.TimeoutExpired as problem:
-                raise Failure("App quit did not finish within 20 seconds.") from problem
+            self.quit_app()
             self.start_app()
             completed = self.cli("artifacts.list", {"sessionID": started["id"]})
             require(completed["state"] == "completed" and completed["stopReason"] == "app_quit",
@@ -740,6 +892,30 @@ class Run:
             completed = client.call("recording.stop", {"sessionID": restart["id"]})
             self.validate_media(completed, "window", "recording", [0], minimum=1, maximum=5)
             self.validate_manifest(completed)
+        with self.evidence.step("unreadable_session_folder_fails_only_its_session") as step:
+            stopped = [session["id"] for session in self.sessions
+                       if session["state"] == "completed" and session["stopReason"] == "user_stop"]
+            require(bool(stopped), "No finished recording session exists for the storage check.")
+            finished = stopped[0]
+            directory = Path(self.capabilities["sessionRoot"]) / str(uuid.UUID(finished)).upper()
+            client.close()
+            os.chmod(directory, 0o755)
+            try:
+                self.quit_app()
+                self.start_app()
+                # ShareX counts unreadable folders when storage starts. Capabilities does not start storage.
+                self.cli("targets.list")
+                counts = storage_counts(self.cli("capabilities"))
+                require(counts["unreadableSessions"] >= 1, "Capabilities do not count the session folder with mode 755.")
+                failure = self.cli("recording.status", {"sessionID": finished}, error="storage_failed")
+                require(str(directory) in failure["message"], "storage_failed does not name the unreadable session folder.")
+            finally:
+                os.chmod(directory, 0o700)
+            restored = self.cli("recording.status", {"sessionID": finished})
+            require(restored["state"] == "completed", "The session is not readable again after mode 700 is restored.")
+            client = self.connect()
+            self.discover(client)
+            step.update(sessionID=finished, storage=counts, message=failure["message"])
         with self.evidence.step("lost_window_never_substitutes_another_target"):
             started = client.call("recording.start", {**self.selection("window"), "fps": 15, "maxDurationSeconds": 20})
             time.sleep(0.5)

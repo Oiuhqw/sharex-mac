@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import signal
@@ -28,20 +29,93 @@ NATIVE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(NATIVE)
 Blocked, Failure, require = NATIVE.Blocked, NATIVE.Failure, NATIVE.require
 WRAPPER_PREFIX = "#!/bin/sh\n# ShareX managed CLI v1\n"
-
-
-def shell_quote(value):
-    return "'" + str(value).replace("'", "'\"'\"'") + "'"
-
-
-def registration_command(client, binary):
-    prefix = {"claude": "claude mcp add --transport stdio --scope user sharex -- ",
-              "codex": "codex mcp add sharex -- "}[client]
-    return prefix + shell_quote(binary) + " --agent mcp"
+REFERENCE_DATE_UNIX_SECONDS = 978_307_200
+DAY_SECONDS = 86_400
+CAPTURE_AGE_DAYS = 30
+CONFIRMATION = re.compile(r"Delete (\d+) captures? older than 30 days\?")
+NOTHING_OLD = "No captures are older than 30 days."
+STORED = re.compile(r"(\d+) captures? stored")
 
 
 def wrapper_content(binary):
-    return WRAPPER_PREFIX + "exec " + shell_quote(binary) + ' --agent "$@"\n'
+    return WRAPPER_PREFIX + "exec " + NATIVE.shell_quote(binary) + ' --agent "$@"\n'
+
+
+def wire_date(unix_seconds):
+    return unix_seconds - REFERENCE_DATE_UNIX_SECONDS
+
+
+def aged_manifest(manifest, days, now):
+    shift = wire_date(now - days * DAY_SECONDS) - manifest["endedAt"]
+
+    def shifted(record, keys):
+        return {**record, **{key: record[key] + shift for key in keys if isinstance(record.get(key), (int, float))}}
+
+    return {**shifted(manifest, ("createdAt", "startedAt", "endedAt")),
+            "artifacts": [shifted(artifact, ("createdAt",)) for artifact in manifest["artifacts"]]}
+
+
+def write_private_json(path, value):
+    temporary = path.with_name(path.name + ".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump(value, stream, indent=2, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def session_folders(root):
+    folders = set()
+    for directory in root.iterdir():
+        try:
+            folders.add(str(uuid.UUID(directory.name)).upper())
+        except ValueError:
+            continue
+    return folders
+
+
+def old_final_sessions(root, now):
+    found = set()
+    for name in session_folders(root):
+        directory = root / name
+        manifest = directory / "manifest.json"
+        if directory.is_symlink() or not manifest.is_file() or directory.stat().st_mode & 0o077:
+            continue
+        try:
+            session = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        dates = [session.get("createdAt"), *(artifact.get("createdAt") for artifact in session.get("artifacts", []))]
+        if session.get("endedAt") is not None:
+            dates.append(session["endedAt"])
+        if (session.get("state") in NATIVE.TERMINAL and all(isinstance(date, (int, float)) for date in dates)
+                and wire_date(now) - max(dates) > CAPTURE_AGE_DAYS * DAY_SECONDS):
+            found.add(name)
+    return found
+
+
+def confirmation(elements):
+    matches = {(match.group(0), int(match.group(1))) for element in elements
+               for key in ("title", "description", "AXValue") if isinstance(element.get(key), str)
+               for match in [CONFIRMATION.search(element[key])] if match}
+    counts = {count for _, count in matches}
+    require(len(counts) <= 1, f"Settings shows conflicting delete confirmations: {sorted(matches)}.")
+    return {"text": min(matches)[0], "count": counts.pop()} if matches else None
+
+
+def nothing_old(elements):
+    shown = any(NOTHING_OLD in element[key] for element in elements
+                for key in ("title", "description", "AXValue") if isinstance(element.get(key), str))
+    require(not shown or all(element.get("identifier") != "settings.agents.deleteOld.confirm" for element in elements),
+            "Settings offers Delete when no capture is older than 30 days.")
+    return shown
+
+
+def stored_count(element):
+    match = STORED.search(json.dumps(element))
+    require(match is not None, f"settings.agents.storage does not read 'N captures stored': {element}.")
+    return int(match.group(1))
 
 
 def check_wrapper_destination(wrapper, uid=None):
@@ -110,6 +184,16 @@ class Run(NATIVE.Run):
 
     def press(self, identifier):
         return self.helper("press", identifier=identifier)
+
+    def stored(self):
+        return stored_count(self.inspect("settings.agents.storage"))
+
+    def delete_confirmation(self):
+        return self.wait_for(lambda: confirmation(self.helper("snapshot")["elements"]), 15, "delete confirmation text")
+
+    def open_agents_settings(self):
+        self.helper("menu", title="Settings…")
+        self.helper("select", identifier="settings.page.agents")
 
     def screenshot(self, label):
         path = self.evidence.path(label, "png")
@@ -185,8 +269,7 @@ class Run(NATIVE.Run):
             self.start_app()
             if self.capabilities["access"]["enabled"]:
                 raise Blocked("Start with agentCaptureEnabled=false on this isolated evaluation account.")
-            self.helper("menu", title="Settings…")
-            self.helper("select", identifier="settings.page.agents")
+            self.open_agents_settings()
             self.access(False)
             self.cli("targets.list", error="disabled")
             permission = self.inspect("settings.agents.permissionStatus")
@@ -218,7 +301,7 @@ class Run(NATIVE.Run):
                 before = self.helper("pasteboard")
                 self.press(f"settings.agents.copy.{client}")
                 copied = self.helper("pasteboard")
-                expected = registration_command(client, self.binary.resolve())
+                expected = NATIVE.registration_command(client, self.binary.resolve())
                 require(copied["changeCount"] > before["changeCount"], f"Copy {client} did not write to the real pasteboard.")
                 require(copied["text"] == expected, f"The copied {client} command differs from the exact installed app command.")
                 require(shlex.split(copied["text"])[-3:] == [str(self.binary.resolve()), "--agent", "mcp"],
@@ -249,6 +332,47 @@ class Run(NATIVE.Run):
             require(self.cli("recording.status", {"sessionID": ended["id"]}) == ended,
                     "Re-enabled CLI returned a different terminal revocation manifest.")
             self.helper("snapshot")
+        with self.evidence.step("delete_old_captures_from_settings") as step:
+            root = Path(self.capabilities["sessionRoot"])
+            displays = sorted((target for target in self.cli("targets.list")["targets"] if target["kind"] == "display"),
+                              key=lambda item: item["token"])
+            if not displays:
+                raise Blocked("No real display is available in this logged-in desktop.")
+            old = self.cli("screenshot", {"target": displays[0]["token"]})
+            recent = self.cli("screenshot", {"target": displays[0]["token"]})
+            for session in (old, recent):
+                self.validate_manifest(session)
+            old_name = str(uuid.UUID(old["id"])).upper()
+            manifest = root / old_name / "manifest.json"
+            NATIVE.stop_process(self.app)
+            write_private_json(manifest, aged_manifest(json.loads(manifest.read_text(encoding="utf-8")), 40, time.time()))
+            self.start_app()
+            self.open_agents_settings()
+            expected = old_final_sessions(root, time.time())
+            require(old_name in expected, "The aged capture is not final and older than 30 days by its manifest.")
+            before, folders = self.stored(), session_folders(root)
+            self.press("settings.agents.deleteOld")
+            asked = self.delete_confirmation()
+            require(asked["count"] == len(expected),
+                    f"Settings offers to delete {asked['count']} captures. {len(expected)} are final and older than 30 days.")
+            self.press("settings.agents.deleteOld.cancel")
+            time.sleep(1)
+            require(session_folders(root) == folders and self.stored() == before, "Cancel changed the stored captures.")
+            self.press("settings.agents.deleteOld")
+            require(self.delete_confirmation()["count"] == len(expected), "The second delete confirmation changed its count.")
+            self.press("settings.agents.deleteOld.confirm")
+            self.wait_for(lambda: not (root / old_name).exists(), 10, "deletion of the old session folder")
+            require(session_folders(root) == folders - expected,
+                    "Delete removed a capture that is newer than 30 days or not final, or kept an old one.")
+            self.wait_for(lambda: self.stored() == before - len(expected), 15, "the stored capture count after deletion")
+            self.cli("recording.status", {"sessionID": old["id"]}, error="session_not_found")
+            require(self.cli("artifacts.list", {"sessionID": recent["id"]}) == recent, "The recent capture changed after deletion.")
+            self.press("settings.agents.deleteOld")
+            self.wait_for(lambda: nothing_old(self.helper("snapshot")["elements"]), 15, "the text for no old captures")
+            self.press("settings.agents.deleteOld.cancel")
+            step.update(confirmation=asked["text"], deleted=sorted(expected),
+                        storedBefore=before, storedAfter=before - len(expected))
+            self.screenshot("agents-old-captures-deleted")
 
 
 def main():

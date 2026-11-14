@@ -7,6 +7,7 @@ import ShareXAgent
 final class AgentCaptureService {
     static let enabledDefaultsKey = "agentCaptureEnabled"
     private(set) var recordingSnapshot: CaptureSession?
+    private(set) var storage = AgentStorageStatus()
     private(set) var enabled: Bool
     @ObservationIgnored private let targets = CaptureTargets()
     @ObservationIgnored private let sessions: CaptureSessions
@@ -41,7 +42,24 @@ final class AgentCaptureService {
 
     var accessState: AgentAccessState { AgentAccessState(enabled: enabled, screenRecordingGranted: CGPreflightScreenCaptureAccess()) }
     var capabilities: AgentCapabilities {
-        AgentCapabilities(access: accessState, sessionRoot: sessions.root.path, activeSessionID: active?.id)
+        AgentCapabilities(access: accessState, sessionRoot: sessions.root.path, activeSessionID: active?.id, storage: storage)
+    }
+
+    func refreshStorage() async {
+        let current = await sessions.storage()
+        if current != storage { storage = current }
+    }
+
+    func oldCaptures() async -> [UUID] {
+        do { try await startStorage() } catch { return [] }
+        await refreshStorage()
+        return await sessions.oldCaptures()
+    }
+
+    func deleteOldCaptures(_ ids: [UUID]) async {
+        do { try await startStorage() } catch { return }
+        await sessions.deleteOldCaptures(ids)
+        await refreshStorage()
     }
 
     func setEnabled(_ value: Bool) {
@@ -61,11 +79,13 @@ final class AgentCaptureService {
     func execute(_ request: AgentRequest) async -> AgentResponse {
         do {
             let command = try OperationCatalog.validate(request)
-            if case .capabilities = command { return .success(request.id, try JSONValue.encode(capabilities)) }
+            if case .capabilities = command {
+                await refreshStorage()
+                return .success(request.id, try JSONValue.encode(capabilities))
+            }
             guard enabled else { throw AgentFailure(.disabled, "Enable agent capture in ShareX Settings before using capture tools.") }
             guard !shuttingDown else { throw AgentFailure(.interrupted, "ShareX is shutting down.") }
-            if storageReady == nil { storageReady = Task { try await sessions.initialize() } }
-            try await storageReady?.value
+            try await startStorage()
             guard enabled, !shuttingDown else { throw AgentFailure(.disabled, "Agent capture is disabled.") }
             if let pending = requests[request.id] {
                 guard pending.request == request else { throw AgentFailure(.requestConflict, "This request ID was already used with different command content.") }
@@ -85,7 +105,7 @@ final class AgentCaptureService {
                 do { response = .success(request.id, try await run(command, requestID: request.id)) }
                 catch { response = .failure(request.id, Self.failure(error)) }
                 do {
-                    try await sessions.complete(request, response: response)
+                    try await sessions.settle(request, command: command, response: response)
                     return response
                 } catch {
                     return .failure(request.id, Self.failure(error, defaultCode: .storageFailed))
@@ -94,8 +114,17 @@ final class AgentCaptureService {
             requests[request.id] = PendingRequest(request: request, task: task)
             let response = await task.value
             requests[request.id] = nil
+            await refreshStorage()
             return response
         } catch { return .failure(request.id, Self.failure(error)) }
+    }
+
+    private func startStorage() async throws {
+        if let storageReady { try await storageReady.value; return }
+        let task = Task { try await sessions.initialize() }
+        storageReady = task
+        // Only the caller that started the task clears it, so a waiter on a failed start cannot drop a newer start.
+        do { try await task.value } catch { storageReady = nil; throw error }
     }
 
     private func run(_ command: AgentCommand, requestID: UUID) async throws -> JSONValue {
@@ -113,6 +142,7 @@ final class AgentCaptureService {
             return try JSONValue.encode(await finish(active, reason: "user_stop"))
         case .sessionMark(let id, let label, let outcome):
             let session = try await sessions.update(id) { session in
+                guard !session.markers.contains(where: { $0.id == requestID }) else { throw AgentFailure(.requestConflict, "This request ID already wrote a marker in this session.") }
                 guard session.markers.count < CaptureLimits().maxMarkers else { throw AgentFailure(.limitReached, "The session marker limit is reached.") }
                 session.markers.append(SessionMarker(id: requestID, label: label, outcome: outcome))
             }
@@ -136,6 +166,7 @@ final class AgentCaptureService {
         artifact.source = resolved.target; artifact.selection = selection
         let pendingArtifact = artifact
         _ = try await sessions.update(id) { session in
+            guard !session.artifacts.contains(where: { $0.id == pendingArtifact.id }) else { throw AgentFailure(.requestConflict, "This request ID already wrote an artifact in this session.") }
             guard session.artifacts.count < CaptureLimits().maxArtifactsPerSession else { throw AgentFailure(.limitReached, "The session artifact limit is reached.") }
             session.artifacts.append(pendingArtifact)
         }

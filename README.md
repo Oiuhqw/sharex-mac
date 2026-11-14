@@ -6,9 +6,11 @@ Use the [user guide](docs/USER-GUIDE.md) for capture, editing, shortcuts, and ou
 
 Use the [agent capture guide](docs/AGENT-CAPTURE.md) for Claude Code and Codex setup, recording sessions, screenshots, evidence, and validation requirements.
 
+The agent access switch in Settings stops well-behaved clients only. Any process that runs as your macOS user can turn access on and capture the screen. ShareX is ad-hoc signed and not sandboxed, so it cannot protect that setting. See [the access limit](docs/AGENT-CAPTURE.md#the-access-switch-stops-well-behaved-clients-only).
+
 ## Latest built package
 
-Version **0.2.0, build 8** supports **Apple Silicon Macs running macOS 14 or later**. The app contains arm64 code only. **Intel Macs are unsupported.** Download `ShareX.dmg` from the [0.2.0 GitHub release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.0).
+Version **0.2.1, build 9** supports **Apple Silicon Macs running macOS 14 or later**. The app contains arm64 code only. **Intel Macs are unsupported.** Download `ShareX.dmg` from the [0.2.1 GitHub release](https://github.com/Oiuhqw/sharex-mac/releases/tag/v0.2.1).
 
 Each release has one installer, `ShareX.dmg`. Installation instructions are included inside it. The release notes identify the merged source and package build. The app is ad-hoc signed with Hardened Runtime and is not Apple-notarized. Read the [installation instructions](INSTALL.txt) before opening it.
 
@@ -118,7 +120,7 @@ Developer ID signing and notarization require the owner's Apple credentials. The
 
 ## Install the DMG
 
-Download [ShareX.dmg from the 0.2.0 release](https://github.com/Oiuhqw/sharex-mac/releases/download/v0.2.0/ShareX.dmg).
+Download [ShareX.dmg from the 0.2.1 release](https://github.com/Oiuhqw/sharex-mac/releases/download/v0.2.1/ShareX.dmg).
 
 Open the DMG and drag ShareX to Applications. Gatekeeper may block the first launch because the app is not notarized. After the first launch attempt, use **System Settings > Privacy & Security > Open Anyway**.
 

@@ -10,6 +10,7 @@ struct AgentSetupView: View {
     @State private var setupMessage: String?
     @State private var setupFailed = false
     @State private var installing = false
+    @State private var oldCaptures: [UUID]?
 
     private var executable: URL? { Bundle.main.executableURL?.resolvingSymlinksInPath() }
 
@@ -88,11 +89,45 @@ struct AgentSetupView: View {
                     .accessibilityIdentifier("settings.agents.sessionRoot")
                 Text("Each session contains PNG screenshots, a silent H.264 MP4 when recorded, and a JSON manifest with file hashes. Agent capture does not open the editor or change your clipboard.")
                     .font(.caption).foregroundStyle(.secondary)
+                Text(verbatim: "\(Self.captures(service.storage.sessionCount)) stored")
+                    .font(.callout).accessibilityIdentifier("settings.agents.storage")
+                if let captures = oldCaptures {
+                    HStack {
+                        Text(verbatim: captures.isEmpty ? "No captures are older than \(CaptureSession.oldCaptureDays) days."
+                             : "Delete \(Self.captures(captures.count)) older than \(CaptureSession.oldCaptureDays) days?")
+                            .accessibilityIdentifier("settings.agents.deleteOld.prompt")
+                        if !captures.isEmpty {
+                            Button("Delete", role: .destructive) { deleteOldCaptures(captures) }
+                                .accessibilityIdentifier("settings.agents.deleteOld.confirm")
+                        }
+                        Button(captures.isEmpty ? "OK" : "Cancel", role: .cancel) { oldCaptures = nil }
+                            .accessibilityIdentifier("settings.agents.deleteOld.cancel")
+                    }
+                } else {
+                    Button("Delete Old Captures…") { countOldCaptures() }
+                        .accessibilityIdentifier("settings.agents.deleteOld")
+                }
             }
         }
-        .onAppear { permissionGranted = Permissions.hasScreenRecording }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            permissionGranted = Permissions.hasScreenRecording
+        .onAppear { refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
+    }
+
+    private static func captures(_ count: Int) -> String { count == 1 ? "1 capture" : "\(count) captures" }
+
+    private func refresh() {
+        permissionGranted = Permissions.hasScreenRecording
+        Task { await service.refreshStorage() }
+    }
+
+    private func countOldCaptures() {
+        Task { oldCaptures = await service.oldCaptures() }
+    }
+
+    private func deleteOldCaptures(_ captures: [UUID]) {
+        Task {
+            await service.deleteOldCaptures(captures)
+            oldCaptures = nil
         }
     }
 

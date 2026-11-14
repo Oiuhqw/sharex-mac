@@ -14,7 +14,7 @@ public enum OperationCatalog {
         .object(["type": .string(integer ? "integer" : "number"), "minimum": .number(minimum), "maximum": .number(maximum)])
     }
     private static let selectionProperties: [String: JSONValue] = [
-        "target": string("Opaque target token from targets.list."),
+        "target": string("Opaque target token from targets_list."),
         "includeCursor": .object(["type": .string("boolean"), "default": .bool(false)]),
         "region": .object([
             "type": .string("object"), "additionalProperties": .bool(false),
@@ -24,7 +24,7 @@ public enum OperationCatalog {
                                     "width": number(1, 100_000), "height": number(1, 100_000)])
         ])
     ]
-    private static let sessionProperties = ["sessionID": string("Session UUID returned by screenshot or recording.start.")]
+    private static let sessionProperties = ["sessionID": string("Session UUID returned by screenshot or recording_start.")]
 
     public static let definitions: [OperationDefinition] = AgentOperation.allCases.map { operation in
         let description: String
