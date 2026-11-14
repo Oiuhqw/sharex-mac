@@ -91,8 +91,9 @@ public final class MCPServer {
             do {
                 let structured = try JSONValue.encode(response)
                 let text = String(decoding: try JSONEncoder().encode(structured), as: UTF8.self)
-                return result(requestID, .object(["content": .array([.object(["type": .string("text"), "text": .string(text)])]),
-                    "structuredContent": structured, "isError": .bool(!response.ok)]))
+                var content: [JSONValue] = [.object(["type": .string("text"), "text": .string(text)])]
+                if operation == .screenshot, let image = ScreenshotPreview.imageBlock(for: response) { content.append(image) }
+                return result(requestID, .object(["content": .array(content), "structuredContent": structured, "isError": .bool(!response.ok)]))
             } catch { return rpcError(requestID, -32603, "Cannot encode capture response.") }
         default: return rpcError(requestID, -32601, "Unknown method.")
         }
