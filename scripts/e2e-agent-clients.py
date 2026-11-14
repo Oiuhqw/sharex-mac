@@ -171,7 +171,7 @@ class Codex(ClientRPC):
         self.thread_id = thread["id"]
         catalog = self.rpc("mcpServerStatus/list", {"threadId": self.thread_id, "serverName": "sharex_evaluation",
                                                     "detail": "toolsAndAuthOnly", "limit": 1})["data"]
-        require(len(catalog) == 1 and set(catalog[0]["tools"]) == set(NATIVE.OPERATIONS)
+        require(len(catalog) == 1 and set(catalog[0]["tools"]) == {NATIVE.tool_name(op) for op in NATIVE.OPERATIONS}
                 and catalog[0].get("toolsError") is None, "Codex did not discover all eight ShareX tools.")
         run.evidence.emit("client_catalog", client="codex", tools=sorted(catalog[0]["tools"]), ephemeral=True)
 
@@ -179,13 +179,11 @@ class Codex(ClientRPC):
         request_id = request_id or str(uuid.uuid4())
         self.run.track_request(operation, arguments or {}, request_id)
         result = self.rpc("mcpServer/tool/call", {"threadId": self.thread_id, "server": "sharex_evaluation",
-                                                 "tool": operation, "arguments": {**(arguments or {}), "requestID": request_id}})
+                                                 "tool": NATIVE.tool_name(operation),
+                                                 "arguments": {**(arguments or {}), "requestID": request_id}})
         self.calls += 1
         require(not result.get("isError"), f"Codex ShareX {operation} returned a tool error.")
-        content = result.get("content", [])
-        require(len(content) == 1 and content[0].get("type") == "text"
-                and json.loads(content[0]["text"]) == result.get("structuredContent"),
-                "Codex altered or omitted ShareX structured output.")
+        NATIVE.tool_result_content(result, operation)
         return NATIVE.decode_response(result["structuredContent"], request_id)
 
 
@@ -256,7 +254,8 @@ class Run(NATIVE.Run):
                                           ("claude", Claude, ["--bare", "mcp", "serve"])):
             with self.evidence.step(f"{name}_capabilities_and_discovery") as step:
                 client = client_type(self, [self.client_paths[name], *suffix], self.environment, self.client_home)
-                require(client.call("capabilities") == self.capabilities, f"{name} capabilities differ from the installed app.")
+                require(client.call("capabilities") == self.cli("capabilities"),
+                        f"{name} capabilities differ from the installed app.")
                 self.discover(client)
                 step["route"] = "app-server to ShareX MCP" if name == "codex" else "Claude Bash tool to ShareX CLI"
             with self.evidence.step(f"{name}_real_png") as step:

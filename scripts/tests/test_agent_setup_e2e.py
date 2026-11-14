@@ -23,7 +23,7 @@ class CommandTests(unittest.TestCase):
         for client, prefix in (("claude", ["claude", "mcp", "add", "--transport", "stdio", "--scope", "user", "sharex", "--"]),
                                ("codex", ["codex", "mcp", "add", "sharex", "--"])):
             with self.subTest(client=client):
-                command = DRIVER.registration_command(client, binary)
+                command = DRIVER.NATIVE.registration_command(client, binary)
                 self.assertEqual(shlex.split(command), prefix + [binary, "--agent", "mcp"])
                 self.assertIn("'\"'\"'", command)
 

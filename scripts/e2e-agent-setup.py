@@ -30,18 +30,8 @@ Blocked, Failure, require = NATIVE.Blocked, NATIVE.Failure, NATIVE.require
 WRAPPER_PREFIX = "#!/bin/sh\n# ShareX managed CLI v1\n"
 
 
-def shell_quote(value):
-    return "'" + str(value).replace("'", "'\"'\"'") + "'"
-
-
-def registration_command(client, binary):
-    prefix = {"claude": "claude mcp add --transport stdio --scope user sharex -- ",
-              "codex": "codex mcp add sharex -- "}[client]
-    return prefix + shell_quote(binary) + " --agent mcp"
-
-
 def wrapper_content(binary):
-    return WRAPPER_PREFIX + "exec " + shell_quote(binary) + ' --agent "$@"\n'
+    return WRAPPER_PREFIX + "exec " + NATIVE.shell_quote(binary) + ' --agent "$@"\n'
 
 
 def check_wrapper_destination(wrapper, uid=None):
@@ -218,7 +208,7 @@ class Run(NATIVE.Run):
                 before = self.helper("pasteboard")
                 self.press(f"settings.agents.copy.{client}")
                 copied = self.helper("pasteboard")
-                expected = registration_command(client, self.binary.resolve())
+                expected = NATIVE.registration_command(client, self.binary.resolve())
                 require(copied["changeCount"] > before["changeCount"], f"Copy {client} did not write to the real pasteboard.")
                 require(copied["text"] == expected, f"The copied {client} command differs from the exact installed app command.")
                 require(shlex.split(copied["text"])[-3:] == [str(self.binary.resolve()), "--agent", "mcp"],
