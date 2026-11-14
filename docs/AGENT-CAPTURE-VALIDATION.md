@@ -1,6 +1,6 @@
 # Agent capture validation
 
-Validation run: PENDING
+Validation run: [43587009263](https://github.com/Oiuhqw/sharex-mac/actions/runs/43587009263), 2026-11-14, passed. It tested commit `34dca78` (source tree `d76ee19b8524`). Later commits in the same change edit files under `docs/` only.
 
 The line above names the GitHub Actions run of the **Agent capture** workflow for the commit under test. That run is the evidence for this report. Its job log prints the `result.json` of each gate, with the passed, failed, and blocked steps and the session and artifact counts. If the run stores artifacts, the `agent-capture-<commit SHA>` artifact holds the media, manifests, and logs for three days. This report does not copy counts from a run, because each commit changes them.
 
