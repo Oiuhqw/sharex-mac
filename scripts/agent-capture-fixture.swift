@@ -133,6 +133,13 @@ private final class Fixture: NSObject, NSApplicationDelegate {
             case "mode":
                 if let value = command["mode"] as? String, let mode = Mode(rawValue: value) { self.mode = mode }
             case "close-window": window?.close()
+            case "front":
+                window?.level = .floating
+                window?.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            case "back":
+                window?.level = .normal
+                window?.orderBack(nil)
             case "terminate-observed":
                 if observedPID > 0 { NSRunningApplication(processIdentifier: observedPID)?.terminate() }
             case "quit": NSApp.terminate(nil)

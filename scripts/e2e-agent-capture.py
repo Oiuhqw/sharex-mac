@@ -580,6 +580,11 @@ class Run:
             if not self.capabilities["access"]["screenRecordingGranted"]:
                 raise Blocked("Grant Screen Recording permission to this installed ShareX app, then rerun. No fallback is allowed.")
             require(set(self.capabilities["operations"]) == set(OPERATIONS), "Capabilities do not expose exactly eight operations.")
+        self.prepare_fixture()
+        self.metrics_thread = threading.Thread(target=self._measure, daemon=True)
+        self.metrics_thread.start()
+
+    def prepare_fixture(self):
         with self.evidence.step("build_and_show_independent_fixture") as step:
             for source in ("agent-capture-fixture", "verify-agent-media"):
                 self.command(["/usr/bin/xcrun", "swiftc", "-parse-as-library", "-swift-version", "6", "-O",
@@ -598,8 +603,6 @@ class Run:
             self.geometry = self.wait_for(ready, 10, "visible independent fixture")
             self.baseline = self.control("observe", observedPID=self.app.pid)
             step["fixture"] = self.geometry
-        self.metrics_thread = threading.Thread(target=self._measure, daemon=True)
-        self.metrics_thread.start()
 
     def discover(self, client):
         targets = self.cli("targets.list")["targets"]
@@ -642,6 +645,7 @@ class Run:
         artifact = artifacts[-1]
         require(artifact["state"] == "completed", "Incomplete media cannot pass native capture evaluation.")
         expected = media_expectation(self.geometry, target, mode, kind, stages, minimum, maximum,
+                                     fps=(session.get("options") or {}).get("fps", 15),
                                      static_window=static_window)
         expected_path = self.evidence.path("media-expectation", "json")
         write_json(expected_path, expected)

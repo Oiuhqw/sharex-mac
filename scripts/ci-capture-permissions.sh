@@ -37,9 +37,7 @@ import sqlite3
 import sys
 
 with sqlite3.connect(sys.argv[1]) as connection:
-    identities = [(sys.argv[2], 1)]
-    if sys.argv[3]:
-        identities.append((sys.argv[3], 0))
+    identities = [(sys.argv[3], 0)] if sys.argv[3] else [(sys.argv[2], 1)]
     for service in sys.argv[4:]:
         for client, client_type in identities:
             connection.execute(

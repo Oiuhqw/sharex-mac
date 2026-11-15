@@ -172,7 +172,9 @@ private final class AccessibilityDriver {
         let items = value(extras, "AXChildren") as? [AXUIElement] ?? []
         let candidates = items.filter {
             text($0, "AXRole") == "AXMenuBarItem" &&
-            [text($0, "AXTitle"), text($0, "AXDescription")].contains(where: { $0 == "ShareX" || $0 == "ShareX agent recording" })
+            [text($0, "AXTitle"), text($0, "AXDescription")].contains(where: {
+                ["ShareX", "ShareX agent recording", "ShareX manual recording"].contains($0)
+            })
         }
         guard candidates.count == 1 else { throw GateError.failed("The owned app has no unique ShareX status menu item.") }
         let statusItem = candidates[0]
@@ -202,6 +204,16 @@ private final class AccessibilityDriver {
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         } while Date() < deadline
         throw GateError.failed("The selected ShareX status menu did not expose \(title). Opening AXPress returned \(openingStatus.rawValue).")
+    }
+
+    func closeWindow(_ title: String) throws {
+        let windows = (value(application, "AXWindows") as? [AXUIElement] ?? []).filter {
+            text($0, "AXTitle") == title
+        }
+        guard windows.count == 1, let close = element(windows[0], "AXCloseButton") else {
+            throw GateError.failed("Expected one closable window named \(title).")
+        }
+        try press(close)
     }
 }
 
@@ -259,6 +271,9 @@ private enum Main {
                 case "menu":
                     guard let title = options["--title"] else { throw GateError.failed("--title is required.") }
                     try ax.menu(title)
+                case "close-window":
+                    guard let title = options["--title"] else { throw GateError.failed("--title is required.") }
+                    try ax.closeWindow(title)
                 default: throw GateError.failed("Unknown action \(action).")
                 }
                 RunLoop.current.run(until: Date().addingTimeInterval(0.15))
