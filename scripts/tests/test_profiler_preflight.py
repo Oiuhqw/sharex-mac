@@ -14,6 +14,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "profiler-preflight.py"
 SPEC = importlib.util.spec_from_file_location("profiler_preflight", SCRIPT)
 PREFLIGHT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PREFLIGHT)
+XCTRACE_DOCUMENTATION_NAMES = ("xctrace-record-help", "xctrace-export-help", "xctrace-templates")
 
 
 def child(name, code, manual=False):
@@ -73,6 +74,7 @@ class CommandCollectionTests(unittest.TestCase):
         self.assertNotEqual(record["exitCode"], 0)
         self.assertEqual(files[record["stdout"]], b"before timeout" + os.linesep.encode())
         self.assertEqual(record["termination"]["ownedPID"], record["pid"])
+        self.assertEqual(record["termination"]["processGroup"], os.name == "posix")
 
     def test_shell_characters_are_literal_arguments_and_pagers_are_disabled(self):
         literal = "$(echo leaked) & echo leaked; `echo leaked`"
@@ -95,6 +97,18 @@ class CommandCollectionTests(unittest.TestCase):
         self.assertEqual(record["exitCode"], 0)
         self.assertEqual(files[record["plainText"]], b"")
 
+    def test_xctrace_documentation_on_either_stream_preserves_raw_output(self):
+        for name in XCTRACE_DOCUMENTATION_NAMES:
+            for stream in ("stdout", "stderr"):
+                with self.subTest(name=name, stream=stream):
+                    record, files = self.collect(child(name,
+                        f"import sys; sys.{stream}.buffer.write(b'installed documentation\\n')"))
+                    self.assertEqual(record["status"], "completed")
+                    self.assertEqual(record["exitCode"], 0)
+                    for output in ("stdout", "stderr"):
+                        expected = b"installed documentation\n" if output == stream else b""
+                        self.assertEqual(files[record[output]], expected)
+
 
 class DiscoveryTests(unittest.TestCase):
     def discover(self, commands, tools=(sys.executable,)):
@@ -106,6 +120,9 @@ class DiscoveryTests(unittest.TestCase):
             self.assertFalse(report["profileCollected"])
             self.assertFalse(report["samplingSyntaxValidated"])
             self.assertFalse(report["capabilityProbeRun"])
+            for record in report["commands"]:
+                self.assertTrue((out / record["stdout"]).is_file())
+                self.assertTrue((out / record["stderr"]).is_file())
             return report
 
     def test_success_means_documentation_collected_only(self):
@@ -114,6 +131,25 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(report["failedCommands"], [])
         self.assertEqual(report["unavailableTools"], [])
         self.assertEqual(report["commit"], "test-commit")
+
+    def test_zero_exit_with_empty_xctrace_documentation_is_incomplete(self):
+        for name in XCTRACE_DOCUMENTATION_NAMES:
+            for output in (b"", b" \t\r\n"):
+                with self.subTest(name=name, output=output):
+                    report = self.discover((child(name,
+                        f"import sys; sys.stdout.buffer.write({output!r}); sys.stderr.buffer.write({output!r})"),))
+                    self.assertEqual(report["outcome"], "incomplete")
+                    self.assertEqual(report["failedCommands"], [name])
+                    self.assertEqual(report["commands"][0]["status"], "empty_documentation")
+                    self.assertEqual(report["commands"][0]["exitCode"], 0)
+
+    def test_xctrace_documentation_on_either_stream_completes_discovery(self):
+        for name in XCTRACE_DOCUMENTATION_NAMES:
+            for stream in ("stdout", "stderr"):
+                with self.subTest(name=name, stream=stream):
+                    report = self.discover((child(name, f"import sys; print('installed documentation', file=sys.{stream})"),))
+                    self.assertEqual(report["outcome"], "discovery_complete")
+                    self.assertEqual(report["failedCommands"], [])
 
     def test_failed_xctrace_command_keeps_later_manual_and_inventory(self):
         report = self.discover((child("xctrace-templates", "import sys; print('unsupported', file=sys.stderr); sys.exit(64)"),
@@ -179,6 +215,8 @@ class ReadOnlyScopeTests(unittest.TestCase):
         self.assertIn("if: ${{ inputs.frame_gap_probe }}", discovery)
         self.assertIn("DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer", discovery)
         self.assertIn('python3 scripts/profiler-preflight.py', discovery)
+        test_command = "python3 -m unittest discover -s scripts/tests -p test_profiler_preflight.py -v"
+        self.assertLess(discovery.index(test_command), discovery.index("python3 scripts/profiler-preflight.py"))
         upload = discovery.split("- name: Store profiler discovery evidence", 1)[1]
         self.assertIn("if: ${{ always() }}", upload)
         self.assertIn("path: profiler-preflight-out", upload)

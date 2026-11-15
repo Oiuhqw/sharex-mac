@@ -66,6 +66,9 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
+      - name: Test profiler discovery collector
+        run: python3 -m unittest discover -s scripts/tests -p test_profiler_preflight.py -v
+
       - name: Discover installed Mac profiling tools
         run: |
           python3 scripts/profiler-preflight.py --commit '${{ github.sha }}' --out "$PWD/profiler-preflight-out"

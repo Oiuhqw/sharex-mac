@@ -14,6 +14,7 @@ from typing import NamedTuple
 
 
 TIMEOUT_SECONDS = 10
+XCTRACE_DOCUMENTATION = frozenset({"xctrace-record-help", "xctrace-export-help", "xctrace-templates"})
 
 
 class Command(NamedTuple):
@@ -117,6 +118,9 @@ def collect_command(command, out, timeout=TIMEOUT_SECONDS):
         record["plainText"] = plain_path.name
         if record["status"] == "completed" and not rendered.strip():
             record["status"] = "empty_manual"
+    if command.name in XCTRACE_DOCUMENTATION and record["status"] == "completed":
+        if not any(path.read_bytes().strip() for path in (stdout_path, stderr_path)):
+            record["status"] = "empty_documentation"
     write_json(record_path, record)
     return record
 
