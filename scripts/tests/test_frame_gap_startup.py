@@ -1043,7 +1043,8 @@ class PixelCheckTests(unittest.TestCase):
                         return {"exitCode": 0, "stdout": json.dumps({"status": "passed"})}
                     if outcome == "decoder_error":
                         return {"exitCode": 1, "stdout": json.dumps({"status": "failed", "reason": "bad PNG"})}
-                    status = "pending_presentation" if outcome == "never_ready" or (outcome == "ready" and len(captures) < 5) else "passed"
+                    pending = outcome == "never_ready" or (outcome == "ready" and len(captures) < 5)
+                    status = "pending_presentation" if pending else "passed"
                     return {"exitCode": 0 if status == "passed" else 3, "stdout": json.dumps({"status": status})}
 
                 def cleanup(**kwargs):

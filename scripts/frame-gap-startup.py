@@ -621,6 +621,7 @@ def run_pixel_check(args):
         report.update(appPID=run.app.pid, fixturePID=run.fixture.pid, before=before,
                       installedBinarySHA256=WORKLOAD.digest(run.binary),
                       fixtureBinarySHA256=WORKLOAD.digest(args.out / "agent-capture-fixture"))
+        previous = before
         deadline = time.monotonic() + 5
         report["readinessDeadlineUptime"] = deadline
         while time.monotonic() < deadline:
@@ -640,9 +641,12 @@ def run_pixel_check(args):
                            pixels=json.loads(checked["stdout"]), exitCode=checked["exitCode"],
                            after=run.control("observe", observedPID=run.app.pid))
             attempt["completedUptime"] = time.monotonic()
-            NATIVE.require(all(attempt["after"][key] == before[key]
-                               for key in ("mode", "pid", "windowID", "draws", "tick", "stage")),
+            NATIVE.require(before["mode"] == "static" and all(attempt["after"][key] == before[key]
+                               for key in ("mode", "pid", "windowID", "tick", "stage")),
                            "Pixel-check fixture changed while its static screenshot was captured.")
+            NATIVE.require(attempt["after"]["draws"] >= previous["draws"],
+                           "Pixel-check fixture draw count decreased during capture.")
+            previous = attempt["after"]
             GAP.save(args.out / "pixel-check.json", report)
             NATIVE.require((checked["exitCode"], attempt["pixels"].get("status")) in
                            ((0, "passed"), (3, "pending_presentation")), "Black-band decoder failed.")
@@ -662,6 +666,15 @@ def run_pixel_check(args):
         errors = run.cleanup(failed=report["status"] != "passed")
         draws = GAP.read_json(args.out / "fixture/draw-trace.json") or []
         report.update(analyze_bitmap_content(args.bitmap_content, report, draws, errors, primitive))
+        if "before" in report:
+            before = report["before"]
+            observations = [before] + [attempt["after"] for attempt in report["attempts"] if "after" in attempt]
+            if any(state["draws"] != sum(row["exitUptime"] <= state["uptime"] for row in draws)
+                   for state in observations):
+                errors.append("Pixel-check fixture draw counts disagree with the retained draw clocks.")
+            if any(row.get("tick") != before["tick"] or row.get("stage") != before["stage"] or not row.get("noisy")
+                   for row in draws if row["exitUptime"] > before["uptime"]):
+                errors.append("Pixel-check fixture content changed in a retained static draw.")
         for name in ("draw-trace-overflow.txt", "operation-trace-overflow.txt"):
             path = args.out / "fixture" / name
             if not path.is_file() or path.read_text().strip() != "0":
