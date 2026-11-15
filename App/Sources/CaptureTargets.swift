@@ -103,8 +103,14 @@ final class CaptureTargets {
             let output = try CaptureGeometry.recordingSize(widthPixels: pixels.width, heightPixels: pixels.height)
             config.width = output.width
             config.height = output.height
+            #if FRAME_GAP_PROBE
+            config.queueDepth = ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_DEEPER_QUEUE"] == "1" ? 5 : 3
+            config.pixelFormat = ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_NV12"] == "1"
+                ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange : kCVPixelFormatType_32BGRA
+            #else
             config.queueDepth = 3
             config.pixelFormat = kCVPixelFormatType_32BGRA
+            #endif
         } else { config.width = pixels.width; config.height = pixels.height }
         return Resolved(target: entry.target, filter: filter, configuration: config, scale: entry.identity.scale)
     }

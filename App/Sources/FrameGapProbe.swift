@@ -20,6 +20,7 @@ struct FrameGapCallback: Codable, Sendable {
     var dataReady: Bool
     var screen: Bool
     var image: Bool
+    var sourcePixelFormat: UInt32?
     var surfaceID: UInt32?
     var retainedSurfaceID: UInt32?
     var writerStatus: Int?
@@ -329,7 +330,9 @@ final class FrameGapTrace: @unchecked Sendable {
             displayTime: (attachments?.first?[.displayTime] as? NSNumber)?.uint64Value,
             status: attachments?.first?[.status] as? Int, valid: sample.isValid,
             dataReady: CMSampleBufferDataIsReady(sample), screen: type == .screen,
-            image: CMSampleBufferGetImageBuffer(sample) != nil, surfaceID: Self.surfaceID(sample))
+            image: CMSampleBufferGetImageBuffer(sample) != nil,
+            sourcePixelFormat: CMSampleBufferGetImageBuffer(sample).map { CVPixelBufferGetPixelFormatType($0) },
+            surfaceID: Self.surfaceID(sample))
     }
 
     func leave(_ value: FrameGapCallback) {
