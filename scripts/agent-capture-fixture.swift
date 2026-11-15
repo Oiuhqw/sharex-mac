@@ -8,9 +8,30 @@ private final class PatternView: NSView {
     var tick = 0
     var noisy = false
     private(set) var draws = 0
+    private(set) var noisyTraceStarted: Double?
+    private var traceDraws = 0
     override var isFlipped: Bool { true }
 
+    func beginNoisyTrace() {
+        guard noisy, noisyTraceStarted == nil else { return }
+        let started = ProcessInfo.processInfo.systemUptime
+        noisyTraceStarted = started
+        trace("noise uptime=\(started) tick=\(tick) draws=\(draws)")
+    }
+
+    func trace(_ message: String) {
+        FileHandle.standardError.write(Data("[fixture-timing] \(message)\n".utf8))
+    }
+
     override func draw(_ dirtyRect: NSRect) {
+        let drawStarted = noisyTraceStarted != nil && traceDraws < 24 ? ProcessInfo.processInfo.systemUptime : nil
+        defer {
+            if let drawStarted, let noisyTraceStarted, drawStarted - noisyTraceStarted <= 1 {
+                let drawFinished = ProcessInfo.processInfo.systemUptime
+                traceDraws += 1
+                trace("draw n=\(traceDraws) uptime=\(drawStarted) since_noise=\(drawStarted - noisyTraceStarted) elapsed_ms=\((drawFinished - drawStarted) * 1_000) tick=\(tick) draws=\(draws)")
+            }
+        }
         draws += 1
         let colors: [(CGFloat, CGFloat, CGFloat)] = [
             (230, 32, 40), (32, 210, 80), (30, 80, 230), (240, 210, 40)
@@ -81,6 +102,7 @@ private final class Fixture: NSObject, NSApplicationDelegate {
     var mode = Mode.animated
     var displayID: CGDirectDisplayID = 0
     var failure: String?
+    private var traceTicks = 0
 
     init(directory: URL, title: String) {
         self.directory = directory
@@ -119,6 +141,14 @@ private final class Fixture: NSObject, NSApplicationDelegate {
     }
 
     @objc func update() {
+        let tickStarted = traceTicks < 24 ? ProcessInfo.processInfo.systemUptime : nil
+        defer {
+            if let tickStarted, let noisyStarted = view?.noisyTraceStarted, tickStarted - noisyStarted <= 1 {
+                let tickFinished = ProcessInfo.processInfo.systemUptime
+                traceTicks += 1
+                view?.trace("tick n=\(traceTicks) uptime=\(tickStarted) since_noise=\(tickStarted - noisyStarted) elapsed_ms=\((tickFinished - tickStarted) * 1_000) tick=\(view?.tick ?? -1) draws=\(view?.draws ?? -1)")
+            }
+        }
         let commandURL = directory.appendingPathComponent("command.json")
         if let data = try? Data(contentsOf: commandURL),
            let command = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -132,6 +162,7 @@ private final class Fixture: NSObject, NSApplicationDelegate {
                 }
             case "noise":
                 view?.noisy = command["enabled"] as? Bool ?? false
+                view?.beginNoisyTrace()
                 view?.needsDisplay = true
             case "mode":
                 if let value = command["mode"] as? String, let mode = Mode(rawValue: value) { self.mode = mode }

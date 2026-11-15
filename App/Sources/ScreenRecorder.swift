@@ -130,6 +130,10 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
     private var endingDuration: Double?
     private var finishing = false
     private var failure: AgentFailure?
+    private let traceID = UUID().uuidString
+    private var traceCallbacks = 0
+    private var traceAppends = 0
+    private var traceLimitChecks = 0
 
     init(url: URL, width: Int, height: Int, options: RecordingOptions, onFailure: @escaping @Sendable (AgentFailure) -> Void,
          onLimit: @escaping @Sendable (String) -> Void) throws {
@@ -154,6 +158,7 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
     func begin(_ callback: @escaping @Sendable (Result<RecorderStatistics, Error>) -> Void) {
         queue.async {
             self.startup = callback
+            self.trace("begin uptime=\(ProcessInfo.processInfo.systemUptime) fps=\(self.fps) max_bytes=\(self.options.maxBytes)")
             guard self.writer.startWriting() else { self.fail(self.writerFailure()); return }
             self.queue.asyncAfter(deadline: .now() + 12) {
                 if self.startup != nil { self.fail(AgentFailure(.startupTimeout, "The writer did not accept a complete frame within 12 seconds.")) }
@@ -174,6 +179,14 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
+        if traceCallbacks < 15 {
+            let arrived = ProcessInfo.processInfo.systemUptime
+            traceCallbacks += 1
+            let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]]
+            let status = attachments?.first?[.status] as? Int
+            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            trace("callback n=\(traceCallbacks) uptime=\(arrived) pts=\(pts.seconds) status=\(status ?? -1) screen=\(outputType == .screen) valid=\(sampleBuffer.isValid) image=\(CMSampleBufferGetImageBuffer(sampleBuffer) != nil) finishing=\(finishing) failed=\(failure != nil)")
+        }
         guard outputType == .screen, !finishing, failure == nil, sampleBuffer.isValid,
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
               let raw = attachments.first?[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete,
@@ -183,7 +196,16 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard pts.isValid, pts.isNumeric else { dropped += 1; return }
         if firstPTS == nil { writer.startSession(atSourceTime: pts) }
-        guard input.append(sampleBuffer) else { fail(writerFailure()); return }
+        let appendStarted = traceAppends < 15 ? ProcessInfo.processInfo.systemUptime : nil
+        let appended = input.append(sampleBuffer)
+        let appendFinished = appendStarted.map { _ in ProcessInfo.processInfo.systemUptime }
+        defer {
+            if let appendStarted, let appendFinished {
+                traceAppends += 1
+                trace("append n=\(traceAppends) uptime=\(appendStarted) pts=\(pts.seconds) elapsed_ms=\((appendFinished - appendStarted) * 1_000) success=\(appended)")
+            }
+        }
+        guard appended else { fail(writerFailure()); return }
         accepted += 1; lastSample = sampleBuffer
         if firstPTS == nil {
             firstPTS = pts; firstUptime = ProcessInfo.processInfo.systemUptime; startedAt = Date()
@@ -213,13 +235,28 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
 
     private func checkLimits() {
         guard !finishing, failure == nil, let firstUptime else { return }
+        let checkStarted = ProcessInfo.processInfo.systemUptime
+        let traceCheck = checkStarted - firstUptime <= 1 && traceLimitChecks < 12
+        var fileElapsed = -1.0
+        var volumeElapsed = -1.0
+        defer {
+            if traceCheck {
+                let checkFinished = ProcessInfo.processInfo.systemUptime
+                traceLimitChecks += 1
+                trace("limit n=\(traceLimitChecks) uptime=\(checkStarted) since_first=\(checkStarted - firstUptime) elapsed_ms=\((checkFinished - checkStarted) * 1_000) file_ms=\(fileElapsed) volume_ms=\(volumeElapsed)")
+            }
+        }
         let reason: String?
         if ProcessInfo.processInfo.systemUptime - firstUptime >= options.maxDurationSeconds {
             reason = "duration_limit"
         } else {
             do {
+                let fileStarted = traceCheck ? ProcessInfo.processInfo.systemUptime : nil
                 let bytes = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
+                if let fileStarted { fileElapsed = (ProcessInfo.processInfo.systemUptime - fileStarted) * 1_000 }
+                let volumeStarted = traceCheck ? ProcessInfo.processInfo.systemUptime : nil
                 let available = try url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage ?? 0
+                if let volumeStarted { volumeElapsed = (ProcessInfo.processInfo.systemUptime - volumeStarted) * 1_000 }
                 if bytes >= options.maxBytes - min(options.maxBytes / 10, 16_777_216) { reason = "byte_limit" }
                 else if available < CaptureLimits().diskReserveBytes + 8_388_608 { reason = "disk_reserve" }
                 else { reason = nil }
@@ -285,6 +322,9 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
     private func snapshot() -> RecorderStatistics {
         RecorderStatistics(acceptedFrames: accepted, droppedFrames: dropped, startedAt: startedAt,
             durationSeconds: endingDuration ?? firstUptime.map { ProcessInfo.processInfo.systemUptime - $0 } ?? 0)
+    }
+    private func trace(_ message: String) {
+        FileHandle.standardError.write(Data("[capture-timing] recorder=\(traceID) \(message)\n".utf8))
     }
     private func writerFailure() -> AgentFailure {
         AgentFailure(.recordingFailed, writer.error?.localizedDescription ?? "The video writer rejected the capture.")
