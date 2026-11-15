@@ -30,9 +30,9 @@ else
   if [[ "${2:-}" == --accessibility ]]; then services+=(kTCCServiceAccessibility); fi
 fi
 test -x "$binary"
-for database in '/Library/Application Support/com.apple.TCC/TCC.db' "$HOME/Library/Application Support/com.apple.TCC/TCC.db"; do
-  if [[ -f "$database" ]]; then
-    sudo python3 - "$database" "$binary" "$bundle_id" "${services[@]}" <<'PY'
+database='/Library/Application Support/com.apple.TCC/TCC.db'
+test -f "$database"
+sudo python3 - "$database" "$binary" "$bundle_id" "${services[@]}" <<'PY'
 import sqlite3
 import sys
 
@@ -48,5 +48,3 @@ with sqlite3.connect(sys.argv[1]) as connection:
                 (service, client, client_type),
             )
 PY
-  fi
-done
