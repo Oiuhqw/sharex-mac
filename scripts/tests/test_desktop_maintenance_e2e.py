@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -49,6 +50,102 @@ class PermissionProofTests(unittest.TestCase):
         DRIVER.require_permission_removed(self.before, after, self.helper)
         with self.assertRaisesRegex(DRIVER.Failure, "records remain"):
             DRIVER.require_permission_removed(self.before, after, self.helper, all_services=True)
+
+
+class PermissionProbeTests(unittest.TestCase):
+    def connection(self, granted=False):
+        connection = mock.Mock()
+        connection.getsockopt.return_value = 123
+
+        def respond(frame):
+            self.assertEqual(int.from_bytes(frame[:4], "big"), len(frame) - 4)
+            request = json.loads(frame[4:])
+            self.assertEqual(request["operation"], "capabilities")
+            response = json.dumps({"version": 1, "id": request["id"], "ok": True,
+                                   "result": {"access": {"screenRecordingGranted": granted}}}).encode()
+            connection.makefile.return_value = io.BytesIO(len(response).to_bytes(4, "big") + response)
+
+        connection.sendall.side_effect = respond
+        return connection
+
+    def test_permission_is_read_from_the_exact_socket_peer(self):
+        for granted in (False, True):
+            with self.subTest(granted=granted):
+                result = DRIVER.permission_probe_response(self.connection(granted), 123)
+                self.assertEqual(result["socketPeerPID"], 123)
+                self.assertIs(result["capabilities"]["access"]["screenRecordingGranted"], granted)
+
+    def test_wrong_socket_peer_is_rejected_before_sending_a_request(self):
+        connection = self.connection()
+        with self.assertRaisesRegex(DRIVER.Failure, "another process"):
+            DRIVER.permission_probe_response(connection, 456)
+        connection.sendall.assert_not_called()
+
+    def test_truncated_or_unbounded_response_cannot_pass(self):
+        for frame, reason in ((b"\x00", "frame header"),
+                              ((1_048_577).to_bytes(4, "big"), "frame limit"),
+                              ((20).to_bytes(4, "big") + b"{}", "incomplete")):
+            with self.subTest(reason=reason):
+                connection = self.connection()
+                connection.sendall.side_effect = None
+                connection.makefile.return_value = io.BytesIO(frame)
+                with self.assertRaisesRegex(DRIVER.Failure, reason):
+                    DRIVER.permission_probe_response(connection, 123)
+
+    def test_wrong_request_id_cannot_pass(self):
+        connection = self.connection()
+        connection.sendall.side_effect = None
+        response = json.dumps({"version": 1, "id": str(uuid.uuid4()), "ok": True, "result": {}}).encode()
+        connection.makefile.return_value = io.BytesIO(len(response).to_bytes(4, "big") + response)
+        with self.assertRaisesRegex(DRIVER.Failure, "request ID changed"):
+            DRIVER.permission_probe_response(connection, 123)
+
+    def test_unexpected_grant_after_reset_cannot_regrant_or_resume(self):
+        run = DRIVER.Run.__new__(DRIVER.Run)
+        run.launch_services_capabilities = mock.Mock(return_value={
+            "capabilities": {"access": {"screenRecordingGranted": True}}})
+        run.command = mock.Mock()
+        run.start_app = mock.Mock()
+        with self.assertRaisesRegex(DRIVER.Failure, "still reports"):
+            run.restore_permission_after_reset()
+        run.command.assert_not_called()
+        run.start_app.assert_not_called()
+
+    def test_launch_services_polling_keeps_app_identity_separate_from_the_launcher(self):
+        empty = {"applications": [], "pids": []}
+        for registered_first in (False, True):
+            with self.subTest(registered_first=registered_first):
+                run = DRIVER.Run.__new__(DRIVER.Run)
+                run.args = SimpleNamespace(app=Path("ShareX.app").resolve())
+                run.binary = run.args.app / "Contents/MacOS/ShareX"
+                application = {"pid": 123, "bundleID": DRIVER.BUNDLE_ID,
+                               "bundlePath": str(run.args.app), "executablePath": str(run.binary), "launchTime": 100}
+                owned = {"applications": [application], "pids": [123]}
+                registered = {"applications": [application], "pids": []}
+                named = {"applications": [], "pids": [123]}
+                run.application_processes = mock.Mock(side_effect=[
+                    empty, registered if registered_first else named, owned, owned, owned, registered, named, empty])
+                original = run.app = mock.Mock()
+                original.poll.return_value = 0
+                launcher = mock.Mock(pid=456, returncode=0)
+                launcher.poll.return_value = None
+                launcher.wait.side_effect = lambda timeout: setattr(launcher.poll, "return_value", 0)
+                run.launch = mock.Mock(return_value=launcher)
+                run.permissions = mock.Mock(return_value={"system": []})
+                run.control = mock.Mock()
+                run.agent_endpoint = mock.Mock(return_value=Path("agent.sock"))
+                run.evidence = mock.Mock()
+                with mock.patch.object(DRIVER.time, "time", return_value=100), \
+                        mock.patch.object(DRIVER, "socket") as socket_api:
+                    socket_api.socket.return_value.__enter__.return_value = self.connection()
+                    observation = run.launch_services_capabilities("after-reset")
+                self.assertIs(run.app, original)
+                self.assertEqual(observation["application"]["pid"], 123)
+                self.assertEqual(observation["launcherPID"], 456)
+                self.assertEqual(observation["socketPeerPID"], 123)
+                run.control.assert_called_once_with("terminate-observed", observedPID=123)
+                original.wait.assert_not_called()
+                launcher.terminate.assert_not_called()
 
 
 class LoginProofTests(unittest.TestCase):

@@ -271,6 +271,16 @@ private enum Main {
             if action == "preflight" {
                 guard AXIsProcessTrusted() else { throw GateError.blocked("Accessibility permission is missing for this helper executable.") }
                 output = ["accessibilityTrusted": true, "screenRecordingGranted": CGPreflightScreenCaptureAccess()]
+            } else if action == "applications" {
+                guard let bundleID = options["--bundle-id"] else { throw GateError.failed("--bundle-id is required.") }
+                output["applications"] = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                    .filter { !$0.isTerminated }
+                    .map { app -> [String: Any] in
+                        ["pid": app.processIdentifier, "bundleID": app.bundleIdentifier ?? "",
+                         "bundlePath": app.bundleURL?.resolvingSymlinksInPath().path ?? "",
+                         "executablePath": app.executableURL?.resolvingSymlinksInPath().path ?? "",
+                         "launchTime": app.launchDate?.timeIntervalSince1970 ?? 0]
+                    }
             } else if action == "pasteboard" {
                 output = ["text": NSPasteboard.general.string(forType: .string) ?? "", "changeCount": NSPasteboard.general.changeCount]
             } else if action == "screenshot" {

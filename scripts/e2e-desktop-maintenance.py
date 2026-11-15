@@ -17,6 +17,7 @@ from pathlib import Path
 import plistlib
 import re
 import signal
+import socket
 import stat
 import sys
 import time
@@ -46,6 +47,8 @@ for path in ('/Library/Application Support/com.apple.TCC/TCC.db',
             'SELECT * FROM access WHERE client IN (?, ?) ORDER BY service, client, client_type', sys.argv[2:4])]
 print(json.dumps(result, sort_keys=True))
 """
+DARWIN_SOL_LOCAL = 0
+DARWIN_LOCAL_PEERPID = 2
 
 
 def tree_hashes(root):
@@ -83,6 +86,23 @@ def login_records(output, app):
 def permission_rows(snapshot, client):
     return {database: [row for row in rows if row["client"] == client]
             for database, rows in snapshot.items()}
+
+
+def permission_probe_response(connection, pid):
+    peer_pid = connection.getsockopt(DARWIN_SOL_LOCAL, DARWIN_LOCAL_PEERPID)
+    require(peer_pid == pid, "The agent socket belongs to another process.")
+    request_id = str(uuid.uuid4())
+    request = {"version": 1, "id": request_id, "operation": "capabilities", "arguments": {}}
+    body = json.dumps(request).encode()
+    connection.sendall(len(body).to_bytes(4, "big") + body)
+    with connection.makefile("rb") as reader:
+        header = reader.read(4)
+        require(len(header) == 4, "The permission probe response has no complete frame header.")
+        size = int.from_bytes(header, "big")
+        require(0 < size <= 1_048_576, "The permission probe response exceeds its frame limit.")
+        response = reader.read(size)
+        require(len(response) == size, "The permission probe response frame is incomplete.")
+    return {"socketPeerPID": peer_pid, "capabilities": NATIVE.decode_response(json.loads(response), request_id)}
 
 
 def require_permission_removed(before, after, helper, all_services=False):
@@ -386,22 +406,94 @@ class Run(SETUP.Run):
             after_files = tree_hashes(self.root)
             require(all(after_files.get(name) == value for name, value in retained.items()), "Permission reset changed prior capture evidence.")
             step.update(sessionID=ended["id"], permissionScope=BUNDLE_ID, retainedEvidenceEntries=len(retained))
-        with self.evidence.step("permission_reset_visible_after_restart"):
-            self.restore_permission_after_reset()
+        with self.evidence.step("permission_reset_visible_after_restart") as step:
+            step.update(self.restore_permission_after_reset())
         self.failed_recording_story()
-        with self.evidence.step("failed_recording_reset_visible_after_restart"):
-            self.restore_permission_after_reset()
+        with self.evidence.step("failed_recording_reset_visible_after_restart") as step:
+            step.update(self.restore_permission_after_reset())
         self.uninstall_stories()
 
+    def application_processes(self):
+        response = SETUP.decode_helper(self.command(
+            [self.args.helper, "--action", "applications", "--bundle-id", BUNDLE_ID], timeout=5, check=False))
+        running = self.command(["/usr/bin/pgrep", "-x", self.binary.name], timeout=5, check=False)
+        require(running["exitCode"] in (0, 1), "Could not enumerate ShareX processes.")
+        return {"applications": response["applications"], "pids": sorted(int(pid) for pid in running["stdout"].split())}
+
+    def launch_services_capabilities(self, phase):
+        require(self.app is None or self.app.poll() is not None, "The directly owned app must exit before the permission probe.")
+        empty = {"applications": [], "pids": []}
+        require(self.application_processes() == empty, "A ShareX app is already running before the permission probe.")
+        permissions_before = self.permissions()
+        launched_at = time.time()
+        launcher = self.launch(["/usr/bin/open", "-n", "-W", self.args.app, "--args", "--agent-background"], "launch-services")
+        application = None
+
+        def ready():
+            nonlocal application
+            require(launcher.poll() is None, "LaunchServices exited before the app permission probe was ready.")
+            processes = self.application_processes()
+            applications = processes["applications"]
+            require(len(applications) <= 1 and len(processes["pids"]) <= 1,
+                    "LaunchServices started more than one ShareX app.")
+            if not applications:
+                return None
+            current = applications[0]
+            require(current["bundleID"] == BUNDLE_ID and current["bundlePath"] == str(self.args.app.resolve())
+                    and current["executablePath"] == str(self.binary.resolve())
+                    and current["launchTime"] >= launched_at - 1 and current["pid"] > 0
+                    and current["pid"] != launcher.pid,
+                    f"LaunchServices did not start the exact installed ShareX app: {current}.")
+            require(application is None or application == current, "The LaunchServices app identity changed during startup.")
+            application = current
+            if not processes["pids"]:
+                return None
+            require(processes["pids"] == [application["pid"]], "The permission probe does not own the only ShareX process.")
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                    connection.settimeout(5)
+                    connection.connect(str(self.agent_endpoint()))
+                    response = permission_probe_response(connection, application["pid"])
+            except (FileNotFoundError, ConnectionRefusedError):
+                return None
+            require(self.application_processes() == processes, "The permission probe app exited or changed identity.")
+            observation = {"phase": phase, "launcherPID": launcher.pid, "application": application,
+                           **response,
+                           "permissionsBefore": permissions_before, "permissionsAfter": self.permissions()}
+            self.evidence.emit("launch_services_permission_probe", **observation)
+            return observation
+
+        try:
+            return self.wait_for(ready, 20, "LaunchServices app permission response")
+        finally:
+            try:
+                if application is not None:
+                    processes = self.application_processes()
+                    if processes != empty:
+                        require(processes == {"applications": [application], "pids": [application["pid"]]},
+                                "Refusing to terminate a different ShareX app after the permission probe.")
+                        self.control("terminate-observed", observedPID=application["pid"])
+                    self.wait_for(lambda: self.application_processes() == empty, 20, "actual LaunchServices app PID to exit")
+                    self.evidence.emit("launch_services_app_exited", phase=phase, pid=application["pid"])
+                    launcher.wait(timeout=5)
+                    self.evidence.emit("launch_services_launcher_exited", phase=phase, pid=launcher.pid,
+                                       launcherExitCode=launcher.returncode)
+            finally:
+                NATIVE.stop_process(launcher)
+
     def restore_permission_after_reset(self):
-        self.start_app()
-        require(self.capabilities["access"]["screenRecordingGranted"] is False,
+        denied = self.launch_services_capabilities("after-reset")
+        require(denied["capabilities"]["access"]["screenRecordingGranted"] is False,
                 "The app still reports Screen Recording permission after reset and restart.")
-        self.quit_app()
         self.command(["/bin/bash", NATIVE.ROOT / "ci-capture-permissions.sh", self.args.app])
+        granted = self.launch_services_capabilities("after-ci-regrant")
+        require(granted["capabilities"]["access"]["screenRecordingGranted"] is True,
+                "The LaunchServices app did not observe the restored app-scoped grant.")
+        require(denied["application"]["pid"] != granted["application"]["pid"], "Permission probes reused an app PID.")
         self.start_app()
         require(self.capabilities["access"]["screenRecordingGranted"] is True,
                 "Runner could not restore its app-scoped grant for remaining maintenance evaluation.")
+        return {"denied": denied, "granted": granted, "resumedAppPID": self.app.pid}
 
     def enable_launch_at_login(self):
         self.helper("menu", title="Settings…")
