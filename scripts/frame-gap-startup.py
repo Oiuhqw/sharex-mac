@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Compare startup sinks or first-noise timing after the original native prefix."""
+"""Compare startup sinks, first-noise timing, or bitmap content after the native prefix."""
 import argparse
 from collections import Counter
 from contextlib import contextmanager
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -28,12 +29,15 @@ WORKLOAD = module("startup_workload", "frame-gap-workload.py")
 GAP = WORKLOAD.GAP
 ORDER = ("control", "metadata", "metadata", "control")
 COMPARISONS = {
-    "sinks": tuple((arm, None) for arm in ORDER),
-    "noise-timing": (("metadata", "before"), ("metadata", "after"),
-                     ("metadata", "after"), ("metadata", "before")),
-    "late-noise": (("metadata", "before"), ("metadata", "late"),
-                   ("metadata", "late"), ("metadata", "before")),
+    "sinks": tuple((arm, None, None) for arm in ORDER),
+    "noise-timing": (("metadata", "before", None), ("metadata", "after", None),
+                     ("metadata", "after", None), ("metadata", "before", None)),
+    "late-noise": (("metadata", "before", None), ("metadata", "late", None),
+                   ("metadata", "late", None), ("metadata", "before", None)),
+    "bitmap-content": (("metadata", "before", "original"), ("metadata", "before", "constant"),
+                       ("metadata", "before", "constant"), ("metadata", "before", "original")),
 }
+BITMAP_COMPONENT_MASKS = {"original": 255, "constant": 0}
 LATE_NOISE_DELAY_SECONDS = 1.0
 PRE_NOISE_MINIMUM_COMPLETE_CALLBACKS = 8
 PRE_NOISE_MINIMUM_SPAN_SECONDS = 0.75
@@ -157,7 +161,8 @@ def run_arm(args):
     evidence = StartupEvidence(args.out)
     run = StartupRun(args, evidence)
     report = {"diagnosticOnly": True, "arm": args.arm, "requestID": run.request_id,
-              "noiseTiming": args.noise_timing, "status": "failed", "byteLimitE2EPassed": False}
+              "noiseTiming": args.noise_timing, "bitmapContent": args.bitmap_content,
+              "status": "failed", "byteLimitE2EPassed": False}
     handlers = {}
 
     def interrupted(signum, frame):
@@ -309,6 +314,8 @@ def analyze_noise_timing(timing, request_id, trace, complete, draws, operations,
             "completeSourceIntervalsCrossingNoise": [row for row in complete_pts if row["start"] < noise < row["end"]],
             "allSourceIntervalsCrossingNoise": [row for row in all_pts if row["start"] < noise < row["end"]],
             "sourceLongIntervalThresholdSeconds": GAP.QUALITY_GAP_SECONDS,
+            "allSourcePTSIntervals": all_pts, "maximumAllSourcePTSInterval": GAP.maximum(all_pts),
+            "maximumCompleteSourcePTSInterval": GAP.maximum(complete_pts),
             "firstLongCompleteSourceInterval": first_long_interval(complete_pts),
             "firstLongAllSourceInterval": first_long_interval(all_pts),
             "maximumTargetFixtureOperationSpan": GAP.maximum(target_spans),
@@ -327,7 +334,54 @@ def analyze_noise_timing(timing, request_id, trace, complete, draws, operations,
             "callbacksAroundFirstNoise": [row for row in callbacks if noise - 1 <= row["entryUptime"] <= noise + 1]}
 
 
-def analyze_arm(directory, arm, request_id, noise_timing=None):
+def analyze_bitmap_content(content, result, draws, errors):
+    expected = {"componentMask": BITMAP_COMPONENT_MASKS[content], "width": 640, "height": 56,
+                "bitsPerComponent": 8, "bitsPerPixel": 32, "bytesPerRow": 2560, "byteCount": 143360,
+                "bitmapInfo": 5, "colorSpaceModel": 1, "shouldInterpolate": False}
+    if result.get("bitmapContent") != content:
+        errors.append("The native result does not identify the requested bitmap content.")
+    noisy = [row for row in draws if row.get("noisy")]
+    proofs = [row for row in draws if row.get("bitmap") is not None]
+    if not noisy or noisy != proofs:
+        errors.append("Every noisy draw must contain a successful bitmap draw, with none in the non-noisy prefix.")
+    for row in proofs:
+        proof = row["bitmap"]
+        if any(proof.get(key) != value for key, value in expected.items()):
+            errors.append("Bitmap content mask or actual image layout differs from the selected condition.")
+            break
+        destination = proof.get("destination", [])
+        if len(destination) != 4 or any(not math.isclose(actual, value, abs_tol=1e-9)
+                                       for actual, value in zip(destination, (0, 422.4, 640, 57.6))):
+            errors.append("Bitmap draw destination differs from the original scaled rectangle.")
+            break
+        if not row["entryUptime"] <= proof.get("entryUptime", -1) <= proof.get("exitUptime", -1) <= row["exitUptime"]:
+            errors.append("Bitmap draw timing is absent or lies outside the fixture draw.")
+            break
+        count = proof.get("rgbNonzeroCount")
+        if (type(count) is not int or not 0 <= count <= 640 * 56 * 3
+                or (count == 0) != (content == "constant")):
+            errors.append("Bitmap RGB byte evidence does not match the selected content.")
+            break
+        tick = row.get("tick")
+        if type(tick) is not int or tick < 0:
+            errors.append("Bitmap draw omitted its source tick.")
+            break
+        seed = tick + 1
+        expected_nonzero = 0
+        for _ in range(640 * 56):
+            seed = (seed * 6364136223846793005 + 1442695040888963407) & ((1 << 64) - 1)
+            expected_nonzero += sum(((seed >> shift) & expected["componentMask"]) != 0 for shift in (24, 32, 40))
+        if proof.get("finalSeed") != seed:
+            errors.append("Bitmap final seed does not prove the unchanged complete LCG loop.")
+            break
+        if count != expected_nonzero:
+            errors.append("Bitmap RGB byte count differs from the complete LCG generation.")
+            break
+    return {"bitmapContent": content, "bitmapDrawCount": len(proofs),
+            "firstBitmapDraw": proofs[0] if proofs else None}
+
+
+def analyze_arm(directory, arm, request_id, noise_timing=None, bitmap_content=None):
     result = GAP.read_json(directory / "native/result.json") or {}
     events_path = directory / "native/events.jsonl"
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()] if events_path.exists() else []
@@ -410,7 +464,9 @@ def analyze_arm(directory, arm, request_id, noise_timing=None):
                        and request_id.lower() in [str(part).lower() for part in event["command"]]]
     timing_analysis = analyze_noise_timing(noise_timing, request_id, trace, complete, draws, fixture_operations,
                                           events, status_launches, errors) if noise_timing else {}
-    return {"result": result, "errors": errors, "trace": str(path), "selection": selection, **timing_analysis,
+    bitmap_analysis = analyze_bitmap_content(bitmap_content, result, draws, errors) if bitmap_content else {}
+    return {"result": result, "errors": errors, "trace": str(path), "selection": selection,
+            **timing_analysis, **bitmap_analysis,
             "writerConstructionCount": writer_count, "analysis": GAP.summarize({"trace": trace}, draws),
             "firstPTSInterval": pts_intervals[0] if pts_intervals else None,
             "firstDisplayTimeInterval": display_intervals[0] if display_intervals else None,
@@ -431,11 +487,14 @@ def run_comparison(args):
     NATIVE.require(setup and setup.get("status") == "passed", "The original setup UI run did not pass.")
     binary = args.app.resolve() / "Contents/MacOS/ShareX"
     initial_hash = WORKLOAD.digest(binary)
+    fixture_source = ROOT / "agent-capture-fixture.swift"
+    fixture_hash = WORKLOAD.digest(fixture_source)
+    fixture_binary_hash = None
     comparison = args.comparison
     arms = COMPARISONS[comparison]
     summary = {"diagnosticOnly": True, "commit": args.commit, "comparison": comparison,
-               "order": [timing or arm for arm, timing in arms], "runs": [],
-               "installedBinarySHA256": initial_hash, "fixtureSHA256": WORKLOAD.digest(ROOT / "agent-capture-fixture.swift"),
+               "order": [content or timing or arm for arm, timing, content in arms], "runs": [],
+               "installedBinarySHA256": initial_hash, "fixtureSHA256": fixture_hash,
                "setup": setup, "setupContext": "Original setup UI ran once before arm 1. Arms 2 through 4 reuse its account state; setup is not repeated.",
                "acknowledgementCaveat": "Control acknowledges after first append; metadata acknowledges after first complete callback. CLI polling remains 100 ms after each response. Removed append time changes later launch timing.",
                "scope": "Each arm starts a fresh app and fixture, runs the original native prefix and inline decodes, then stops at the first noisy capture. No maintenance, uninstall, or app replacement runs between arms. Metadata is not decoded-video E2E coverage."}
@@ -449,35 +508,56 @@ def run_comparison(args):
             "maximumCompleteSourceIntervalSeconds": PRE_NOISE_MAXIMUM_INTERVAL_SECONDS,
             "maximumLastCompletePTSAgeSeconds": PRE_NOISE_MAXIMUM_INTERVAL_SECONDS,
             "requiredPostNoiseSeconds": 1.0, "bound": "Actual first noisy draw entry uptime. Qualification never delays noise."}
+    if comparison == "bitmap-content":
+        summary["acknowledgementCaveat"] = "Every target uses metadata and first draws its bitmap before recording.start. Native polling and the fixed three-second observation are unchanged. Only the runtime RGB component mask differs."
+        summary["interpretation"] = {
+            "constantReproduces": "High-entropy changing RGB content is not necessary for the observed source gap.",
+            "onlyOriginalRepeats": "Both original arms reproduce and both constant arms are clean. This supports a content-dependent presentation boundary, not a specific compositor or GPU mechanism.",
+            "mixedCleanOrIncomplete": "Mixed repetitions, all-clean results, or incomplete evidence permit no clean paired causal claim.",
+            "followOn": "Use a system profile to locate the unresolved presentation or source work. No production fix follows from timing alone."}
     GAP.save(args.out / "comparison.json", summary)
-    for index, (arm, noise_timing) in enumerate(arms, 1):
-        directory = args.out / f"arm-{index:02d}-{noise_timing or arm}"
+    for index, (arm, noise_timing, bitmap_content) in enumerate(arms, 1):
+        label = bitmap_content or noise_timing or arm
+        directory = args.out / f"arm-{index:02d}-{label}"
         directory.mkdir()
         (directory / "traces").mkdir()
         request_id = str(uuid.uuid4()).upper()
         environment = {**os.environ, "SHAREX_FRAME_GAP_WORKLOAD": "1", "SHAREX_FRAME_GAP_FIXTURE_TRACE": "1",
                        "SHAREX_FRAME_GAP_TRACE_DIR": str(directory / "traces"), "SHAREX_FRAME_GAP_HEARTBEAT": "1",
                        "SHAREX_FRAME_GAP_OWNED_BUFFERS": "0", "SHAREX_FRAME_GAP_NV12": "0", "SHAREX_FRAME_GAP_DEEPER_QUEUE": "0",
-                       "SHAREX_FRAME_GAP_STARTUP_SINK": arm, "SHAREX_FRAME_GAP_STARTUP_REQUEST_ID": request_id}
-        record = {"arm": arm, "noiseTiming": noise_timing, "index": index, "requestID": request_id}
+                       "SHAREX_FRAME_GAP_STARTUP_SINK": arm, "SHAREX_FRAME_GAP_STARTUP_REQUEST_ID": request_id,
+                       "SHAREX_FRAME_GAP_BITMAP_COMPONENT_MASK": str(BITMAP_COMPONENT_MASKS[bitmap_content or "original"])}
+        record = {"arm": arm, "noiseTiming": noise_timing, "bitmapContent": bitmap_content,
+                  "index": index, "requestID": request_id}
         try:
             NATIVE.require(WORKLOAD.digest(binary) == initial_hash, "Installed binary changed between arms.")
+            NATIVE.require(WORKLOAD.digest(fixture_source) == fixture_hash, "Fixture source changed between arms.")
             arguments = [sys.executable, __file__, "--arm", arm, "--app", args.app,
                          "--build-settings", args.build_settings, "--out", directory / "native"]
             if noise_timing:
                 arguments.extend(["--comparison", comparison, "--noise-timing", noise_timing])
+            if bitmap_content:
+                arguments.extend(["--bitmap-content", bitmap_content])
             record.update(WORKLOAD.bounded_harness(arguments,
                           directory / "native.log", environment, 480))
-            record.update(analyze_arm(directory, arm, request_id, noise_timing))
+            record.update(analyze_arm(directory, arm, request_id, noise_timing, bitmap_content))
             expected_exit = 0 if record.get("result", {}).get("status") == "diagnostic_complete" else 1
             if record.get("exitCode") != expected_exit:
                 record.setdefault("errors", []).append("Native process exit differs from its retained result.")
             record["binaryUnchanged"] = WORKLOAD.digest(binary) == initial_hash
+            if bitmap_content:
+                record["fixtureSourceUnchanged"] = WORKLOAD.digest(fixture_source) == fixture_hash
+                record["fixtureBinarySHA256"] = WORKLOAD.digest(directory / "native/agent-capture-fixture")
+                if fixture_binary_hash is None:
+                    fixture_binary_hash = record["fixtureBinarySHA256"]
+                    summary["fixtureBinarySHA256"] = fixture_binary_hash
+                if not record["fixtureSourceUnchanged"] or record["fixtureBinarySHA256"] != fixture_binary_hash:
+                    record.setdefault("errors", []).append("Fixture source or binary changed between bitmap content arms.")
         except Exception as error:
             record.setdefault("errors", []).append(str(error))
         summary["runs"].append(record)
         GAP.save(args.out / "comparison.json", summary)
-        print(f"Arm {index}/4 {noise_timing or arm}: exit={record.get('exitCode')}, errors={record.get('errors')}", flush=True)
+        print(f"Arm {index}/4 {label}: exit={record.get('exitCode')}, errors={record.get('errors')}", flush=True)
     summary["incompleteArms"] = sum(bool(row.get("errors")) or row.get("timedOut") is not False
                                     or row.get("binaryUnchanged") is not True for row in summary["runs"])
     summary["failedControlGates"] = sum(row["arm"] == "control" and not row.get("result", {}).get("byteLimitE2EPassed")
@@ -497,14 +577,16 @@ def main():
     parser.add_argument("--arm", choices=("control", "metadata"))
     parser.add_argument("--comparison", choices=COMPARISONS, default="sinks")
     parser.add_argument("--noise-timing", choices=("before", "after", "late"))
+    parser.add_argument("--bitmap-content", choices=BITMAP_COMPONENT_MASKS)
     parser.add_argument("--setup-result", type=Path)
     parser.add_argument("--commit")
     args = parser.parse_args()
     args.out = args.out.resolve()
-    if args.noise_timing and (args.arm, args.noise_timing) not in COMPARISONS[args.comparison]:
-        parser.error("--noise-timing requires a metadata arm in the selected comparison.")
-    if args.arm and args.comparison != "sinks" and not args.noise_timing:
-        parser.error("Each noise comparison arm requires an explicit --noise-timing.")
+    if (args.arm or args.noise_timing or args.bitmap_content) and (
+            args.arm, args.noise_timing, args.bitmap_content) not in COMPARISONS[args.comparison]:
+        parser.error("Arm, noise timing, and bitmap content must match the selected comparison.")
+    if args.arm and os.environ.get("SHAREX_FRAME_GAP_BITMAP_COMPONENT_MASK", "255") != str(BITMAP_COMPONENT_MASKS[args.bitmap_content or "original"]):
+        parser.error("Bitmap content must match the fixture component mask environment.")
     if not args.arm and (not args.setup_result or not args.commit):
         parser.error("Comparison requires --setup-result and --commit.")
     return run_arm(args) if args.arm else run_comparison(args)

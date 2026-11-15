@@ -33,7 +33,7 @@ on:
         type: boolean
         default: false
       frame_gap_replay:
-        description: Diagnostic only; compare late noise with noise before startup after original prefixes
+        description: Diagnostic only; compare original and constant bitmap content after original prefixes
         type: boolean
         default: false
       frame_gap_workload:
@@ -163,16 +163,16 @@ jobs:
             --build-settings "$PWD/agent-build-settings.json" \
             --helper "$RUNNER_TEMP/sharex-agent-setup-helper" --out "$PWD/agent-setup-out"
 
-      - name: Compare first noisy startup after original native prefixes
+      - name: Compare bitmap content after original native prefixes
         if: ${{ !cancelled() && inputs.frame_gap_replay && steps.setup-ui.outcome == 'success' }}
         timeout-minutes: 34
         run: |
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
           python3 scripts/frame-gap-startup.py --app /Applications/ShareX.app \
             --build-settings "$PWD/agent-build-settings.json" --setup-result "$PWD/agent-setup-out/result.json" \
-            --comparison late-noise --commit '${{ github.sha }}' --out "$PWD/frame-gap-startup-out"
+            --comparison bitmap-content --commit '${{ github.sha }}' --out "$PWD/frame-gap-startup-out"
 
-      - name: Print first-noise timing comparison
+      - name: Print bitmap content comparison
         if: ${{ always() && inputs.frame_gap_replay }}
         run: |
           if test -f frame-gap-startup-out/comparison.json; then cat frame-gap-startup-out/comparison.json; fi

@@ -4,14 +4,39 @@ import Foundation
 
 @MainActor
 private final class PatternView: NSView {
+    struct BitmapDraw: Codable {
+        let entryUptime: Double
+        let exitUptime: Double
+        let componentMask: UInt8
+        let width: Int
+        let height: Int
+        let bitsPerComponent: Int
+        let bitsPerPixel: Int
+        let bytesPerRow: Int
+        let byteCount: Int
+        let bitmapInfo: UInt32
+        let colorSpaceModel: Int32
+        let shouldInterpolate: Bool
+        let destination: [Double]
+        let rgbNonzeroCount: Int
+        let finalSeed: UInt64
+    }
     struct Draw: Codable {
         let entryUptime: Double
         let exitUptime: Double
         let tick: Int
         let stage: Int
         let noisy: Bool
+        let bitmap: BitmapDraw?
     }
     let traceEnabled = ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_FIXTURE_TRACE"] == "1"
+    let bitmapComponentMask: UInt8 = {
+        let value = ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_BITMAP_COMPONENT_MASK"] ?? "255"
+        guard let mask = UInt8(value), mask == 0 || mask == 255 else {
+            fatalError("Bitmap component mask must be 0 or 255.")
+        }
+        return mask
+    }()
     var drawTrace: [Draw] = []
     var traceOverflow = 0
     var stage = 0
@@ -22,11 +47,12 @@ private final class PatternView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let entry = traceEnabled ? ProcessInfo.processInfo.systemUptime : 0
+        var bitmap: BitmapDraw?
         defer {
             if traceEnabled {
                 if drawTrace.count < 100000 {
                     drawTrace.append(Draw(entryUptime: entry, exitUptime: ProcessInfo.processInfo.systemUptime,
-                                          tick: tick, stage: stage, noisy: noisy))
+                                          tick: tick, stage: stage, noisy: noisy, bitmap: bitmap))
                 } else { traceOverflow += 1 }
             }
         }
@@ -60,11 +86,15 @@ private final class PatternView: NSView {
             let height = 56
             var seed = UInt64(tick + 1)
             var bytes = [UInt8](repeating: 255, count: width * height * 4)
+            var rgbNonzeroCount = 0
             for index in stride(from: 0, to: bytes.count, by: 4) {
                 seed = seed &* 6364136223846793005 &+ 1442695040888963407
-                bytes[index] = UInt8(truncatingIfNeeded: seed >> 24)
-                bytes[index + 1] = UInt8(truncatingIfNeeded: seed >> 32)
-                bytes[index + 2] = UInt8(truncatingIfNeeded: seed >> 40)
+                bytes[index] = UInt8(truncatingIfNeeded: seed >> 24) & bitmapComponentMask
+                bytes[index + 1] = UInt8(truncatingIfNeeded: seed >> 32) & bitmapComponentMask
+                bytes[index + 2] = UInt8(truncatingIfNeeded: seed >> 40) & bitmapComponentMask
+                rgbNonzeroCount += bytes[index] == 0 ? 0 : 1
+                rgbNonzeroCount += bytes[index + 1] == 0 ? 0 : 1
+                rgbNonzeroCount += bytes[index + 2] == 0 ? 0 : 1
             }
             if let provider = CGDataProvider(data: Data(bytes) as CFData),
                let image = CGImage(width: width, height: height, bitsPerComponent: 8,
@@ -72,9 +102,24 @@ private final class PatternView: NSView {
                                    space: CGColorSpaceCreateDeviceRGB(),
                                    bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
                                    provider: provider, decode: nil, shouldInterpolate: false,
-                                   intent: .defaultIntent) {
-                NSGraphicsContext.current?.cgContext.draw(image, in: CGRect(
-                    x: 0, y: bounds.height * 0.88, width: bounds.width, height: bounds.height * 0.12))
+                                   intent: .defaultIntent),
+               let context = NSGraphicsContext.current?.cgContext {
+                let destination = CGRect(x: 0, y: bounds.height * 0.88,
+                                         width: bounds.width, height: bounds.height * 0.12)
+                let drawEntry = traceEnabled ? ProcessInfo.processInfo.systemUptime : 0
+                context.draw(image, in: destination)
+                if traceEnabled {
+                    bitmap = BitmapDraw(entryUptime: drawEntry, exitUptime: ProcessInfo.processInfo.systemUptime,
+                                        componentMask: bitmapComponentMask, width: image.width, height: image.height,
+                                        bitsPerComponent: image.bitsPerComponent, bitsPerPixel: image.bitsPerPixel,
+                                        bytesPerRow: image.bytesPerRow, byteCount: bytes.count,
+                                        bitmapInfo: image.bitmapInfo.rawValue,
+                                        colorSpaceModel: image.colorSpace?.model.rawValue ?? -1,
+                                        shouldInterpolate: image.shouldInterpolate,
+                                        destination: [Double(destination.minX), Double(destination.minY),
+                                                      Double(destination.width), Double(destination.height)],
+                                        rgbNonzeroCount: rgbNonzeroCount, finalSeed: seed)
+                }
             }
         }
     }
