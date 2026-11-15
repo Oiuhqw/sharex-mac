@@ -143,6 +143,8 @@ class OwnedChild:
                                      "observed": preflight.clock()}
         if result.returncode != 0:
             raise RuntimeError("Owned-group process observation failed")
+        if not result.stdout.isascii():
+            raise RuntimeError("Owned-group process observation is not ASCII")
         rows = [line.split() for line in event["groupObservation"]["stdout"].splitlines()]
         if (not rows or any(len(row) != 3 or not all(value.isdigit() for value in row[:2]) for row in rows)
                 or not any(int(row[0]) == os.getpid() for row in rows)):
