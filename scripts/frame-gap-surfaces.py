@@ -65,6 +65,8 @@ def treatment_evidence(trace_directory, arm):
         errors.append("No recorder traces were retained.")
     for path in traces:
         trace = GAP.read_json(path)
+        if not isinstance(trace.get("history"), dict) or trace["history"].get("overflow") != 0:
+            errors.append(f"Recorder history is missing or overflowed in {path.name}.")
         beats = trace.get("heartbeats", [])
         heartbeats += len(beats)
         if not beats:

@@ -46,6 +46,7 @@ class SurfaceComparisonTests(unittest.TestCase):
         self.fail = ("cycle-01-original", "native")
         self.leave_installed = False
         self.break_trace = False
+        self.history_overflow = 0
 
     def harness(self, arguments, log_path, environment, timeout):
         self.commands.append([str(value) for value in arguments])
@@ -85,6 +86,7 @@ class SurfaceComparisonTests(unittest.TestCase):
             SURFACES.GAP.save(session / "manifest.json", {"id": session_id, "state": "completed", "artifacts": [
                 {"id": artifact_id, "kind": "recording", "state": "completed"}]})
             trace = {"callbacks": [callback(owned)], "heartbeats": [1.0, 1.02], "overflow": 0,
+                     "history": {"events": [], "overflow": self.history_overflow},
                      "context": {"videoPath": f"/sessions/{session_id}/{artifact_id}/capture.partial.mp4"}}
             if self.break_trace:
                 trace["heartbeats"] = []
@@ -157,13 +159,30 @@ class SurfaceComparisonTests(unittest.TestCase):
         self.assertEqual(SURFACES.bundle_files(self.app), original)
         self.assertIn("differs", report["infrastructureErrors"][0])
 
+    def test_history_overflow_marks_collection_incomplete_and_preserves_quality_failure(self):
+        self.history_overflow = 1
+        code, report = self.run_comparison()
+        self.assertEqual(code, 1)
+        self.assertEqual(report["status"], "incomplete")
+        self.assertEqual(len(self.phases), 16)
+        self.assertEqual(report["qualityFailures"], 1)
+        self.assertEqual(report["infrastructureFailures"], 8)
+        for cycle in report["cycles"]:
+            for phase in cycle["phases"]:
+                if phase["phase"] in ("native", "clients"):
+                    self.assertTrue(any("history is missing or overflowed" in error for error in phase["infrastructureErrors"]))
+
     def test_treatment_requires_disjoint_copy_and_rejects_copy_in_original(self):
         traces = self.root / "traces"
         traces.mkdir()
-        trace = {"callbacks": [callback(True)], "heartbeats": [1]}
+        trace = {"callbacks": [callback(True)], "heartbeats": [1], "history": {"events": [], "overflow": 0}}
         path = traces / "capture-trace.json"
         SURFACES.GAP.save(path, trace)
         self.assertEqual(SURFACES.treatment_evidence(traces, "owned")["errors"], [])
+        del trace["history"]
+        SURFACES.GAP.save(path, trace)
+        self.assertTrue(any("history" in error for error in SURFACES.treatment_evidence(traces, "owned")["errors"]))
+        trace["history"] = {"events": [], "overflow": 0}
         trace["callbacks"][0]["copyDisjoint"] = False
         SURFACES.GAP.save(path, trace)
         self.assertTrue(SURFACES.treatment_evidence(traces, "owned")["errors"])
