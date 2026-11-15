@@ -8,6 +8,10 @@ on:
         default: false
   workflow_dispatch:
     inputs:
+      frame_gap_surfaces:
+        description: Diagnostic only; compare original and owned buffers in four full cycles
+        type: boolean
+        default: false
       frame_gap_full:
         description: Diagnostic only; trace the original full native workflow
         type: boolean
@@ -51,7 +55,7 @@ jobs:
         id: toolchain
         run: |
           diagnostic_modes=0
-          for mode in '${{ inputs.frame_gap_probe }}' '${{ inputs.frame_gap_workload }}' '${{ inputs.frame_gap_replay }}' '${{ inputs.frame_gap_full }}'; do
+          for mode in '${{ inputs.frame_gap_probe }}' '${{ inputs.frame_gap_workload }}' '${{ inputs.frame_gap_replay }}' '${{ inputs.frame_gap_full }}' '${{ inputs.frame_gap_surfaces }}'; do
             if [[ "$mode" == true ]]; then diagnostic_modes=$((diagnostic_modes + 1)); fi
           done
           if [[ "$diagnostic_modes" -gt 1 ]]; then
@@ -83,7 +87,7 @@ jobs:
         run: |
           set -o pipefail
           probe_flags=()
-          if [[ '${{ inputs.frame_gap_probe }}' == true || '${{ inputs.frame_gap_workload }}' == true || '${{ inputs.frame_gap_replay }}' == true || '${{ inputs.frame_gap_full }}' == true ]]; then
+          if [[ '${{ inputs.frame_gap_probe }}' == true || '${{ inputs.frame_gap_workload }}' == true || '${{ inputs.frame_gap_replay }}' == true || '${{ inputs.frame_gap_full }}' == true || '${{ inputs.frame_gap_surfaces }}' == true ]]; then
             probe_flags+=(SWIFT_ACTIVE_COMPILATION_CONDITIONS=FRAME_GAP_PROBE)
           fi
           xcodebuild build -project ShareXMac.xcodeproj -scheme ShareX -configuration Release \
@@ -147,7 +151,7 @@ jobs:
           bash scripts/ci-capture-permissions.sh --helper "$RUNNER_TEMP/sharex-agent-setup-helper"
 
       - name: Validate setup UI, recording controls, and old capture deletion
-        if: ${{ !cancelled() && steps.setup-helper.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.frame_gap_surfaces && steps.setup-helper.outcome == 'success' }}
         timeout-minutes: 8
         run: |
           python3 scripts/e2e-agent-setup.py --app /Applications/ShareX.app \
@@ -155,7 +159,7 @@ jobs:
             --helper "$RUNNER_TEMP/sharex-agent-setup-helper" --out "$PWD/agent-setup-out"
 
       - name: Capture real pixels and verify decoded media
-        if: ${{ !cancelled() && !inputs.frame_gap_probe && !inputs.frame_gap_replay && !inputs.frame_gap_workload && steps.capture-permission.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.frame_gap_surfaces && !inputs.frame_gap_probe && !inputs.frame_gap_replay && !inputs.frame_gap_workload && steps.capture-permission.outcome == 'success' }}
         timeout-minutes: 18
         run: |
           if [[ '${{ inputs.frame_gap_full }}' == true ]]; then
@@ -168,7 +172,7 @@ jobs:
             --build-settings "$PWD/agent-build-settings.json" --out "$PWD/agent-e2e-out"
 
       - name: Print native report
-        if: ${{ always() && !inputs.frame_gap_probe && !inputs.frame_gap_replay && !inputs.frame_gap_workload }}
+        if: ${{ always() && !inputs.frame_gap_surfaces && !inputs.frame_gap_probe && !inputs.frame_gap_replay && !inputs.frame_gap_workload }}
         run: |
           if test -f agent-setup-out/result.json; then cat agent-setup-out/result.json; fi
           if test -f agent-e2e-out/result.json; then
@@ -202,13 +206,30 @@ jobs:
             --claude "$RUNNER_TEMP/sharex-agent-clients/node_modules/.bin/claude" \
             --commit '${{ github.sha }}' --out "$PWD/frame-gap-workload-out"
 
+      - name: Collect original and owned buffer full workflow comparison
+        if: ${{ !cancelled() && inputs.frame_gap_surfaces && steps.setup-helper.outcome == 'success' && steps.clients.outcome == 'success' }}
+        timeout-minutes: 35
+        run: |
+          python3 scripts/frame-gap-surfaces.py --app /Applications/ShareX.app \
+            --built-app "$PWD/build-agent/Build/Products/Release/ShareX.app" \
+            --build-settings "$PWD/agent-build-settings.json" \
+            --helper "$RUNNER_TEMP/sharex-agent-setup-helper" \
+            --codex "$RUNNER_TEMP/sharex-agent-clients/node_modules/.bin/codex" \
+            --claude "$RUNNER_TEMP/sharex-agent-clients/node_modules/.bin/claude" \
+            --commit '${{ github.sha }}' --out "$PWD/frame-gap-surfaces-out"
+
+      - name: Print surface comparison collection and original verdicts
+        if: ${{ always() && inputs.frame_gap_surfaces }}
+        run: |
+          if test -f frame-gap-surfaces-out/comparison.json; then cat frame-gap-surfaces-out/comparison.json; fi
+
       - name: Print frame gap workload report
         if: ${{ always() && inputs.frame_gap_workload }}
         run: |
           if test -f frame-gap-workload-out/workload.json; then cat frame-gap-workload-out/workload.json; fi
 
       - name: Register and capture through actual Codex and Claude Code clients
-        if: ${{ !cancelled() && !inputs.frame_gap_workload && steps.clients.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.frame_gap_surfaces && !inputs.frame_gap_workload && steps.clients.outcome == 'success' }}
         timeout-minutes: 12
         run: |
           if [[ '${{ inputs.frame_gap_full }}' == true ]]; then
@@ -229,7 +250,7 @@ jobs:
           if test -f agent-clients-out/result.json; then cat agent-clients-out/result.json; fi
 
       - name: Validate manual recording, permission reset, and real uninstall
-        if: ${{ !cancelled() && steps.setup-helper.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.frame_gap_surfaces && steps.setup-helper.outcome == 'success' }}
         timeout-minutes: 15
         run: |
           python3 scripts/e2e-desktop-maintenance.py --app /Applications/ShareX.app \
@@ -237,7 +258,7 @@ jobs:
             --helper "$RUNNER_TEMP/sharex-agent-setup-helper" --out "$PWD/desktop-maintenance-out"
 
       - name: Print desktop maintenance report and failure diagnostics
-        if: ${{ always() && !inputs.frame_gap_probe && !inputs.frame_gap_replay && !inputs.frame_gap_workload }}
+        if: ${{ always() && !inputs.frame_gap_surfaces && !inputs.frame_gap_probe && !inputs.frame_gap_replay && !inputs.frame_gap_workload }}
         run: |
           if test -f desktop-maintenance-out/result.json; then
             cat desktop-maintenance-out/result.json
@@ -250,7 +271,7 @@ jobs:
           fi
 
       - name: Store validation evidence
-        if: ${{ always() && (inputs.store_artifacts || inputs.frame_gap_full) }}
+        if: ${{ always() && (inputs.store_artifacts || inputs.frame_gap_full || inputs.frame_gap_surfaces) }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: agent-capture-${{ github.sha }}
@@ -268,6 +289,8 @@ jobs:
             frame-gap-replay-out
             frame-gap-replay-traces
             frame-gap-full-traces
+            frame-gap-surfaces-out
+            !frame-gap-surfaces-out/**/client-home/**
             !frame-gap-workload-out/**/client-home/**
             !agent-clients-out/client-home/**
           if-no-files-found: warn
