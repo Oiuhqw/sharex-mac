@@ -209,32 +209,33 @@ class ReadOnlyScopeTests(unittest.TestCase):
             ("/bin/ps", "-axo", "pid,ppid,user,lstart,comm")])
         self.assertEqual(PREFLIGHT.TIMEOUT_SECONDS, 10)
 
-    def test_workflow_routes_probe_to_offline_job_and_always_uploads_raw_evidence(self):
+    def test_workflow_routes_probe_to_script_validation_and_always_uploads_logs(self):
         workflow = (SCRIPT.parents[1] / ".github/workflows/agent-capture.yml").read_text()
-        discovery = workflow.split("  profiler-discovery:", 1)[1].split("  native:", 1)[0]
-        self.assertIn("if: ${{ inputs.frame_gap_probe }}", discovery)
-        self.assertIn("DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer", discovery)
-        self.assertIn("actions: read", discovery)
-        self.assertIn("SOURCE_RUN_ID: '43761293945'", discovery)
-        self.assertIn("SOURCE_ARTIFACT: agent-capture-dd21a4ab9a0fc2d0438e327db1d9afa7a5f49e57", discovery)
-        self.assertIn("uses: actions/download-artifact@", discovery)
-        self.assertIn("github-token: ${{ github.token }}", discovery)
-        self.assertIn('--commit "$SOURCE_COMMIT"', discovery)
-        self.assertIn('--tooling-commit "$GITHUB_SHA" --source-profile', discovery)
-        for value in ("175-175", "184-184", "186-186", "196-196", "203-203", "211-211", "212-212", "186-211"):
-            self.assertIn(f"--index-range {value}", discovery)
-        upload = discovery.split("- name: Store offline re-report evidence", 1)[1]
+        validation = workflow.split("  script-validation:", 1)[1].split("  native:", 1)[0]
+        self.assertIn("if: ${{ inputs.frame_gap_probe }}", validation)
+        self.assertIn("runs-on: macos-15", validation)
+        self.assertIn("timeout-minutes: 5", validation)
+        self.assertIn("DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer", validation)
+        scripts, agent = validation.split("- name: Validate scripts", 1)[1].split("- name: Validate agent protocol", 1)
+        agent, upload = agent.split("- name: Store validation logs", 1)
+        for step, command in ((scripts, "python3 -m unittest discover -s scripts/tests -v 2>&1 | tee script-tests.log"),
+                              (agent, "swift test --package-path Packages/ShareXAgent 2>&1 | tee agent-tests.log")):
+            self.assertIn("shell: bash", step)
+            self.assertIn("set -o pipefail", step)
+            self.assertIn(command, step)
+            self.assertNotIn("if:", step)
+            self.assertNotIn("continue-on-error:", step)
         self.assertIn("if: ${{ always() }}", upload)
-        self.assertIn("source-profile-identity.json", upload)
-        self.assertIn("profiler-gap-rereport-out", upload)
-        self.assertIn("native/profile/source-profile.json", upload)
-        self.assertIn("profiler-preflight-out/preflight.json", upload)
+        self.assertIn("name: validation-${{ github.sha }}", upload)
+        self.assertIn("script-tests.log", upload)
+        self.assertIn("agent-tests.log", upload)
         native = workflow.split("  native:", 1)[1]
         self.assertIn("if: ${{ !inputs.frame_gap_probe }}", native.split("steps:", 1)[0])
         self.assertNotIn("scripts/frame-gap-probe.py", workflow)
-        for mutation in ("ci-capture-permissions", "codesign", "defaults write", "swift test", "xcodebuild build",
-                         "scripts/profiler-preflight.py", "scripts/profiler-capability.py"):
-            self.assertNotIn(mutation, discovery)
+        for excluded in ("actions: read", "SOURCE_", "download-artifact", "profiler-", "sudo", "ci-capture-permissions",
+                         "codesign", "defaults write", "xcodebuild", "ci-setup", "frame-gap-", "agent-capture-e2e",
+                         "agent-setup-e2e", "agent-clients-e2e", "pip install", "npm install"):
+            self.assertNotIn(excluded, validation)
         dispatch = workflow.split("  workflow_dispatch:", 1)[1].split("permissions:", 1)[0]
         self.assertLessEqual(dispatch.count("type: boolean"), 10)
 

@@ -41,7 +41,7 @@ on:
         type: boolean
         default: false
       frame_gap_probe:
-        description: Diagnostic only; re-report retained source profile samples around the observed gap
+        description: Diagnostic only; validate scripts and agent protocol without capture
         type: boolean
         default: false
       store_artifacts:
@@ -57,72 +57,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  profiler-discovery:
+  script-validation:
     if: ${{ inputs.frame_gap_probe }}
     runs-on: macos-15
     timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-      SOURCE_COMMIT: dd21a4ab9a0fc2d0438e327db1d9afa7a5f49e57
-      SOURCE_RUN_ID: '43761293945'
-      SOURCE_ARTIFACT: agent-capture-dd21a4ab9a0fc2d0438e327db1d9afa7a5f49e57
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
-      - name: Record retained source identity
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          Path("source-profile-identity.json").write_text(json.dumps({
-              "sourceCommit": os.environ["SOURCE_COMMIT"],
-              "sourceRunId": int(os.environ["SOURCE_RUN_ID"]),
-              "sourceArtifact": os.environ["SOURCE_ARTIFACT"],
-              "toolingCommit": os.environ["GITHUB_SHA"],
-          }, indent=2) + "\n")
-          PY
-
-      - name: Download retained source profile
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: ${{ env.SOURCE_ARTIFACT }}
-          run-id: ${{ env.SOURCE_RUN_ID }}
-          github-token: ${{ github.token }}
-          path: retained-source
-
-      - name: Test offline re-report selection
+      - name: Validate scripts
+        shell: bash
         run: |
           set -o pipefail
-          python3 -m unittest discover -s scripts/tests -p 'test_profiler_clock_probe.py' -v 2>&1 | tee profiler-tests-user.log
+          python3 -m unittest discover -s scripts/tests -v 2>&1 | tee script-tests.log
 
-      - name: Re-report retained samples around the source gap
+      - name: Validate agent protocol
+        shell: bash
         run: |
-          probe_python="$(python3 -c 'import sys; print(sys.executable)')"
-          sudo -n "$probe_python" scripts/profiler-clock-probe.py --commit "$SOURCE_COMMIT" \
-            --tooling-commit "$GITHUB_SHA" --source-profile \
-            --preflight "$PWD/retained-source/profiler-preflight-out" \
-            --capability "$PWD/retained-source/frame-gap-startup-out/arm-01-original/native/profile" \
-            --out "$PWD/profiler-gap-rereport-out" \
-            --index-range 175-175 --index-range 184-184 --index-range 186-186 \
-            --index-range 196-196 --index-range 203-203 --index-range 211-211 \
-            --index-range 212-212 --index-range 186-211
+          set -o pipefail
+          swift test --package-path Packages/ShareXAgent 2>&1 | tee agent-tests.log
 
-      - name: Store offline re-report evidence
+      - name: Store validation logs
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: profiler-gap-rereport-${{ github.sha }}
+          name: validation-${{ github.sha }}
           retention-days: 3
           path: |
-            source-profile-identity.json
-            profiler-gap-rereport-out
-            retained-source/frame-gap-startup-out/arm-01-original/native/profile/source-profile.json
-            retained-source/profiler-preflight-out/preflight.json
-            profiler-tests-user.log
+            script-tests.log
+            agent-tests.log
           if-no-files-found: warn
 
   native:

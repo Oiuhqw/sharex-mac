@@ -73,7 +73,8 @@ class SourceStartupTests(unittest.TestCase):
         for cancel in (False, True):
             with self.subTest(cancel=cancel), tempfile.TemporaryDirectory() as temporary:
                 order = []
-                args = SimpleNamespace(out=Path(temporary) / "native", arm="metadata", noise_timing="before", bitmap_content="original")
+                args = SimpleNamespace(out=Path(temporary) / "native", arm="metadata", noise_timing="before",
+                                       bitmap_content="original", writer_lifetime=None)
                 run = mock.Mock(request_id="target", verified=[], sessions=[], metrics=[])
 
                 def target():
