@@ -1,0 +1,167 @@
+{
+  "sourceRun": "43765511019",
+  "sourceCommit": "12a60cdb7d60e27b21f9d2b93f58879835ed9d7e",
+  "before": {
+    "mode": "static",
+    "pid": 20723,
+    "windowID": 186,
+    "draws": 16,
+    "tick": 15,
+    "stage": 0,
+    "uptime": 731.0863646250001
+  },
+  "after": {
+    "mode": "static",
+    "pid": 20723,
+    "windowID": 186,
+    "draws": 17,
+    "tick": 15,
+    "stage": 0,
+    "uptime": 731.6493632916668
+  },
+  "draws": [
+    {
+      "entryUptime": 729.853326625,
+      "exitUptime": 729.8537059166667,
+      "noisy": false,
+      "stage": 0,
+      "tick": 0
+    },
+    {
+      "entryUptime": 729.9575997500001,
+      "exitUptime": 729.9576229166668,
+      "noisy": false,
+      "stage": 0,
+      "tick": 1
+    },
+    {
+      "entryUptime": 730.0786245833334,
+      "exitUptime": 730.0786494583334,
+      "noisy": false,
+      "stage": 0,
+      "tick": 2
+    },
+    {
+      "entryUptime": 730.0862782916668,
+      "exitUptime": 730.0863014583334,
+      "noisy": false,
+      "stage": 0,
+      "tick": 3
+    },
+    {
+      "entryUptime": 730.1795154583334,
+      "exitUptime": 730.17954375,
+      "noisy": false,
+      "stage": 0,
+      "tick": 4
+    },
+    {
+      "entryUptime": 730.187407,
+      "exitUptime": 730.1874292083334,
+      "noisy": false,
+      "stage": 0,
+      "tick": 5
+    },
+    {
+      "entryUptime": 730.2808411666667,
+      "exitUptime": 730.2808764583334,
+      "noisy": false,
+      "stage": 0,
+      "tick": 6
+    },
+    {
+      "entryUptime": 730.3590310833334,
+      "exitUptime": 730.3591045416667,
+      "noisy": false,
+      "stage": 0,
+      "tick": 7
+    },
+    {
+      "entryUptime": 730.4545727083333,
+      "exitUptime": 730.4546504166667,
+      "noisy": false,
+      "stage": 0,
+      "tick": 8
+    },
+    {
+      "entryUptime": 730.538070125,
+      "exitUptime": 730.5381447083333,
+      "noisy": false,
+      "stage": 0,
+      "tick": 9
+    },
+    {
+      "entryUptime": 730.5910926666667,
+      "exitUptime": 730.5911706666667,
+      "noisy": false,
+      "stage": 0,
+      "tick": 10
+    },
+    {
+      "entryUptime": 730.6782249583334,
+      "exitUptime": 730.67825,
+      "noisy": false,
+      "stage": 0,
+      "tick": 11
+    },
+    {
+      "entryUptime": 730.6909198750001,
+      "exitUptime": 730.6909507083334,
+      "noisy": false,
+      "stage": 0,
+      "tick": 12
+    },
+    {
+      "entryUptime": 730.7795070416668,
+      "exitUptime": 730.7795849166667,
+      "noisy": false,
+      "stage": 0,
+      "tick": 13
+    },
+    {
+      "entryUptime": 730.7867325416668,
+      "exitUptime": 730.786756875,
+      "noisy": false,
+      "stage": 0,
+      "tick": 14
+    },
+    {
+      "entryUptime": 730.8866132916667,
+      "exitUptime": 730.8866361666667,
+      "noisy": false,
+      "stage": 0,
+      "tick": 15
+    },
+    {
+      "bitmap": {
+        "bitmapInfo": 5,
+        "bitsPerComponent": 8,
+        "bitsPerPixel": 32,
+        "byteCount": 143360,
+        "bytesPerRow": 2560,
+        "cgImageConstructed": true,
+        "colorSpaceModel": 1,
+        "componentMask": 0,
+        "destination": [
+          0,
+          422.4,
+          640,
+          57.599999999999994
+        ],
+        "drawPrimitive": "cgimage",
+        "entryUptime": 731.0875421666667,
+        "exitUptime": 731.087572625,
+        "finalSeed": 11745068628428569616,
+        "height": 56,
+        "rgbNonzeroCount": 0,
+        "shouldInterpolate": false,
+        "width": 640
+      },
+      "entryUptime": 731.0874299583334,
+      "exitUptime": 731.087584375,
+      "noisy": true,
+      "stage": 0,
+      "tick": 15
+    }
+  ]
+}

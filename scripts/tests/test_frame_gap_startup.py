@@ -992,19 +992,38 @@ class PixelCheckTests(unittest.TestCase):
                 self.assertEqual(result["status"], "passed" if outcome == "equal" else "failed")
                 self.assertEqual(STARTUP.GAP.read_json(root / "pixel-equivalence/result.json"), result)
 
-    def test_readiness_waits_for_actual_pixels_and_fails_without_retrying_decoder_errors(self):
-        for outcome, expected_status in (("ready", "passed"), ("never_ready", "failed"), ("decoder_error", "failed"),
-                                         ("deadline_ready", "passed"), ("late_ready", "failed")):
+    def test_readiness_allows_proven_static_redraws_and_enforces_pixels_and_deadline(self):
+        mutations = {
+            "mode_changed": lambda before, after, draws: after.update(mode="animated"),
+            "pid_changed": lambda before, after, draws: after.update(pid=after["pid"] + 1),
+            "window_changed": lambda before, after, draws: after.update(windowID=after["windowID"] + 1),
+            "tick_changed": lambda before, after, draws: after.update(tick=16),
+            "stage_changed": lambda before, after, draws: after.update(stage=1),
+            "draw_count_decreased": lambda before, after, draws: after.update(draws=15),
+            "missing_draw": lambda before, after, draws: draws.pop(0),
+            "missing_bitmap": lambda before, after, draws: draws[-1].pop("bitmap"),
+            "trace_stage_changed": lambda before, after, draws: draws[-1].update(stage=1),
+            "trace_tick_changed": lambda before, after, draws: (before.update(tick=14), after.update(tick=14)),
+            "trace_clock_mismatch": lambda before, after, draws: after.update(uptime=before["uptime"]),
+        }
+        cases = [("ready", "passed"), ("never_ready", "failed"), ("decoder_error", "failed"),
+                 ("deadline_ready", "passed"), ("late_ready", "failed"), ("already_drawn", "passed")]
+        cases.extend((name, "failed") for name in mutations)
+        for outcome, expected_status in cases:
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                _, _, draws = AnalysisTests().bitmap_evidence(root / "proof", "rectangle")
-                args = SimpleNamespace(out=root / "pixel", bitmap_content="rectangle")
+                native = json.loads((Path(__file__).parent / "fixtures/static-pixel-redraw.json").read_text())
+                before, after, draws = native["before"], native["after"], native["draws"]
+                if outcome in mutations:
+                    mutations[outcome](before, after, draws)
+                elif outcome == "already_drawn":
+                    before = dict(after)
+                args = SimpleNamespace(out=root / "pixel", bitmap_content="constant")
                 run = mock.Mock()
-                run.app.pid, run.fixture.pid = 21, 22
+                run.app.pid, run.fixture.pid = 21, before["pid"]
                 run.binary = root / "ShareX"
                 run.binary.write_bytes(b"app")
-                state = {"mode": "static", "pid": 22, "windowID": 23, "draws": 10, "tick": 1, "stage": 0}
-                run.control.return_value = state
+                run.control.side_effect = lambda action, **values: after if action == "observe" else before
                 run.preflight.side_effect = lambda: (args.out / "agent-capture-fixture").write_bytes(b"fixture")
                 clock = [0.0]
                 captures = []
@@ -1024,7 +1043,7 @@ class PixelCheckTests(unittest.TestCase):
                         return {"exitCode": 0, "stdout": json.dumps({"status": "passed"})}
                     if outcome == "decoder_error":
                         return {"exitCode": 1, "stdout": json.dumps({"status": "failed", "reason": "bad PNG"})}
-                    status = "passed" if outcome == "ready" and len(captures) == 5 else "pending_presentation"
+                    status = "pending_presentation" if outcome == "never_ready" or (outcome == "ready" and len(captures) < 5) else "passed"
                     return {"exitCode": 0 if status == "passed" else 3, "stdout": json.dumps({"status": status})}
 
                 def cleanup(**kwargs):
@@ -1047,9 +1066,12 @@ class PixelCheckTests(unittest.TestCase):
                      mock.patch.object(STARTUP.NATIVE, "media_expectation", return_value={"width": 640, "height": 480}), \
                      mock.patch.object(STARTUP.time, "monotonic", side_effect=lambda: clock[0]), \
                      mock.patch.object(STARTUP.time, "sleep", side_effect=sleep):
-                    self.assertEqual(STARTUP.run_pixel_check(args), int(expected_status != "passed"))
+                    exit_code = STARTUP.run_pixel_check(args)
                 result = STARTUP.GAP.read_json(args.out / "pixel-check.json")
-                self.assertEqual(result["status"], expected_status)
+                self.assertEqual(result["status"], expected_status, result.get("reason", result.get("errors")))
+                self.assertEqual(exit_code, int(expected_status != "passed"))
+                self.assertEqual(result["before"], before)
+                self.assertTrue(all(row["after"] == after for row in result["attempts"]))
                 self.assertEqual(len(result["attempts"]), len(captures))
                 self.assertTrue(all(Path(row["png"]).is_file() for row in result["attempts"]))
                 self.assertFalse(result["productionE2EPassed"])
@@ -1057,6 +1079,7 @@ class PixelCheckTests(unittest.TestCase):
                 if outcome == "ready":
                     self.assertEqual(len(captures), 5)
                     self.assertEqual(sleeps, [0.1] * 4)
+                    self.assertEqual((result["before"]["draws"], result["attempts"][-1]["after"]["draws"]), (16, 17))
                 elif outcome == "never_ready":
                     self.assertGreaterEqual(clock[0], result["readinessDeadlineUptime"])
                     self.assertLess(clock[0], result["readinessDeadlineUptime"] + 0.3)
