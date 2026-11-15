@@ -187,9 +187,9 @@ def validate_documentation(directory, commit):
             "confirmedClauses": list(MANUAL_CLAUSES)}
 
 
-def collector_command(pid, report_path):
-    return ("/usr/sbin/spindump", str(pid), "1", "20", "-timeline", "-displayIdleWorkQueueThreads",
-            "-timelimit", str(REPORT_LIMIT_SECONDS), "-o", str(report_path))
+def collector_command(pid, report_path, duration=1, report_limit=REPORT_LIMIT_SECONDS):
+    return ("/usr/sbin/spindump", str(pid), str(duration), "20", "-timeline", "-displayIdleWorkQueueThreads",
+            "-timelimit", str(report_limit), "-o", str(report_path))
 
 
 def inventory(name, out, deadline):
@@ -201,7 +201,7 @@ def inventory(name, out, deadline):
     return child.record
 
 
-def collect_probe(out, commit, documentation, total_seconds=TOTAL_SECONDS, cancellation=None):
+def collect_probe(out, commit, documentation, total_seconds=TOTAL_SECONDS, cancellation=None, source_pid=None):
     if cancellation is None:
         cancellation = Cancellation()
     out.mkdir(parents=True, exist_ok=False)
@@ -215,6 +215,10 @@ def collect_probe(out, commit, documentation, total_seconds=TOTAL_SECONDS, cance
                           "effectiveUID": os.geteuid() if hasattr(os, "geteuid") else None,
                           "waitAPI": {name: hasattr(os, name) for name in WAIT_API}}}
     report_path = out / "capability.json"
+    if source_pid is not None:
+        report.update(phase="source_profile_collection", focusPID=source_pid, samplingSeconds=12,
+                      validationPending="Inspect actual target coverage, process stacks, and clock alignment")
+        report_path = out / "source-profile.json"
     preflight.write_json(report_path, report)
     helper = collector = None
     try:
@@ -226,13 +230,20 @@ def collect_probe(out, commit, documentation, total_seconds=TOTAL_SECONDS, cance
         cancellation.check()
         if report["preInventory"]["status"] != "completed" or not report["preInventory"]["cleanupComplete"]:
             raise RuntimeError("Pre-collection process inventory failed")
-        helper = OwnedChild("helper", HELPER, out)
-        cancellation.check()
-        if helper.exited():
-            raise RuntimeError("Owned sleep helper did not stay alive")
+        if source_pid is None:
+            helper = OwnedChild("helper", HELPER, out)
+            cancellation.check()
+            if helper.exited():
+                raise RuntimeError("Owned sleep helper did not stay alive")
+        else:
+            if type(source_pid) is not int or source_pid <= 0:
+                raise ValueError("Source focus PID must identify the existing fixture")
+            os.kill(source_pid, 0)
         raw = out / "report"
         raw.mkdir()
-        collector = OwnedChild("collector", collector_command(helper.process.pid, raw / "system.spindump.txt"), out)
+        command = (collector_command(helper.process.pid, raw / "system.spindump.txt") if helper is not None
+                   else collector_command(source_pid, raw / "system.spindump.txt", duration=12, report_limit=35))
+        collector = OwnedChild("collector", command, out)
         cancellation.check()
         collector.wait(deadline - 5, cancellation)
     except (OSError, ValueError, RuntimeError, KeyError, InterruptedError, KeyboardInterrupt) as error:
@@ -280,12 +291,14 @@ def collect_probe(out, commit, documentation, total_seconds=TOTAL_SECONDS, cance
             report["error"] = {"type": type(cancellation.error).__name__, "message": str(cancellation.error)}
         if ("error" not in report and "postInventoryError" not in report
                 and collector is not None and collector.record["status"] == "completed"
-                and report.get("helperAliveAtCollectorExit") and report_file.is_file() and report_file.stat().st_size
-                and all(report.get(name, {}).get("cleanupComplete") for name in ("collector", "helper"))
+                and (source_pid is not None or report.get("helperAliveAtCollectorExit"))
+                and report_file.is_file() and report_file.stat().st_size
+                and all(child.record.get("cleanupComplete") for child in (collector, helper) if child is not None)
                 and report.get("postInventory", {}).get("status") == "completed"
                 and report["postInventory"]["cleanupComplete"] and report.get("remainingOwnedProcessGroups") == []
                 and time.monotonic() <= deadline):
             report["outcome"] = "collection_complete"
+            report["sourceProfileCollected"] = source_pid is not None
         report["finished"] = preflight.clock()
         preflight.write_json(report_path, report)
     return report
@@ -296,6 +309,7 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--preflight", type=Path, required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--source-pid", type=int, help="Collect a 12-second source profile focused on this existing fixture")
     args = parser.parse_args()
     if args.out.exists():
         parser.error("--out must be a new directory to preserve earlier evidence")
@@ -305,8 +319,10 @@ def main():
     cancellation = Cancellation()
     signal.signal(signal.SIGTERM, cancellation.request)
     signal.signal(signal.SIGINT, cancellation.request)
-    report = collect_probe(args.out, args.commit, args.preflight, cancellation=cancellation)
-    print(f"{report['outcome']}: {args.out / 'capability.json'}; capability validation remains pending")
+    options = {"total_seconds": 45, "source_pid": args.source_pid} if args.source_pid is not None else {}
+    report = collect_probe(args.out, args.commit, args.preflight, cancellation=cancellation, **options)
+    manifest = "source-profile.json" if args.source_pid is not None else "capability.json"
+    print(f"{report['outcome']}: {args.out / manifest}; coverage validation remains pending")
     return 0 if report["outcome"] == "collection_complete" else 1
 
 

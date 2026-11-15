@@ -33,7 +33,7 @@ on:
         type: boolean
         default: false
       frame_gap_replay:
-        description: Diagnostic only; compare original and constant bitmap content after original prefixes
+        description: Diagnostic only; profile one original-prefix metadata source capture
         type: boolean
         default: false
       frame_gap_workload:
@@ -210,16 +210,31 @@ jobs:
             --build-settings "$PWD/agent-build-settings.json" \
             --helper "$RUNNER_TEMP/sharex-agent-setup-helper" --out "$PWD/agent-setup-out"
 
-      - name: Compare bitmap content after original native prefixes
+      - name: Discover installed profiler before the fresh source target
         if: ${{ !cancelled() && inputs.frame_gap_replay && steps.setup-ui.outcome == 'success' }}
-        timeout-minutes: 34
+        run: |
+          python3 scripts/profiler-preflight.py --commit '${{ github.sha }}' --out "$PWD/profiler-preflight-out"
+
+      - name: Profile one source target after the original native prefix
+        if: ${{ !cancelled() && inputs.frame_gap_replay && steps.setup-ui.outcome == 'success' }}
+        timeout-minutes: 10
         run: |
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
           python3 scripts/frame-gap-startup.py --app /Applications/ShareX.app \
             --build-settings "$PWD/agent-build-settings.json" --setup-result "$PWD/agent-setup-out/result.json" \
-            --comparison bitmap-content --commit '${{ github.sha }}' --out "$PWD/frame-gap-startup-out"
+            --comparison source-profile --profile-preflight "$PWD/profiler-preflight-out" \
+            --commit '${{ github.sha }}' --out "$PWD/frame-gap-startup-out"
 
-      - name: Print bitmap content comparison
+      - name: Re-report selected source profile sample indices
+        if: ${{ !cancelled() && inputs.frame_gap_replay }}
+        run: |
+          probe_python="$(python3 -c 'import sys; print(sys.executable)')"
+          sudo -n "$probe_python" scripts/profiler-clock-probe.py --commit '${{ github.sha }}' \
+            --preflight "$PWD/profiler-preflight-out" --source-profile \
+            --capability "$PWD/frame-gap-startup-out/arm-01-original/native/profile" \
+            --out "$PWD/profiler-source-clock-out"
+
+      - name: Print source profile collection
         if: ${{ always() && inputs.frame_gap_replay }}
         run: |
           if test -f frame-gap-startup-out/comparison.json; then cat frame-gap-startup-out/comparison.json; fi
@@ -361,6 +376,8 @@ jobs:
             frame-gap-replay-out
             frame-gap-replay-traces
             frame-gap-startup-out
+            profiler-preflight-out
+            profiler-source-clock-out
             frame-gap-full-traces
             frame-gap-surfaces-out
             !frame-gap-surfaces-out/**/client-home/**

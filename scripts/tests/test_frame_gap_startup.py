@@ -322,10 +322,11 @@ class ComparisonTests(unittest.TestCase):
 
     def test_workflow_enables_capture_after_setup_and_excludes_maintenance(self):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/agent-capture.yml").read_text()
-        startup = workflow.split("- name: Compare bitmap content after original native prefixes", 1)[1].split("- name:", 1)[0]
+        startup = workflow.split("- name: Profile one source target after the original native prefix", 1)[1].split("- name:", 1)[0]
         self.assertIn("steps.setup-ui.outcome == 'success'", startup)
         self.assertLess(startup.index("agentCaptureEnabled -bool true"), startup.index("python3 scripts/frame-gap-startup.py"))
-        self.assertIn("--comparison bitmap-content", startup)
+        self.assertIn("--comparison source-profile", startup)
+        self.assertIn("--profile-preflight", startup)
         dispatch = workflow.split("  workflow_dispatch:", 1)[1].split("permissions:", 1)[0]
         self.assertEqual(sum(line.startswith("      ") and not line.startswith("       ")
                              and line.endswith(":") for line in dispatch.splitlines()), 10)

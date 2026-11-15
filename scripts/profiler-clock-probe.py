@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-report three sample indices from the completed one-second capability report."""
+"""Re-report three sample indices from a completed system profile."""
 import argparse
 import hashlib
 import importlib.util
@@ -31,7 +31,7 @@ def sample_ranges(report_bytes):
     return {"first": (1, 1), "middle": ((steps + 1) // 2, (steps + 1) // 2), "last": (steps, steps)}
 
 
-def collect_probe(out, commit, documentation, source, cancellation):
+def collect_probe(out, commit, documentation, source, cancellation, source_profile=False):
     out.mkdir(parents=True, exist_ok=False)
     report = {"schemaVersion": 1, "phase": "profiler_clock_probe", "commit": commit,
               "started": preflight.clock(), "outcome": "incomplete", "commands": [],
@@ -46,7 +46,7 @@ def collect_probe(out, commit, documentation, source, cancellation):
         if any(clause not in manual for clause in MANUAL_CLAUSES):
             raise ValueError("Installed spindump manual does not confirm input and index-range options")
         report["documentation"]["confirmedClauses"].extend(MANUAL_CLAUSES)
-        collection = json.loads((source / "capability.json").read_text(encoding="utf-8"))
+        collection = json.loads((source / ("source-profile.json" if source_profile else "capability.json")).read_text(encoding="utf-8"))
         if collection["commit"] != commit or collection["outcome"] != "collection_complete":
             raise ValueError("The matching commit requires a completed capability collection")
         source_report = (source / "report" / "system.spindump.txt").resolve()
@@ -96,6 +96,7 @@ def main():
     parser.add_argument("--preflight", type=Path, required=True)
     parser.add_argument("--capability", type=Path, required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--source-profile", action="store_true", help="Read a completed 12-second source profile collection")
     args = parser.parse_args()
     if args.out.exists():
         parser.error("--out must be a new directory to preserve earlier evidence")
@@ -104,7 +105,8 @@ def main():
     cancellation = capability.Cancellation()
     signal.signal(signal.SIGTERM, cancellation.request)
     signal.signal(signal.SIGINT, cancellation.request)
-    report = collect_probe(args.out, args.commit, args.preflight, args.capability, cancellation)
+    report = collect_probe(args.out, args.commit, args.preflight, args.capability, cancellation,
+                           source_profile=args.source_profile)
     print(f"{report['outcome']}: {args.out / 'clock-probe.json'}; clock mapping validation remains pending")
     return 0 if report["outcome"] == "commands_complete" else 1
 

@@ -92,6 +92,18 @@ class ClockProbeTests(unittest.TestCase):
                 self.assertEqual(report["outcome"], "incomplete")
                 child.assert_not_called()
 
+    def test_source_profile_uses_retained_source_manifest_and_original_report(self):
+        (self.source / "capability.json").unlink()
+        (self.source / "source-profile.json").write_text(json.dumps({"commit": "test", "outcome": "collection_complete"}))
+        child = mock.Mock(record={"status": "completed", "cleanupComplete": True})
+        with mock.patch.object(PROBE.capability, "OwnedChild", return_value=child) as launch:
+            report = PROBE.collect_probe(self.root / "out", "test", self.docs, self.source,
+                                         PROBE.capability.Cancellation(), source_profile=True)
+        self.assertEqual(report["outcome"], "commands_complete")
+        self.assertEqual(launch.call_count, 3)
+        self.assertEqual(self.input.read_bytes(), self.original)
+        self.assertFalse(report["clockMappingValidated"])
+
 
 if __name__ == "__main__":
     unittest.main()

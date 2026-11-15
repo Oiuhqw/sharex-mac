@@ -34,6 +34,11 @@ def documentation(directory, commit="test"):
 
 
 class DocumentationTests(unittest.TestCase):
+    def test_default_collection_command_remains_one_second(self):
+        self.assertEqual(PROBE.collector_command(42, Path("report")), (
+            "/usr/sbin/spindump", "42", "1", "20", "-timeline", "-displayIdleWorkQueueThreads",
+            "-timelimit", "20", "-o", "report"))
+
     def test_missing_manual_contract_stops_before_launch(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -596,6 +601,39 @@ class SignalBoundaryTests(unittest.TestCase):
                     if child.returncode is None:
                         os.killpg(child.pid, signal.SIGKILL)
                         child.wait(timeout=2)
+
+
+@unittest.skipUnless(HAS_WAIT_API, "Owned-group cleanup needs POSIX waitid and WNOWAIT")
+class SourceProfileLifecycleTests(unittest.TestCase):
+    def test_source_collection_never_owns_or_signals_focus_process(self):
+        for exits in (0, 9):
+            with self.subTest(exits=exits), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                docs = documentation(root / "preflight")
+                out = root / "out"
+                native_command = PROBE.collector_command
+                command = []
+
+                def collector(pid, path, **options):
+                    command.extend(native_command(pid, path, **options))
+                    return python_child("import pathlib,sys; pathlib.Path(sys.argv[1]).write_bytes(b'profile\\x00raw'); "
+                                        f"print('retained output'); sys.exit({exits})", path)
+
+                with mock.patch.object(PROBE, "collector_command", side_effect=collector):
+                    report = PROBE.collect_probe(out, "test", docs, total_seconds=8, source_pid=os.getpid())
+                self.assertEqual(command[1:4], [str(os.getpid()), "12", "20"])
+                self.assertIn("35", command)
+                self.assertNotIn("helper", report)
+                self.assertEqual(report["focusPID"], os.getpid())
+                self.assertEqual(report["outcome"], "incomplete" if exits else "collection_complete")
+                self.assertEqual(report["sourceProfileCollected"], exits == 0)
+                self.assertFalse(report["capabilityValidated"])
+                self.assertFalse(report["productionE2EPassed"])
+                self.assertTrue(report["collector"]["cleanupComplete"])
+                self.assertEqual(report["remainingOwnedProcessGroups"], [])
+                self.assertEqual((out / "report/system.spindump.txt").read_bytes(), b"profile\x00raw")
+                self.assertEqual(json.loads((out / "source-profile.json").read_text()), report)
+                os.kill(os.getpid(), 0)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare startup sinks, first-noise timing, or bitmap content after the native prefix."""
+"""Compare or profile the first noisy capture after the original native prefix."""
 import argparse
 from collections import Counter
 from contextlib import contextmanager
@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import time
 import traceback
@@ -27,6 +28,7 @@ def module(name, filename):
 NATIVE = module("startup_native", "e2e-agent-capture.py")
 WORKLOAD = module("startup_workload", "frame-gap-workload.py")
 GAP = WORKLOAD.GAP
+PROFILE = module("startup_profile", "profiler-capability.py")
 ORDER = ("control", "metadata", "metadata", "control")
 COMPARISONS = {
     "sinks": tuple((arm, None, None) for arm in ORDER),
@@ -36,6 +38,7 @@ COMPARISONS = {
                    ("metadata", "late", None), ("metadata", "before", None)),
     "bitmap-content": (("metadata", "before", "original"), ("metadata", "before", "constant"),
                        ("metadata", "before", "constant"), ("metadata", "before", "original")),
+    "source-profile": (("metadata", "before", "original"),),
 }
 BITMAP_COMPONENT_MASKS = {"original": 255, "constant": 0}
 LATE_NOISE_DELAY_SECONDS = 1.0
@@ -70,6 +73,8 @@ class StartupMCP(NATIVE.MCP):
 class StartupEvidence(NATIVE.Evidence):
     @contextmanager
     def step(self, name):
+        if name == "duration_limit_finalizes_readable_video" and getattr(self.run.args, "profile_preflight", None):
+            self.run.start_profile()
         if name != BYTE_STEP:
             with super().step(name) as step:
                 yield step
@@ -91,6 +96,81 @@ class StartupRun(NATIVE.Run):
         self.request_id = os.environ["SHAREX_FRAME_GAP_STARTUP_REQUEST_ID"]
         self.verified = []
         self.metadata_polling = None
+        self.profile_process = None
+        self.profile_launch = None
+
+    def start_profile(self):
+        directory = self.args.out / "profile"
+        command = ["/usr/bin/sudo", "-n", sys.executable, str(ROOT / "profiler-capability.py"),
+                   "--out", str(directory), "--preflight", str(self.args.profile_preflight),
+                   "--commit", self.args.commit, "--source-pid", str(self.fixture.pid)]
+        self.profile_launch = {"argv": command, "started": PROFILE.preflight.clock(),
+                               "appPID": self.app.pid, "fixturePID": self.fixture.pid,
+                               "driverUID": os.geteuid(), "status": "launching", "exitCode": None,
+                               "driverWaitLimitSeconds": 55,
+                               "monotonicClock": vars(time.get_clock_info("monotonic"))}
+        path = self.args.out / "profile-launch.json"
+        GAP.save(path, self.profile_launch)
+        self.evidence.emit("collector_spawn_requested", **self.profile_launch)
+        cancellation = PROFILE.Cancellation()
+        handlers = {sig: signal.signal(sig, cancellation.request) for sig in (signal.SIGINT, signal.SIGTERM)}
+        try:
+            with (self.args.out / "profile-helper.stdout.raw").open("wb") as stdout, \
+                 (self.args.out / "profile-helper.stderr.raw").open("wb") as stderr:
+                self.profile_process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout,
+                                                        stderr=stderr, start_new_session=True)
+            self.profile_launch.update(status="running", supervisorLauncherPID=self.profile_process.pid,
+                                       spawned=PROFILE.preflight.clock())
+            self.evidence.emit("collector_supervisor_launched", **self.profile_launch)
+        except OSError as error:
+            self.profile_launch.update(status="launch_error", error=str(error))
+            raise
+        finally:
+            GAP.save(path, self.profile_launch)
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+        cancellation.check()
+
+    def finish_profile(self):
+        if self.profile_launch is None:
+            return []
+        record = self.profile_launch
+        record["holdStarted"] = PROFILE.preflight.clock()
+        record["appAliveAtHoldStart"] = self.app.poll() is None
+        record["fixtureAliveAtHoldStart"] = self.fixture.poll() is None
+        self.evidence.emit("collector_target_finished_hold_started", **record)
+        errors = []
+        try:
+            record["postTargetInventory"] = PROFILE.inventory("processes-after-target", self.args.out,
+                                                               time.monotonic() + 3)
+            if (record["postTargetInventory"]["status"] != "completed"
+                    or not record["postTargetInventory"]["cleanupComplete"]):
+                errors.append("Post-target process inventory failed")
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            record["postTargetInventoryError"] = str(error)
+            errors.append(str(error))
+        try:
+            if self.profile_process is None:
+                raise RuntimeError("Root profile helper did not launch")
+            deadline = record["started"]["monotonicBeforeNs"] / 1e9 + record["driverWaitLimitSeconds"]
+            record["exitCode"] = self.profile_process.wait(timeout=max(0, deadline - time.monotonic()))
+            record["status"] = "completed" if record["exitCode"] == 0 else "failed"
+            collection = GAP.read_json(self.args.out / "profile/source-profile.json")
+            if record["exitCode"] != 0 or not collection or collection.get("outcome") != "collection_complete":
+                raise RuntimeError("Root profile collection failed or omitted its completion record")
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+            record.update(status="incomplete", error=str(error))
+            errors.append(str(error))
+        finally:
+            record["holdFinished"] = PROFILE.preflight.clock()
+            record["appAliveAtHoldEnd"] = self.app.poll() is None
+            record["fixtureAliveAtHoldEnd"] = self.fixture.poll() is None
+            if not all(record[key] for key in ("appAliveAtHoldStart", "fixtureAliveAtHoldStart",
+                                               "appAliveAtHoldEnd", "fixtureAliveAtHoldEnd")):
+                errors.append("App or fixture exited before the profile hold finished")
+            GAP.save(self.args.out / "profile-launch.json", record)
+            self.evidence.emit("collector_hold_finished", **record)
+        return errors
 
     def connect(self):
         client = StartupMCP(self)
@@ -182,7 +262,8 @@ def run_arm(args):
     finally:
         for signum in handlers:
             signal.signal(signum, signal.SIG_IGN)
-        cleanup_errors = run.cleanup(failed=report["status"] == "failed")
+        cleanup_errors = run.finish_profile()
+        cleanup_errors.extend(run.cleanup(failed=report["status"] == "failed"))
         if cleanup_errors:
             report.update(status="failed", cleanupErrors=cleanup_errors)
         report.update(steps=evidence.steps, verified=run.verified, sessions=run.sessions)
@@ -479,6 +560,40 @@ def analyze_arm(directory, arm, request_id, noise_timing=None, bitmap_content=No
             "prefix": prefix}
 
 
+def source_clock_evidence(directory, record):
+    events = [json.loads(line) for line in (directory / "native/events.jsonl").read_text(encoding="utf-8").splitlines()]
+    requests = {row["commandID"]: row for row in events if row["event"] == "fixture_command_requested"}
+    brackets = []
+    for event in events:
+        if event["event"] != "fixture_command":
+            continue
+        state = event.get("state") or {}
+        request = requests.get(state.get("commandID"))
+        if request is not None and "uptime" in state:
+            before, after, uptime = request["monotonicSeconds"], event["monotonicSeconds"], state["uptime"]
+            brackets.append({"commandID": state["commandID"], "action": event["action"],
+                             "pythonBefore": before, "swiftUptime": uptime, "pythonAfter": after,
+                             "insideBracket": before <= uptime <= after})
+    trace = GAP.read_json(Path(record["trace"]))
+    context = trace["context"]
+    scale = context["machTimebaseNumerator"] / context["machTimebaseDenominator"] / 1e9
+    callbacks = trace["callbacks"]
+    screen = [(index, row) for index, row in enumerate(callbacks) if row["screen"]]
+    pairs = [{"index": index, "entryUptime": row["entryUptime"], "pts": row.get("pts"),
+              "displayTimeSeconds": row["displayTime"] * scale if row.get("displayTime") is not None else None}
+             for index, row in screen]
+    gaps = [{"seconds": after["entryUptime"] - before["entryUptime"],
+             "beforeIndex": before_index, "afterIndex": after_index, "before": before, "after": after}
+            for (before_index, before), (after_index, after) in zip(screen, screen[1:])
+            if after["entryUptime"] - before["entryUptime"] > 0.5]
+    return {"fixtureClockBrackets": brackets, "fixtureClockAgrees": bool(brackets) and all(row["insideBracket"] for row in brackets),
+            "machTimebaseNumerator": context["machTimebaseNumerator"],
+            "machTimebaseDenominator": context["machTimebaseDenominator"], "callbackClocks": pairs,
+            "allSourceCallbackGapsAbove500ms": gaps,
+            "alignmentValidated": False,
+            "alignmentPending": "Compare paired source clocks and native rounded sample offsets; index times are not index multiplied by 20 ms"}
+
+
 def run_comparison(args):
     if sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("Startup diagnostics require a disposable GitHub macOS runner.")
@@ -498,6 +613,11 @@ def run_comparison(args):
                "setup": setup, "setupContext": "Original setup UI ran once before arm 1. Arms 2 through 4 reuse its account state; setup is not repeated.",
                "acknowledgementCaveat": "Control acknowledges after first append; metadata acknowledges after first complete callback. CLI polling remains 100 ms after each response. Removed append time changes later launch timing.",
                "scope": "Each arm starts a fresh app and fixture, runs the original native prefix and inline decodes, then stops at the first noisy capture. No maintenance, uninstall, or app replacement runs between arms. Metadata is not decoded-video E2E coverage."}
+    if comparison == "source-profile":
+        PROFILE.validate_documentation(args.profile_preflight, args.commit)
+        summary.update(outcome="incomplete", profileCoverageValidated=False,
+                       validationPending="Inspect original report and native re-reports for process coverage and clock alignment",
+                       setupContext="Original setup UI ran once before the single source profile target.")
     if comparison == "noise-timing":
         summary["acknowledgementCaveat"] = "Every target uses metadata and acknowledges its first complete callback. The after arm waits for the noise control response before the first CLI status launch. Report this added launch delay; the inherited 100 ms polling delay and three-second observation remain unchanged."
     if comparison == "late-noise":
@@ -538,9 +658,18 @@ def run_comparison(args):
                 arguments.extend(["--comparison", comparison, "--noise-timing", noise_timing])
             if bitmap_content:
                 arguments.extend(["--bitmap-content", bitmap_content])
+            if comparison == "source-profile":
+                arguments.extend(["--profile-preflight", args.profile_preflight, "--commit", args.commit])
             record.update(WORKLOAD.bounded_harness(arguments,
                           directory / "native.log", environment, 480))
             record.update(analyze_arm(directory, arm, request_id, noise_timing, bitmap_content))
+            if comparison == "source-profile":
+                record["profileCollection"] = GAP.read_json(directory / "native/profile/source-profile.json")
+                record["profileLauncher"] = GAP.read_json(directory / "native/profile-launch.json")
+                if record.get("trace"):
+                    record["sourceClockEvidence"] = source_clock_evidence(directory, record)
+                if not record["profileCollection"] or record["profileCollection"].get("outcome") != "collection_complete":
+                    record.setdefault("errors", []).append("The system profile collection is incomplete.")
             expected_exit = 0 if record.get("result", {}).get("status") == "diagnostic_complete" else 1
             if record.get("exitCode") != expected_exit:
                 record.setdefault("errors", []).append("Native process exit differs from its retained result.")
@@ -557,7 +686,7 @@ def run_comparison(args):
             record.setdefault("errors", []).append(str(error))
         summary["runs"].append(record)
         GAP.save(args.out / "comparison.json", summary)
-        print(f"Arm {index}/4 {label}: exit={record.get('exitCode')}, errors={record.get('errors')}", flush=True)
+        print(f"Arm {index}/{len(arms)} {label}: exit={record.get('exitCode')}, errors={record.get('errors')}", flush=True)
     summary["incompleteArms"] = sum(bool(row.get("errors")) or row.get("timedOut") is not False
                                     or row.get("binaryUnchanged") is not True for row in summary["runs"])
     summary["failedControlGates"] = sum(row["arm"] == "control" and not row.get("result", {}).get("byteLimitE2EPassed")
@@ -580,8 +709,15 @@ def main():
     parser.add_argument("--bitmap-content", choices=BITMAP_COMPONENT_MASKS)
     parser.add_argument("--setup-result", type=Path)
     parser.add_argument("--commit")
+    parser.add_argument("--profile-preflight", type=Path)
     args = parser.parse_args()
     args.out = args.out.resolve()
+    if (args.comparison == "source-profile") != bool(args.profile_preflight):
+        parser.error("Source profile requires --profile-preflight; other comparisons must omit it.")
+    if args.profile_preflight:
+        args.profile_preflight = args.profile_preflight.resolve()
+        if not args.commit or (hasattr(os, "geteuid") and os.geteuid() == 0):
+            parser.error("Source profile requires --commit and the normal capture account, not root.")
     if (args.arm or args.noise_timing or args.bitmap_content) and (
             args.arm, args.noise_timing, args.bitmap_content) not in COMPARISONS[args.comparison]:
         parser.error("Arm, noise timing, and bitmap content must match the selected comparison.")
