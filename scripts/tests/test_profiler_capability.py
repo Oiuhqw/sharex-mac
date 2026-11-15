@@ -492,7 +492,8 @@ class SignalBoundaryTests(unittest.TestCase):
             children[child.path.stem] = child
             if (not fired and child.path.stem == target_name and frame.f_code.co_name == target_function
                     and child.record.get("pid") is not None
-                    and (target_function == "__init__" or any(event.get("sent") for event in child.record["signals"]))):
+                    and (target_function == "__init__" or any(event.get("sent") or event.get("noLiveMembers")
+                                                            for event in child.record["signals"]))):
                 fired = True
                 for signum in signals:
                     os.kill(os.getpid(), signum)
