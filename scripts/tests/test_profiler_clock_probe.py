@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -31,7 +32,8 @@ class ClockProbeTests(unittest.TestCase):
     def test_ranges_use_actual_one_based_sample_count(self):
         for steps, middle in ((3, 2), (52, 26), (53, 27)):
             with self.subTest(steps=steps):
-                ranges = PROBE.sample_ranges(f"Steps:   {steps} (20ms sampling interval)\n".encode())
+                actual_steps, ranges = PROBE.sample_ranges(f"Steps:   {steps} (20ms sampling interval)\n".encode())
+                self.assertEqual(actual_steps, steps)
                 self.assertEqual(ranges, {"first": (1, 1), "middle": (middle, middle), "last": (steps, steps)})
         for content in (b"no Steps header", b"Steps: 2 (20ms sampling interval)", "Steps: ５２ (20ms)".encode()):
             with self.subTest(content=content), self.assertRaises(ValueError):
@@ -61,6 +63,39 @@ class ClockProbeTests(unittest.TestCase):
             children[index].close.assert_called_once()
             self.assertEqual(children[index].close.call_args.args[0] - children[index].wait.call_args.args[0], 2)
         self.assertEqual(self.input.read_bytes(), self.original)
+
+    def test_explicit_ranges_keep_source_and_tooling_identity_separate(self):
+        original = b"Steps:            598 (20ms sampling interval)\n\xff\x00binary data"
+        self.input.write_bytes(original)
+        requested = ["175-175", "184-184", "186-186", "196-196", "203-203", "211-211", "212-212", "186-211"]
+
+        def child(name, argv, out):
+            return mock.Mock(record={"argv": list(argv), "status": "completed", "cleanupComplete": True})
+
+        with mock.patch.object(PROBE.capability, "OwnedChild", side_effect=child):
+            report = PROBE.collect_probe(self.root / "out", "test", self.docs, self.source,
+                                         PROBE.capability.Cancellation(), index_ranges=requested,
+                                         tooling_commit="later-tooling-commit")
+        self.assertEqual(report["outcome"], "commands_complete")
+        self.assertEqual(report["commit"], "test")
+        self.assertEqual(report["toolingCommit"], "later-tooling-commit")
+        self.assertEqual(report["source"]["steps"], 598)
+        self.assertEqual(report["source"]["sha256"], hashlib.sha256(original).hexdigest())
+        self.assertEqual([command["argv"][command["argv"].index("-indexRange") + 1]
+                          for command in report["commands"]], requested)
+        for command, value in zip(report["commands"], requested):
+            self.assertEqual(Path(command["argv"][-1]).name, f"samples-{value}.spindump.txt")
+        self.assertEqual(self.input.read_bytes(), original)
+
+    def test_invalid_explicit_range_starts_no_command(self):
+        for index, requested in enumerate(([], ["0-1"], ["1-53"], ["2-1"], ["-1-2"], ["1"],
+                                           ["1-1", "2-53"], ["1-2.0"], ["１-２"], ["1-2\n"])):
+            with self.subTest(requested=requested), mock.patch.object(PROBE.capability, "OwnedChild") as child:
+                report = PROBE.collect_probe(self.root / f"invalid-{index}", "test", self.docs, self.source,
+                                             PROBE.capability.Cancellation(), index_ranges=requested)
+                self.assertEqual(report["outcome"], "incomplete")
+                self.assertEqual(report["error"]["type"], "ValueError")
+                child.assert_not_called()
 
     def test_failed_or_timed_out_command_preserves_its_evidence_and_stops(self):
         for status in ("failed", "timed_out"):

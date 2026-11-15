@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-report three sample indices from a completed system profile."""
+"""Re-report selected sample ranges from a completed system profile."""
 import argparse
 import hashlib
 import importlib.util
@@ -23,20 +23,35 @@ MANUAL_CLAUSES = (
 )
 
 
-def sample_ranges(report_bytes):
+def sample_ranges(report_bytes, requested=None):
     match = re.search(rb"(?m)^Steps:[ \t]+([0-9]+)[ \t]+\(", report_bytes)
     if match is None or int(match[1]) < 3:
         raise ValueError("The capability report requires a Steps header with at least three samples")
     steps = int(match[1])
-    return {"first": (1, 1), "middle": ((steps + 1) // 2, (steps + 1) // 2), "last": (steps, steps)}
+    ranges = {"first": (1, 1), "middle": ((steps + 1) // 2, (steps + 1) // 2), "last": (steps, steps)}
+    if requested is not None:
+        ranges = {}
+        for value in requested:
+            if re.fullmatch(r"[0-9]+-[0-9]+", value) is None:
+                raise ValueError("Each index range must use the form START-END with ASCII integers")
+            start, end = map(int, value.split("-"))
+            if not 1 <= start <= end <= steps:
+                raise ValueError(f"Index range {value} must satisfy 1 <= start <= end <= {steps}")
+            ranges[f"samples-{start}-{end}"] = (start, end)
+        if not ranges:
+            raise ValueError("At least one index range is required")
+    return steps, ranges
 
 
-def collect_probe(out, commit, documentation, source, cancellation, source_profile=False):
+def collect_probe(out, commit, documentation, source, cancellation, source_profile=False,
+                  index_ranges=None, tooling_commit=None):
     out.mkdir(parents=True, exist_ok=False)
     report = {"schemaVersion": 1, "phase": "profiler_clock_probe", "commit": commit,
               "started": preflight.clock(), "outcome": "incomplete", "commands": [],
               "perCommandLimitSeconds": COMMAND_SECONDS, "productionE2EPassed": False,
               "clockMappingValidated": False, "validationPending": "Inspect selected report headers for sample timestamps"}
+    if tooling_commit is not None:
+        report["toolingCommit"] = tooling_commit
     manifest = out / "clock-probe.json"
     preflight.write_json(manifest, report)
     try:
@@ -51,9 +66,9 @@ def collect_probe(out, commit, documentation, source, cancellation, source_profi
             raise ValueError("The matching commit requires a completed capability collection")
         source_report = (source / "report" / "system.spindump.txt").resolve()
         content = source_report.read_bytes()
-        ranges = sample_ranges(content)
+        steps, ranges = sample_ranges(content, index_ranges)
         report["source"] = {"path": str(source_report), "sha256": hashlib.sha256(content).hexdigest(),
-                            "sizeBytes": len(content), "steps": ranges["last"][1]}
+                            "sizeBytes": len(content), "steps": steps}
         report["ranges"] = ranges
         for name, (start, end) in ranges.items():
             cancellation.check()
@@ -96,7 +111,10 @@ def main():
     parser.add_argument("--preflight", type=Path, required=True)
     parser.add_argument("--capability", type=Path, required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--tooling-commit", help="Commit of the code that re-reports the retained capture")
     parser.add_argument("--source-profile", action="store_true", help="Read a completed 12-second source profile collection")
+    parser.add_argument("--index-range", action="append", metavar="START-END",
+                        help="Inclusive one-based sample range; repeat to replace the default first, middle, and last")
     args = parser.parse_args()
     if args.out.exists():
         parser.error("--out must be a new directory to preserve earlier evidence")
@@ -106,7 +124,8 @@ def main():
     signal.signal(signal.SIGTERM, cancellation.request)
     signal.signal(signal.SIGINT, cancellation.request)
     report = collect_probe(args.out, args.commit, args.preflight, args.capability, cancellation,
-                           source_profile=args.source_profile)
+                           source_profile=args.source_profile, index_ranges=args.index_range,
+                           tooling_commit=args.tooling_commit)
     print(f"{report['outcome']}: {args.out / 'clock-probe.json'}; clock mapping validation remains pending")
     return 0 if report["outcome"] == "commands_complete" else 1
 
