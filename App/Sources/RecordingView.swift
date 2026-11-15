@@ -29,6 +29,7 @@ struct RecordingView: View {
                         Image(systemName: target.kind == .display ? "display" : "macwindow")
                     }
                     .tag(target.token)
+                    .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("recording.target.\(target.kind.rawValue).\(target.token)")
                 }
             }

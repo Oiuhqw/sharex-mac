@@ -59,7 +59,7 @@ import Glibc
 }
 
 @Test func removalDeletesOnlyExactOwnedWrapperAndIsRepeatable() throws {
-    let home = try temporaryDirectory().resolvingSymlinksInPath()
+    let home = try installationTestDirectory()
     defer { try? FileManager.default.removeItem(at: home) }
     let executable = URL(fileURLWithPath: "/bin/sh")
     let wrapper = try AgentInstallation.install(executable: executable, home: home)
@@ -75,7 +75,7 @@ import Glibc
 }
 
 @Test func removalPreservesForeignAndModifiedManagedCommands() throws {
-    let home = try temporaryDirectory().resolvingSymlinksInPath()
+    let home = try installationTestDirectory()
     defer { try? FileManager.default.removeItem(at: home) }
     let executable = URL(fileURLWithPath: "/bin/sh")
     let wrapper = try AgentInstallation.install(executable: URL(fileURLWithPath: "/bin/echo"), home: home)
@@ -89,7 +89,7 @@ import Glibc
 }
 
 @Test func removalRejectsReplacementAfterReview() throws {
-    let home = try temporaryDirectory().resolvingSymlinksInPath()
+    let home = try installationTestDirectory()
     defer { try? FileManager.default.removeItem(at: home) }
     let executable = URL(fileURLWithPath: "/bin/sh")
     let wrapper = try AgentInstallation.install(executable: executable, home: home)
@@ -103,7 +103,7 @@ import Glibc
 }
 
 @Test func removalPreservesSymbolicAndHardLinkedCommands() throws {
-    let home = try temporaryDirectory().resolvingSymlinksInPath()
+    let home = try installationTestDirectory()
     defer { try? FileManager.default.removeItem(at: home) }
     let executable = URL(fileURLWithPath: "/bin/sh")
     let wrapper = try AgentInstallation.install(executable: executable, home: home)
@@ -122,7 +122,7 @@ import Glibc
 }
 
 @Test func removalRejectsSymlinkParentsAndUnsafeDirectory() throws {
-    let home = try temporaryDirectory().resolvingSymlinksInPath()
+    let home = try installationTestDirectory()
     defer { try? FileManager.default.removeItem(at: home) }
     let executable = URL(fileURLWithPath: "/bin/sh")
     let wrapper = try AgentInstallation.install(executable: executable, home: home)
@@ -141,7 +141,7 @@ import Glibc
 
 #if canImport(Darwin)
 @Test func applicationReviewRejectsChangedAndLinkedInstallations() throws {
-    let home = try temporaryDirectory().resolvingSymlinksInPath()
+    let home = try installationTestDirectory()
     defer { try? FileManager.default.removeItem(at: home) }
     let app = home.appendingPathComponent("ShareX.app", isDirectory: true)
     let executable = app.appendingPathComponent("Contents/MacOS/ShareX")
@@ -163,3 +163,9 @@ import Glibc
     #expect(FileManager.default.fileExists(atPath: app.path))
 }
 #endif
+
+private func installationTestDirectory() throws -> URL {
+    let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".sharex-installation-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    return url
+}
