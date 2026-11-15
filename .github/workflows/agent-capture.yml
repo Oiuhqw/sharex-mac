@@ -41,7 +41,7 @@ on:
         type: boolean
         default: false
       frame_gap_probe:
-        description: Diagnostic only; collect paired recorder and metadata traces
+        description: Diagnostic only; discover installed Mac profiler documentation without capture
         type: boolean
         default: false
       store_artifacts:
@@ -57,7 +57,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  profiler-discovery:
+    if: ${{ inputs.frame_gap_probe }}
+    runs-on: macos-15
+    timeout-minutes: 5
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Discover installed Mac profiling tools
+        run: |
+          python3 scripts/profiler-preflight.py --commit '${{ github.sha }}' --out "$PWD/profiler-preflight-out"
+
+      - name: Store profiler discovery evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: profiler-preflight-${{ github.sha }}
+          retention-days: 3
+          path: profiler-preflight-out
+          if-no-files-found: error
+
   native:
+    if: ${{ !inputs.frame_gap_probe }}
     runs-on: macos-15
     timeout-minutes: 55
     steps:
@@ -133,17 +156,6 @@ jobs:
         run: |
           bash scripts/ci-capture-permissions.sh /Applications/ShareX.app
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool false
-
-      - name: Collect bounded paired frame gap experiment
-        if: ${{ !cancelled() && inputs.frame_gap_probe && steps.capture-permission.outcome == 'success' }}
-        timeout-minutes: 35
-        run: |
-          python3 scripts/frame-gap-probe.py --app /Applications/ShareX.app --pairs 6 --out "$PWD/frame-gap-probe-out"
-
-      - name: Print frame gap experiment
-        if: ${{ always() && inputs.frame_gap_probe }}
-        run: |
-          if test -f frame-gap-probe-out/experiment.json; then cat frame-gap-probe-out/experiment.json; fi
 
       - name: Build and authorize independent setup driver
         id: setup-helper
