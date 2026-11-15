@@ -140,19 +140,57 @@ private final class AccessibilityDriver {
     func press(_ target: AXUIElement, select: Bool = false) throws {
         reveal(target)
         let path = ancestors(target)
-        for candidate in path {
-            if select {
-                var settable = DarwinBoolean(false)
-                if AXUIElementIsAttributeSettable(candidate, "AXSelected" as CFString, &settable) == .success,
-                   settable.boolValue,
-                   AXUIElementSetAttributeValue(candidate, "AXSelected" as CFString, kCFBooleanTrue) == .success { return }
-                for (attribute, membersAttribute) in [("AXSelectedRows", "AXRows"), ("AXSelectedChildren", "AXChildren")] {
-                    if AXUIElementIsAttributeSettable(candidate, attribute as CFString, &settable) == .success,
-                       settable.boolValue, let members = value(candidate, membersAttribute) as? [AXUIElement],
-                       let member = path.first(where: { node in members.contains(where: { CFEqual($0, node) }) }),
-                       AXUIElementSetAttributeValue(candidate, attribute as CFString, [member] as CFArray) == .success { return }
-                }
+        if select {
+            guard !path.contains(where: { (value($0, "AXEnabled") as? NSNumber)?.boolValue == false }),
+                  let row = path.first(where: { text($0, "AXRole") == "AXRow" }),
+                  let window = path.first(where: { text($0, "AXRole") == "AXWindow" }) else {
+                throw GateError.failed("The requested control is not an enabled row in an owned window.")
             }
+            guard CGPreflightPostEventAccess() else {
+                throw GateError.blocked("Event posting permission is missing for row selection.")
+            }
+            guard AXUIElementPerformAction(window, "AXRaise" as CFString) == .success else {
+                throw GateError.failed("Could not raise the requested row's window.")
+            }
+            RunLoop.current.run(until: min(Date().addingTimeInterval(0.1), deadline))
+            guard let bounds = frame(row), bounds.width > 0, bounds.height > 0,
+                  [bounds.minX, bounds.minY, bounds.width, bounds.height].allSatisfy({ $0.isFinite }) else {
+                throw GateError.failed("The requested row has no finite visible frame.")
+            }
+            let point = CGPoint(x: bounds.midX, y: bounds.midY)
+            var hit: AXUIElement?
+            let hitStatus = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &hit)
+            var hitPID: pid_t = 0
+            var hitDescription = "none"
+            if let hit {
+                AXUIElementGetPid(hit, &hitPID)
+                hitDescription = "role \(text(hit, "AXRole").prefix(120)), title \(text(hit, "AXTitle").prefix(120))"
+                    + ", identifier \(text(hit, "AXIdentifier").prefix(120)), frame \(String(describing: frame(hit)))"
+            }
+            let diagnostic = "AXError \(hitStatus.rawValue), hitPID \(hitPID), hit \(hitDescription)"
+                + "; target \(text(target, "AXIdentifier").prefix(120)), frame \(String(describing: frame(target)))"
+                + "; row \(bounds); window \(text(window, "AXTitle").prefix(120)), frame \(String(describing: frame(window)))"
+            guard hitStatus == .success,
+                  let hit, ancestors(hit).contains(where: { CFEqual($0, row) }) else {
+                throw GateError.failed("The requested row is not the pointer target. \(diagnostic)")
+            }
+            let types: [CGEventType] = [.mouseMoved, .leftMouseDown, .leftMouseUp]
+            let events = types.compactMap {
+                CGEvent(mouseEventSource: nil, mouseType: $0, mouseCursorPosition: point, mouseButton: .left)
+            }
+            guard events.count == types.count else { throw GateError.failed("Could not create row selection events.") }
+            for event in events {
+                event.flags = []
+                event.setIntegerValueField(.mouseEventClickState, value: 1)
+                event.post(tap: .cghidEventTap)
+            }
+            repeat {
+                RunLoop.current.run(until: min(Date().addingTimeInterval(0.1), deadline))
+                if (value(row, "AXSelected") as? NSNumber)?.boolValue == true { return }
+            } while Date() < deadline
+            throw GateError.failed("The requested row did not become selected after its click. \(diagnostic)")
+        }
+        for candidate in path {
             if actions(candidate).contains("AXPress") {
                 guard (value(candidate, "AXEnabled") as? NSNumber)?.boolValue != false else {
                     throw GateError.failed("The requested Accessibility control is disabled.")
@@ -172,7 +210,9 @@ private final class AccessibilityDriver {
         let items = value(extras, "AXChildren") as? [AXUIElement] ?? []
         let candidates = items.filter {
             text($0, "AXRole") == "AXMenuBarItem" &&
-            [text($0, "AXTitle"), text($0, "AXDescription")].contains(where: { $0 == "ShareX" || $0 == "ShareX agent recording" })
+            [text($0, "AXTitle"), text($0, "AXDescription")].contains(where: {
+                ["ShareX", "ShareX agent recording", "ShareX manual recording"].contains($0)
+            })
         }
         guard candidates.count == 1 else { throw GateError.failed("The owned app has no unique ShareX status menu item.") }
         let statusItem = candidates[0]
@@ -203,6 +243,16 @@ private final class AccessibilityDriver {
         } while Date() < deadline
         throw GateError.failed("The selected ShareX status menu did not expose \(title). Opening AXPress returned \(openingStatus.rawValue).")
     }
+
+    func closeWindow(_ title: String) throws {
+        let windows = (value(application, "AXWindows") as? [AXUIElement] ?? []).filter {
+            text($0, "AXTitle") == title
+        }
+        guard windows.count == 1, let close = element(windows[0], "AXCloseButton") else {
+            throw GateError.failed("Expected one closable window named \(title).")
+        }
+        try press(close)
+    }
 }
 
 @main
@@ -221,6 +271,16 @@ private enum Main {
             if action == "preflight" {
                 guard AXIsProcessTrusted() else { throw GateError.blocked("Accessibility permission is missing for this helper executable.") }
                 output = ["accessibilityTrusted": true, "screenRecordingGranted": CGPreflightScreenCaptureAccess()]
+            } else if action == "applications" {
+                guard let bundleID = options["--bundle-id"] else { throw GateError.failed("--bundle-id is required.") }
+                output["applications"] = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                    .filter { !$0.isTerminated }
+                    .map { app -> [String: Any] in
+                        ["pid": app.processIdentifier, "bundleID": app.bundleIdentifier ?? "",
+                         "bundlePath": app.bundleURL?.resolvingSymlinksInPath().path ?? "",
+                         "executablePath": app.executableURL?.resolvingSymlinksInPath().path ?? "",
+                         "launchTime": app.launchDate?.timeIntervalSince1970 ?? 0]
+                    }
             } else if action == "pasteboard" {
                 output = ["text": NSPasteboard.general.string(forType: .string) ?? "", "changeCount": NSPasteboard.general.changeCount]
             } else if action == "screenshot" {
@@ -259,6 +319,9 @@ private enum Main {
                 case "menu":
                     guard let title = options["--title"] else { throw GateError.failed("--title is required.") }
                     try ax.menu(title)
+                case "close-window":
+                    guard let title = options["--title"] else { throw GateError.failed("--title is required.") }
+                    try ax.closeWindow(title)
                 default: throw GateError.failed("Unknown action \(action).")
                 }
                 RunLoop.current.run(until: Date().addingTimeInterval(0.15))

@@ -28,6 +28,28 @@ struct TransportTests {
         #expect(try LocalAgentClient(endpoint: endpoint).send(request).ok)
     }
 
+    @Test func suspendedServerRetainsOwnershipUntilStop() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let endpoint = AgentEndpoint(directory: root.path)
+        let server = try LocalAgentServer(endpoint: endpoint) { .success($0.id, .object([:])) }
+        defer { server.stop() }
+        let lock = root.appendingPathComponent("owner.lock")
+        var original = stat()
+        #expect(lstat(lock.path, &original) == 0)
+        server.suspendAcceptance()
+        server.suspendAcceptance()
+        #expect(!FileManager.default.fileExists(atPath: endpoint.socketPath))
+        #expect(throws: AgentFailure.self) { try LocalAgentServer(endpoint: endpoint) { .success($0.id, .null) } }
+        var retained = stat()
+        #expect(lstat(lock.path, &retained) == 0)
+        #expect(retained.st_ino == original.st_ino)
+        server.stop()
+        let replacement = try LocalAgentServer(endpoint: endpoint) { .success($0.id, .object([:])) }
+        defer { replacement.stop() }
+        #expect(try LocalAgentClient(endpoint: endpoint).send(AgentRequest(operation: .capabilities)).ok)
+    }
+
     @Test func socketRejectsUnsafeDirectorySymlinkAndEndpoint() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

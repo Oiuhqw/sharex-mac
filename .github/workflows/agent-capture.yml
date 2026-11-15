@@ -23,7 +23,7 @@ concurrency:
 jobs:
   native:
     runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
@@ -75,7 +75,7 @@ jobs:
           test "$(lipo -archs /Applications/ShareX.app/Contents/MacOS/ShareX)" = arm64
           plutil -lint /Applications/ShareX.app/Contents/Info.plist
 
-      - name: Prepare isolated runner permissions
+      - name: Prepare disposable runner account permissions
         id: capture-permission
         if: ${{ !cancelled() && steps.installed.outcome == 'success' }}
         run: |
@@ -147,6 +147,27 @@ jobs:
         run: |
           if test -f agent-clients-out/result.json; then cat agent-clients-out/result.json; fi
 
+      - name: Validate manual recording, permission reset, and real uninstall
+        if: ${{ !cancelled() && steps.setup-helper.outcome == 'success' }}
+        timeout-minutes: 15
+        run: |
+          python3 scripts/e2e-desktop-maintenance.py --app /Applications/ShareX.app \
+            --build-settings "$PWD/agent-build-settings.json" \
+            --helper "$RUNNER_TEMP/sharex-agent-setup-helper" --out "$PWD/desktop-maintenance-out"
+
+      - name: Print desktop maintenance report and failure diagnostics
+        if: always()
+        run: |
+          if test -f desktop-maintenance-out/result.json; then
+            cat desktop-maintenance-out/result.json
+          else
+            echo 'Desktop maintenance evaluation did not produce a report.'
+          fi
+          if test -f desktop-maintenance-out/failure.txt; then
+            cat desktop-maintenance-out/failure.txt
+            tail -n 12 desktop-maintenance-out/events.jsonl
+          fi
+
       - name: Store validation evidence
         if: ${{ always() && inputs.store_artifacts }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -160,5 +181,6 @@ jobs:
             agent-e2e-out
             agent-setup-out
             agent-clients-out
+            desktop-maintenance-out
             !agent-clients-out/client-home/**
           if-no-files-found: warn

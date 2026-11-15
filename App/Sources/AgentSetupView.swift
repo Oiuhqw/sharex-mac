@@ -22,7 +22,7 @@ struct AgentSetupView: View {
                     .accessibilityIdentifier("settings.agents.enabled")
                 Text("This lets programs running as your macOS user capture a selected screen, window, or region. Captures stay on this Mac. Audio is off.")
                     .font(.callout).foregroundStyle(.secondary)
-                Text("Turning access off stops the active recording and saves its final state.")
+                Text("Turning access off stops an agent recording. Manual recordings keep running.")
                     .font(.caption).foregroundStyle(.secondary)
                 if let serverError {
                     Label(serverError, systemImage: "exclamationmark.triangle")
@@ -149,17 +149,15 @@ struct AgentSetupView: View {
     }
 
     private func installCLI() {
-        guard let executable else { return }
+        guard !service.shuttingDown, let executable else { return }
         installing = true
-        Task {
-            let result = await Task.detached { Result { try AgentInstallation.install(executable: executable) } }.value
-            installing = false
-            switch result {
-            case .success(let path): setupFailed = false; setupMessage = "Installed \(path.path)."
-            case .failure(let error): setupFailed = true; setupMessage = error.localizedDescription
-            }
-        }
+        defer { installing = false }
+        do {
+            let path = try AgentInstallation.install(executable: executable)
+            setupFailed = false; setupMessage = "Installed \(path.path)."
+        } catch { setupFailed = true; setupMessage = error.localizedDescription }
     }
+
 }
 
 extension RecordingState {

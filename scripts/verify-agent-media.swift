@@ -196,6 +196,8 @@ private func verifyVideo(_ url: URL, expected: Expectation) async throws -> [Str
     var frames: [[String: Any]] = []
     var previousTime = -Double.infinity
     var maximumGap = 0.0
+    var maximumGapStart = 0.0
+    var maximumGapEnd = 0.0
     var stageCounts = [Int: Int]()
     while let sample = output.copyNextSampleBuffer() {
         try autoreleasepool {
@@ -206,7 +208,11 @@ private func verifyVideo(_ url: URL, expected: Expectation) async throws -> [Str
             guard timestamp.isFinite, timestamp > previousTime else {
                 throw VerificationError("Frame timestamps are invalid or not strictly increasing.")
             }
-            if previousTime.isFinite { maximumGap = max(maximumGap, timestamp - previousTime) }
+            if previousTime.isFinite, timestamp - previousTime > maximumGap {
+                maximumGap = timestamp - previousTime
+                maximumGapStart = previousTime
+                maximumGapEnd = timestamp
+            }
             previousTime = timestamp
             CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
             defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
@@ -243,7 +249,9 @@ private func verifyVideo(_ url: URL, expected: Expectation) async throws -> [Str
             throw VerificationError("Static video lacks unchanged pixels or an ending frame through stop.")
         }
     } else if maximumGap > 0.5 {
-        throw VerificationError("Animated video frame timing lacks continuous coverage.")
+        throw VerificationError("Animated video frame timing lacks continuous coverage: "
+            + "maximumGapSeconds=\(maximumGap), gapStartSeconds=\(maximumGapStart), gapEndSeconds=\(maximumGapEnd), "
+            + "frameCount=\(frames.count), durationSeconds=\(duration), firstTimeSeconds=\(firstTime), lastTimeSeconds=\(lastTime).")
     }
     let middle = frames.min { abs(($0["timeSeconds"] as! Double) - duration / 2)
         < abs(($1["timeSeconds"] as! Double) - duration / 2) }!

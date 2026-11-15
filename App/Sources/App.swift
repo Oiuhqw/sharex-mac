@@ -69,6 +69,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     lazy var coordinator = CaptureCoordinator(settings: settings)
     var statusItem: NSStatusItem!
     var settingsWindow: NSWindow?
+    private var recordingWindow: NSWindow?
+    lazy var maintenance = AppMaintenance(agent: agent, login: launchAtLogin,
+        checkOwnership: { [unowned self] in try self.checkMaintenanceOwnership() },
+        freeze: { [unowned self] in try self.freezeForMaintenance() },
+        quit: {
+            // Leave the current main-actor job before AppKit starts its modal termination loop.
+            NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0)
+        })
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -79,6 +87,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do {
             let agent = agent
             agentServer = try LocalAgentServer { request in await agent.execute(request) }
+        } catch let failure as AgentFailure where failure.code == .busy {
+            let existing = NSRunningApplication.runningApplications(withBundleIdentifier: AppMaintenance.bundleIdentifier)
+                .first { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated }
+            existing?.activate(options: [.activateAllWindows])
+            NSApp.terminate(nil)
+            return
         } catch {
             agentServerError = error.localizedDescription
             try? FileHandle.standardError.write(contentsOf: Data(("ShareX agent: \(error.localizedDescription)\n").utf8))
@@ -97,10 +111,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Rebuilt on every open so checkmarks always match the settings.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        if let session = agent.recordingSnapshot, !session.state.isTerminal {
-            menu.addItem(NSMenuItem(title: session.state.agentStatusTitle, action: nil, keyEquivalent: ""))
-            let stop = item("Stop Agent Recording", #selector(stopAgentRecording))
-            stop.isEnabled = session.state != .finalizing
+        menu.autoenablesItems = false
+        let record = item("Record Screen…", #selector(openRecording))
+        record.isEnabled = !maintenance.frozen
+        menu.addItem(record)
+        if agent.isRecording {
+            let title = agent.recordingOrigin == .human ? "Stop Recording" : "Stop Agent Recording"
+            let stop = item(title, #selector(stopAgentRecording))
+            stop.isEnabled = agent.recordingState != .finalizing && !maintenance.frozen
             menu.addItem(stop)
             menu.addItem(.separator())
         }
@@ -108,11 +126,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let item = NSMenuItem(title: style.title, action: #selector(captureItem(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = style.rawValue
+            item.isEnabled = !maintenance.frozen
             menu.addItem(item)
         }
         menu.addItem(.separator())
         let before = NSMenuItem(title: "Before capture", action: nil, keyEquivalent: "")
         before.submenu = beforeCaptureMenu()
+        before.isEnabled = !maintenance.frozen
         menu.addItem(before)
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(openSettings), key: ","))
@@ -174,18 +194,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func openSettings() {
         if settingsWindow == nil {
-            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(store: settings, launchAtLogin: launchAtLogin, agent: agent, agentServerError: agentServerError)))
+            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(store: settings, launchAtLogin: launchAtLogin, agent: agent, maintenance: maintenance, agentServerError: agentServerError)))
             w.title = "ShareX Settings"
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             w.setContentSize(NSSize(width: 760, height: 560))
             w.contentMinSize = NSSize(width: 700, height: 520)
-            w.setFrameAutosaveName("ShareXSettings")
+            if !maintenance.frozen { w.setFrameAutosaveName("ShareXSettings") }
             w.isReleasedWhenClosed = false
             settingsWindow = w
         }
         NSApp.activate()
         settingsWindow?.center()
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func openRecording() {
+        guard !maintenance.frozen else { return }
+        if recordingWindow == nil {
+            let window = NSWindow(contentViewController: NSHostingController(rootView: RecordingView(service: agent)))
+            window.title = "ShareX Recording"
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.setContentSize(NSSize(width: 540, height: 510))
+            window.contentMinSize = NSSize(width: 480, height: 440)
+            window.isReleasedWhenClosed = false
+            recordingWindow = window
+        }
+        NSApp.activate()
+        recordingWindow?.center()
+        recordingWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    private func checkMaintenanceOwnership() throws {
+        guard agentServer != nil else {
+            throw AgentFailure(.busy, agentServerError ?? "This app does not own local capture access. Close other ShareX copies and reopen this app.")
+        }
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: AppMaintenance.bundleIdentifier)
+            .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated }
+        guard others.isEmpty else {
+            throw AgentFailure(.busy, "Another ShareX copy is running. Close it before maintenance. All copies share permissions and preferences.")
+        }
+    }
+
+    private func freezeForMaintenance() throws {
+        try coordinator.closeAdmission()
+        agent.closeAdmission()
+        agentServer?.suspendAcceptance()
+        settings.freezeWrites()
+        launchAtLogin.freezeWrites()
+        for window in NSApp.windows { window.setFrameAutosaveName("") }
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
@@ -205,11 +261,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func observeAgentRecording() {
         withObservationTracking {
-            let active = agent.recordingSnapshot.map { !$0.state.isTerminal } ?? false
+            let active = agent.isRecording
+            let origin = agent.recordingOrigin == .human ? "manual" : "agent"
             statusItem.button?.image = NSImage(systemSymbolName: active ? "record.circle" : "camera.viewfinder",
-                                               accessibilityDescription: active ? "ShareX agent recording" : "ShareX")
+                                               accessibilityDescription: active ? "ShareX \(origin) recording" : "ShareX")
             statusItem.button?.contentTintColor = active ? .systemRed : nil
-            statusItem.button?.toolTip = active ? "Agent recording is active. Open the menu to stop." : "ShareX"
+            statusItem.button?.toolTip = active ? "ShareX \(origin) recording is active. Open the menu to stop." : "ShareX"
         } onChange: { [weak self] in
             Task { @MainActor in self?.observeAgentRecording() }
         }

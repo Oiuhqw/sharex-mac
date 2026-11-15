@@ -122,3 +122,11 @@ prompts remain hardware checks. See reviews/README.md in the repository.
 Blur and pixelation do not guarantee that sensitive content cannot be inferred.
 Use a fully opaque filled rectangle and check the exported image before sharing it.
 Other recording apps may capture the editor before redactions are complete.
+
+Development source only
+-----------------------
+The source branch adds Record Screen and Settings > Maintenance. These controls
+are not part of the downloadable 0.2.1 package. Maintenance can reset this app's
+Screen Recording permission and quit, or review and uninstall this exact copy.
+Both actions preserve screenshots and all AgentSessions evidence. See
+docs/RECORDING-AND-MAINTENANCE.md in the repository before using these controls.

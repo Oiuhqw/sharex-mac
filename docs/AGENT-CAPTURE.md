@@ -12,7 +12,7 @@ ShareX can save PNG screenshots and silent H.264 MP4 recordings of a display, wi
 4. Use the page's copy action for your agent client. Run that command in Terminal.
 5. Start a new agent session and ask it to check ShareX capabilities and list capture targets.
 
-Access starts disabled. Disable it in Settings to stop active capture and reject new capture commands. A recording also has a stop action in the ShareX menu.
+Access starts disabled. Disable it in Settings to stop an agent recording and reject new agent capture commands. Manual recordings continue. A recording also has a stop action in the ShareX menu.
 
 The registration commands for an app installed at the usual path are:
 
@@ -105,7 +105,7 @@ The app saves evidence in private session directories. `capabilities` reports th
 
 Start returns after the writer accepts the first complete frame. Stop waits for finalization and validation before returning a completed movie. Check `state` and artifact states as well as the command's `ok` field. A successful status query can describe a failed or interrupted recording.
 
-One recording can run at a time. Screenshots can be added during it. Video defaults to 30 frames per second and a 30-minute limit. Requests can set up to two hours and two GiB. Output fits within 3840 by 2160 pixels with even dimensions and a preserved aspect ratio. The recorder reserves disk space and drops frames under encoder pressure instead of growing its queue. Status reports accepted and dropped frame counts.
+One recording can run at a time. In the development source, this slot is shared with manual recording. Agents can add screenshots and markers to agent sessions. Agent stop, marker, and screenshot-attachment commands return `permission_denied` for a manual session, including after restart. Video defaults to 30 frames per second and a 30-minute limit. Requests can set up to two hours and two GiB. Output fits within 3840 by 2160 pixels with even dimensions and a preserved aspect ratio. The recorder reserves disk space and drops frames under encoder pressure instead of growing its queue. Status reports accepted and dropped frame counts.
 
 The app stops on target loss, resize, display geometry change, or scale change. Window movement is allowed. It does not switch to a different target. After an app crash or forced quit, unfinished sessions become interrupted. Partial files do not become completed artifacts.
 

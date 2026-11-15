@@ -33,6 +33,9 @@ private final class PatternView: NSView {
         NSRect(x: CGFloat(tick % 90) / 90 * bounds.width * 0.9,
                y: bounds.height * 0.89, width: bounds.width * 0.1,
                height: bounds.height * 0.06).fill()
+        NSColor(calibratedWhite: CGFloat(tick % 16) / 15, alpha: 1).setFill()
+        NSRect(x: bounds.width * 0.46, y: bounds.height * 0.74,
+               width: bounds.width * 0.08, height: bounds.height * 0.04).fill()
         if noisy {
             let width = 640
             let height = 56
@@ -67,6 +70,10 @@ private final class FixtureWindow: NSWindow {
 @MainActor
 private final class Fixture: NSObject, NSApplicationDelegate {
     enum Mode: String { case animated, staticImage = "static" }
+    private enum Publication { case idle, writing, draining, writingFinal, finished }
+
+    private var publication = Publication.idle
+    private let stateWriter = DispatchQueue(label: "fixture.state-writer")
 
     let directory: URL
     let title: String
@@ -89,7 +96,6 @@ private final class Fixture: NSObject, NSApplicationDelegate {
               let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
               screen.visibleFrame.width >= 760, screen.visibleFrame.height >= 560 else {
             failure = "A local desktop with at least 760 by 560 logical points is required."
-            writeState()
             NSApp.terminate(nil)
             return
         }
@@ -116,6 +122,7 @@ private final class Fixture: NSObject, NSApplicationDelegate {
     }
 
     @objc func update() {
+        var shouldQuit = false
         let commandURL = directory.appendingPathComponent("command.json")
         if let data = try? Data(contentsOf: commandURL),
            let command = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -133,9 +140,16 @@ private final class Fixture: NSObject, NSApplicationDelegate {
             case "mode":
                 if let value = command["mode"] as? String, let mode = Mode(rawValue: value) { self.mode = mode }
             case "close-window": window?.close()
+            case "front":
+                window?.level = command["floating"] as? Bool == true ? .floating : .normal
+                window?.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            case "back":
+                window?.level = .normal
+                window?.orderBack(nil)
             case "terminate-observed":
                 if observedPID > 0 { NSRunningApplication(processIdentifier: observedPID)?.terminate() }
-            case "quit": NSApp.terminate(nil)
+            case "quit": shouldQuit = true
             default: break
             }
             lastCommand = id
@@ -145,10 +159,62 @@ private final class Fixture: NSObject, NSApplicationDelegate {
             view?.needsDisplay = true
         }
         if view?.needsDisplay == true { window?.displayIfNeeded() }
-        writeState()
+        if shouldQuit {
+            NSApp.terminate(nil)
+            return
+        }
+        if publication == .idle { startStateWrite(final: false) }
     }
 
-    func writeState() {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        timer?.invalidate()
+        switch publication {
+        case .idle: startStateWrite(final: true)
+        case .writing: publication = .draining
+        case .draining, .writingFinal: break
+        case .finished: return .terminateNow
+        }
+        return .terminateLater
+    }
+
+    private func startStateWrite(final: Bool) {
+        let data: Data
+        do { data = try stateData() }
+        catch { failStateWrite(String(describing: error)) }
+        let destination = directory.appendingPathComponent("state.json")
+        publication = final ? .writingFinal : .writing
+        stateWriter.async {
+            let writeError: String?
+            do {
+                try data.write(to: destination, options: .atomic)
+                writeError = nil
+            } catch {
+                writeError = String(describing: error)
+            }
+            DispatchQueue.main.async { self.stateWriteFinished(error: writeError) }
+        }
+    }
+
+    private func stateWriteFinished(error: String?) {
+        if let error { failStateWrite(error) }
+        switch publication {
+        case .writing: publication = .idle
+        case .draining: startStateWrite(final: true)
+        case .writingFinal:
+            publication = .finished
+            if failure != nil { exit(3) }
+            NSApp.reply(toApplicationShouldTerminate: true)
+        case .idle, .finished: preconditionFailure("No fixture state write is active.")
+        }
+    }
+
+    private func failStateWrite(_ error: String) -> Never {
+        timer?.invalidate()
+        FileHandle.standardError.write(Data("Fixture state write failed: \(error)\n".utf8))
+        exit(3)
+    }
+
+    private func stateData() throws -> Data {
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                                kCGNullWindowID) as? [[String: Any]] ?? []
         let ownWindow = windows.first { ($0[kCGWindowNumber as String] as? Int) == window?.windowNumber }
@@ -173,13 +239,7 @@ private final class Fixture: NSObject, NSApplicationDelegate {
             "observedWindows": observedWindows
         ]
         if let failure { state["reason"] = failure }
-        do {
-            let data = try JSONSerialization.data(withJSONObject: state, options: [.sortedKeys])
-            try data.write(to: directory.appendingPathComponent("state.json"), options: .atomic)
-        } catch {
-            FileHandle.standardError.write(Data("Fixture state write failed: \(error)\n".utf8))
-            NSApp.terminate(nil)
-        }
+        return try JSONSerialization.data(withJSONObject: state, options: [.sortedKeys])
     }
 }
 

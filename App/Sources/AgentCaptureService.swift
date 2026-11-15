@@ -12,13 +12,15 @@ final class AgentCaptureService {
     @ObservationIgnored private let targets = CaptureTargets()
     @ObservationIgnored private let sessions: CaptureSessions
     @ObservationIgnored private var storageReady: Task<Void, Error>?
-    @ObservationIgnored private var active: ActiveRecording?
+    private var active: ActiveRecording?
     @ObservationIgnored private var requests: [UUID: PendingRequest] = [:]
     @ObservationIgnored private var screenshotBusy = false
-    @ObservationIgnored private var shuttingDown = false
+    private(set) var shuttingDown = false
+    private(set) var recordingError: String?
 
     private struct PendingRequest { let request: AgentRequest; let task: Task<AgentResponse, Never> }
-    @MainActor private final class ActiveRecording {
+    @MainActor @Observable fileprivate final class ActiveRecording {
+        let origin: CaptureOrigin
         let id: UUID
         let selection: CaptureSelection
         let options: RecordingOptions
@@ -29,7 +31,8 @@ final class AgentCaptureService {
         var monitor: Task<Void, Never>?
         var stopReason: String?
         var failure: AgentFailure?
-        init(id: UUID, selection: CaptureSelection, options: RecordingOptions) {
+        init(id: UUID, selection: CaptureSelection, options: RecordingOptions, origin: CaptureOrigin) {
+            self.origin = origin
             self.id = id; self.selection = selection; self.options = options
         }
     }
@@ -38,6 +41,48 @@ final class AgentCaptureService {
         enabled = UserDefaults.standard.bool(forKey: Self.enabledDefaultsKey)
         let store = CaptureSessions()
         sessions = store
+    }
+
+    var recordingState: RecordingState? {
+        guard let active else { return recordingSnapshot?.state }
+        if active.finalization != nil { return .finalizing }
+        return recordingSnapshot?.id == active.id ? recordingSnapshot?.state : .starting
+    }
+    var recordingOrigin: CaptureOrigin? { active?.origin ?? recordingSnapshot?.origin }
+    var isRecording: Bool { active != nil }
+    var evidenceDirectory: URL? { recordingSnapshot.map { sessions.root.appendingPathComponent($0.id.uuidString) } }
+    var completedRecording: URL? {
+        guard let session = recordingSnapshot, session.state == .completed,
+              let path = session.artifacts.first(where: { $0.kind == .recording && $0.state == .completed })?.path else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    func recordingTargets() async throws -> [CaptureTarget] {
+        try requireCaptureAccess(origin: .human)
+        return try await targets.list()
+    }
+
+    func startManual(target: String, includeCursor: Bool) async {
+        recordingError = nil
+        do {
+            try requireCaptureAccess(origin: .human)
+            try await startStorage()
+            _ = try await start(CaptureSelection(target: target, includeCursor: includeCursor), options: RecordingOptions(), id: UUID(), origin: .human)
+        } catch { recordingError = error.localizedDescription }
+    }
+
+    func closeAdmission() { shuttingDown = true }
+
+    func quiesce() async throws {
+        closeAdmission()
+        let recording = active
+        for pending in Array(requests.values) { _ = await pending.task.value }
+        if let recording {
+            let session = try await finish(recording, reason: "maintenance")
+            guard session.state == .completed else {
+                throw AgentFailure(.recordingFailed, "The recording could not be saved. Incomplete evidence remains at \(sessions.root.path). \(session.failure?.message ?? "")")
+            }
+        }
     }
 
     var accessState: AgentAccessState { AgentAccessState(enabled: enabled, screenRecordingGranted: CGPreflightScreenCaptureAccess()) }
@@ -57,18 +102,27 @@ final class AgentCaptureService {
     }
 
     func deleteOldCaptures(_ ids: [UUID]) async {
+        guard !shuttingDown else { return }
         do { try await startStorage() } catch { return }
+        guard !shuttingDown else { return }
         await sessions.deleteOldCaptures(ids)
         await refreshStorage()
     }
 
     func setEnabled(_ value: Bool) {
+        guard !shuttingDown else { return }
         enabled = value
         UserDefaults.standard.set(value, forKey: Self.enabledDefaultsKey)
-        if !value { Task { await stopActive(reason: "access_revoked") } }
+        if !value, let active, active.origin == .agent {
+            Task { _ = try? await finish(active, reason: "access_revoked") }
+        }
     }
 
-    func stopActive() async { await stopActive(reason: "user_stop") }
+    func stopActive() async {
+        do {
+            if let active { _ = try await finish(active, reason: "user_stop") }
+        } catch { recordingError = error.localizedDescription }
+    }
 
     func shutdown() async {
         shuttingDown = true
@@ -138,10 +192,15 @@ final class AgentCaptureService {
         case .recordingStatus(let id), .artifactsList(let id):
             return try JSONValue.encode(await status(id))
         case .recordingStop(let id):
-            guard let active, active.id == id else { return try JSONValue.encode(await sessions.load(id)) }
-            return try JSONValue.encode(await finish(active, reason: "user_stop"))
+            if let active, active.id == id {
+                try active.origin.requireAgentOwnership()
+                return try JSONValue.encode(await finish(active, reason: "user_stop"))
+            }
+            let session = try await sessions.load(id)
+            try session.requireAgentOwnership()
+            return try JSONValue.encode(session)
         case .sessionMark(let id, let label, let outcome):
-            let session = try await sessions.update(id) { session in
+            let session = try await sessions.updateFromAgent(id) { session in
                 guard !session.markers.contains(where: { $0.id == requestID }) else { throw AgentFailure(.requestConflict, "This request ID already wrote a marker in this session.") }
                 guard session.markers.count < CaptureLimits().maxMarkers else { throw AgentFailure(.limitReached, "The session marker limit is reached.") }
                 session.markers.append(SessionMarker(id: requestID, label: label, outcome: outcome))
@@ -155,6 +214,7 @@ final class AgentCaptureService {
         guard !screenshotBusy else { throw AgentFailure(.busy, "A screenshot is already in progress.") }
         screenshotBusy = true
         defer { screenshotBusy = false }
+        if let sessionID { try await sessions.load(sessionID).requireAgentOwnership() }
         try await sessions.checkReserve()
         let resolved = try await targets.resolve(selection)
         try requireCaptureAccess()
@@ -165,7 +225,7 @@ final class AgentCaptureService {
         var artifact = CaptureArtifact(id: requestID, kind: .screenshot)
         artifact.source = resolved.target; artifact.selection = selection
         let pendingArtifact = artifact
-        _ = try await sessions.update(id) { session in
+        _ = try await sessions.updateFromAgent(id) { session in
             guard !session.artifacts.contains(where: { $0.id == pendingArtifact.id }) else { throw AgentFailure(.requestConflict, "This request ID already wrote an artifact in this session.") }
             guard session.artifacts.count < CaptureLimits().maxArtifactsPerSession else { throw AgentFailure(.limitReached, "The session artifact limit is reached.") }
             session.artifacts.append(pendingArtifact)
@@ -204,10 +264,12 @@ final class AgentCaptureService {
         }
     }
 
-    private func start(_ selection: CaptureSelection, options: RecordingOptions, id: UUID) async throws -> CaptureSession {
+    private func start(_ selection: CaptureSelection, options: RecordingOptions, id: UUID, origin: CaptureOrigin = .agent) async throws -> CaptureSession {
         if let active { throw AgentFailure(.busy, "Recording \(active.id.uuidString) owns the capture slot. Stop it before starting another.") }
-        try requireCaptureAccess()
-        let recording = ActiveRecording(id: id, selection: selection, options: options)
+        try requireCaptureAccess(origin: origin)
+        recordingError = nil
+        recordingSnapshot = nil
+        let recording = ActiveRecording(id: id, selection: selection, options: options, origin: origin)
         active = recording
         let startup = Task { @MainActor in try await prepare(recording) }
         recording.startup = startup
@@ -218,9 +280,9 @@ final class AgentCaptureService {
         do {
             try await sessions.checkReserve()
             let target = try await targets.resolve(recording.selection, recording: true)
-            try requireCaptureAccess()
+            try requireCaptureAccess(origin: recording.origin)
             guard recording.stopReason == nil else { throw AgentFailure(.interrupted, "Recording stopped during target resolution.") }
-            var session = CaptureSession(id: recording.id, source: target.target, selection: recording.selection, options: recording.options)
+            var session = CaptureSession(id: recording.id, source: target.target, selection: recording.selection, options: recording.options, origin: recording.origin)
             var artifact = CaptureArtifact(kind: .recording)
             artifact.source = target.target; artifact.selection = recording.selection
             session.artifacts.append(artifact)
@@ -228,7 +290,7 @@ final class AgentCaptureService {
             recordingSnapshot = session
             let url = try await sessions.artifactURL(sessionID: session.id, artifactID: artifact.id, extension: "mp4")
             recording.partialURL = url
-            try requireCaptureAccess()
+            try requireCaptureAccess(origin: recording.origin)
             guard recording.stopReason == nil else { throw AgentFailure(.interrupted, "Recording stopped before stream startup.") }
             let recorder = try ScreenRecorder(target: target, options: recording.options, url: url, onFailure: { [weak self, weak recording] error in
                 Task { @MainActor in
@@ -253,6 +315,7 @@ final class AgentCaptureService {
             return session
         } catch {
             recording.failure = Self.failure(error)
+            recordingError = error.localizedDescription
             if let recorder = recording.recorder { _ = try? await recorder.finish() }
             let failure = Self.failure(error), reason = recording.stopReason ?? "startup_failed"
             if let session = try? await sessions.update(recording.id, { $0.failRecording(failure, reason: reason) }) {
@@ -320,7 +383,7 @@ final class AgentCaptureService {
             guard !Task.isCancelled, active === recording, recording.finalization == nil else { return }
             ticks += 1
             do {
-                guard enabled else { _ = try await finish(recording, reason: "access_revoked"); return }
+                guard recording.origin == .human || enabled else { _ = try await finish(recording, reason: "access_revoked"); return }
                 guard CGPreflightScreenCaptureAccess() else { _ = try await finish(recording, reason: "permission_revoked"); return }
                 let stats = await recording.recorder?.statistics()
                 if ticks % 4 == 0 {
@@ -350,8 +413,9 @@ final class AgentCaptureService {
     private func stopActive(reason: String) async {
         if let active { _ = try? await finish(active, reason: reason) }
     }
-    private func requireCaptureAccess() throws {
-        guard enabled, !shuttingDown else { throw AgentFailure(.disabled, "Agent capture is disabled.") }
+    private func requireCaptureAccess(origin: CaptureOrigin = .agent) throws {
+        guard !shuttingDown else { throw AgentFailure(.interrupted, "ShareX is stopping capture for maintenance or quit.") }
+        guard origin == .human || enabled else { throw AgentFailure(.disabled, "Agent capture is disabled.") }
         guard CGPreflightScreenCaptureAccess() else { throw AgentFailure(.permissionDenied, "Grant ShareX Screen Recording permission in System Settings.") }
     }
     private func updateSnapshot(_ session: CaptureSession) {

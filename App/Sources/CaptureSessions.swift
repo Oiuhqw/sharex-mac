@@ -82,6 +82,13 @@ actor CaptureSessions {
         return session
     }
 
+    func updateFromAgent(_ id: UUID, _ change: @Sendable (inout CaptureSession) throws -> Void) throws -> CaptureSession {
+        try update(id) { session in
+            try session.requireAgentOwnership()
+            try change(&session)
+        }
+    }
+
     func request(_ id: UUID) throws -> RequestRecord? {
         let url = requestURL(id)
         guard fileManager.fileExists(atPath: url.path) else { return nil }
