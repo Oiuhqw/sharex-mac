@@ -134,7 +134,7 @@ private final class Fixture: NSObject, NSApplicationDelegate {
                 if let value = command["mode"] as? String, let mode = Mode(rawValue: value) { self.mode = mode }
             case "close-window": window?.close()
             case "front":
-                window?.level = .floating
+                window?.level = command["floating"] as? Bool == true ? .floating : .normal
                 window?.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
             case "back":

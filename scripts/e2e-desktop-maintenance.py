@@ -97,13 +97,30 @@ def require_permission_removed(before, after, helper, all_services=False):
     require(witnesses == permission_rows(after, str(helper)), "Maintenance changed the helper's unrelated permissions.")
 
 
-def target_identifier(elements, kind, name=None):
+def target_identifier(elements, kind, name=None, required=True):
     candidates = {element["identifier"] for element in elements
                   if element.get("identifier", "").startswith(f"recording.target.{kind}.")
                   and (name is None or any(name in str(element.get(key, ""))
                                            for key in ("title", "description", "AXValue", "content")))}
-    require(len(candidates) == 1, f"Expected one {kind} recording target, found {sorted(candidates)}.")
-    return candidates.pop()
+    require(len(candidates) <= 1 and (candidates or not required),
+            f"Expected one {kind} recording target, found {sorted(candidates)}.")
+    return candidates.pop() if candidates else None
+
+
+def require_failed_recording(session, partial, blocked):
+    require(session["origin"] == "human" and session["state"] == "failed" and session["stopReason"] == "maintenance",
+            f"Maintenance did not retain a failed manual recording: {session}.")
+    require(session.get("failure", {}).get("code") == "storage_failed"
+            and "Cannot publish the completed artifact" in session["failure"].get("message", ""),
+            "Recording failed for a reason other than the reserved publication destination.")
+    recordings = [artifact for artifact in session["artifacts"] if artifact["kind"] == "recording"]
+    require(len(recordings) == 1 and recordings[0]["state"] == "failed"
+            and not recordings[0].get("path") and not recordings[0].get("sha256"),
+            "Failed recording was reported as a published movie.")
+    require(partial.is_file() and not partial.is_symlink() and partial.stat().st_size > 0,
+            "Failed recording lost its real partial movie.")
+    require(blocked.is_dir() and not blocked.is_symlink() and not list(blocked.iterdir()),
+            "Recording publication replaced the reserved destination.")
 
 
 def exact_trashed_bundle(trash, identity, expected):
@@ -188,12 +205,19 @@ class Run(SETUP.Run):
 
     def start_human(self, mode, cursor=False):
         self.control("stage", stage=0)
+        self.control("front", floating=mode == "display")
         self.open_recording()
+        self.wait_for(lambda: self.inspect("recording.refresh").get("AXEnabled") == 1,
+                      15, "initial recording target refresh")
         self.press("recording.refresh")
-        elements = self.helper("snapshot")["elements"]
-        elements = [self.inspect(element["identifier"]) for element in elements
-                    if element.get("identifier", "").startswith(f"recording.target.{mode}.")]
-        identifier = target_identifier(elements, mode, self.geometry["title"] if mode == "window" else None)
+
+        def target_ready():
+            elements = self.helper("snapshot")["elements"]
+            if not any(item.get("identifier") == "recording.refresh" and item.get("AXEnabled") == 1 for item in elements):
+                return None
+            return target_identifier(elements, mode, self.geometry["title"] if mode == "window" else None, required=False)
+
+        identifier = self.wait_for(target_ready, 15, f"refreshed {mode} recording target")
         self.helper("select", identifier=identifier)
         current = self.inspect("recording.cursor").get("AXValue")
         require(current in (0, 1, "0", "1"), "Cursor control does not expose a boolean value.")
@@ -202,7 +226,7 @@ class Run(SETUP.Run):
         if not self.sessions:
             self.capture_ui("manual-recording-window")
         before = SETUP.session_folders(self.root)
-        self.control("front")
+        self.control("front", floating=mode == "display")
         self.press("recording.start")
 
         def ready():
@@ -236,7 +260,7 @@ class Run(SETUP.Run):
         require(self.inspect("recording.stop").get("AXEnabled") == 1, "Manual recording has no enabled Stop control.")
         require(re.search(r"\b\d{2}:\d{2}\b", self.inspect("recording.status").get("content", "")),
                 "Manual recording does not show its elapsed duration.")
-        self.control("front")
+        self.control("front", floating=mode == "display")
         return session
 
     def verify_human(self, session_id, mode, stages=(0,), reason="user_stop"):
@@ -308,10 +332,12 @@ class Run(SETUP.Run):
             self.validate_media(ended, "window", "recording", [0], minimum=1, maximum=30)
             self.enable_agents(False)
 
-    def maintenance_snapshot(self):
-        return {"evidence": tree_hashes(self.root), "defaults": self.defaults(), "permissions": self.permissions(),
-                "login": self.login(), "wrapper": self.wrapper.read_bytes().hex(),
-                "bundle": tree_hashes(self.args.app)}
+    def maintenance_snapshot(self, include_evidence=True):
+        result = {"defaults": self.defaults(), "permissions": self.permissions(), "login": self.login(),
+                  "wrapper": self.wrapper.read_bytes().hex(), "bundle": tree_hashes(self.args.app)}
+        if include_evidence:
+            result["evidence"] = tree_hashes(self.root)
+        return result
 
     def cancel_maintenance(self, operation):
         self.open_maintenance()
@@ -351,14 +377,126 @@ class Run(SETUP.Run):
             require(all(after_files.get(name) == value for name, value in retained.items()), "Permission reset changed prior capture evidence.")
             step.update(sessionID=ended["id"], permissionScope=BUNDLE_ID, retainedEvidenceEntries=len(retained))
         with self.evidence.step("permission_reset_visible_after_restart"):
-            self.start_app()
-            require(self.capabilities["access"]["screenRecordingGranted"] is False,
-                    "The app still reports Screen Recording permission after reset and restart.")
-            self.quit_app()
-            self.command(["/bin/bash", NATIVE.ROOT / "ci-capture-permissions.sh", self.args.app])
-            self.start_app()
-            require(self.capabilities["access"]["screenRecordingGranted"] is True, "Runner could not restore its app-scoped grant for uninstall evaluation.")
+            self.restore_permission_after_reset()
+        self.failed_recording_story()
+        with self.evidence.step("failed_recording_reset_visible_after_restart"):
+            self.restore_permission_after_reset()
         self.uninstall_stories()
+
+    def restore_permission_after_reset(self):
+        self.start_app()
+        require(self.capabilities["access"]["screenRecordingGranted"] is False,
+                "The app still reports Screen Recording permission after reset and restart.")
+        self.quit_app()
+        self.command(["/bin/bash", NATIVE.ROOT / "ci-capture-permissions.sh", self.args.app])
+        self.start_app()
+        require(self.capabilities["access"]["screenRecordingGranted"] is True,
+                "Runner could not restore its app-scoped grant for remaining maintenance evaluation.")
+
+    def enable_launch_at_login(self):
+        self.helper("menu", title="Settings…")
+        self.helper("select", identifier="settings.page.capture")
+        if int(self.inspect("settings.startup.enabled")["AXValue"]) == 0:
+            self.press("settings.startup.enabled")
+        return self.wait_for(lambda: records if (records := self.login()) and any(item["enabled"] for item in records) else None,
+                             15, "actual login-item registration")
+
+    @contextmanager
+    def blocked_recording_publish(self, session):
+        directory = self.root / str(uuid.UUID(session["id"])).upper()
+        recordings = [artifact for artifact in session["artifacts"] if artifact["kind"] == "recording"]
+        require(len(recordings) == 1, "Publication fixture requires exactly one recording artifact.")
+        folder = directory / str(uuid.UUID(recordings[0]["id"])).upper()
+        partial = folder / "capture.partial.mp4"
+        require(partial.is_file() and not partial.is_symlink() and folder.resolve().is_relative_to(directory.resolve()),
+                "Publication fixture requires the owned recording's real partial file.")
+        blocked = folder / "capture.mp4"
+        blocked.mkdir()
+        try:
+            yield partial, blocked
+        finally:
+            require(blocked.is_dir() and not blocked.is_symlink() and not list(blocked.iterdir()),
+                    "App changed the reserved recording destination; it was not removed.")
+            blocked.rmdir()
+
+    def retry_review(self):
+        self.press("maintenance.retry")
+        self.inspect("maintenance.confirm")
+        elements = self.helper("snapshot")["elements"]
+        text = json.dumps(elements)
+        require("The previous attempt stopped:" in text and "Incomplete recording evidence is preserved" in text
+                and "Confirm again to continue the remaining cleanup" in text,
+                "Retry omitted the prior failure or fresh-confirmation disclosure.")
+        require(self.app.poll() is None, "Retry quit before fresh confirmation.")
+        return elements
+
+    def failed_recording_story(self):
+        with self.evidence.step("recording_publication_failure_preserves_state_and_requires_retry_confirmation") as step:
+            self.enable_launch_at_login()
+            retained = tree_hashes(self.root)
+            session = self.start_human("window")
+            time.sleep(1.2)
+            with self.blocked_recording_publish(session) as (partial, blocked):
+                partial_identity = partial.stat()
+                self.open_maintenance()
+                before = self.maintenance_snapshot(include_evidence=False)
+                self.press("maintenance.reset")
+                self.inspect("maintenance.confirm")
+                require(self.cli("capabilities").get("activeSessionID") == session["id"],
+                        "Recording failed before maintenance confirmation.")
+                self.press("maintenance.confirm")
+                step["failureUI"] = self.refusal(timeout=45)
+                require("The recording could not be saved" in json.dumps(step["failureUI"]),
+                        "Maintenance did not report the recording save failure.")
+                ended = self.read_terminal(session["id"])
+                require_failed_recording(ended, partial, blocked)
+                require((partial.stat().st_dev, partial.stat().st_ino) == (partial_identity.st_dev, partial_identity.st_ino),
+                        "Failed recording replaced its partial evidence file.")
+                self.validate_manifest(ended)
+                require(self.maintenance_snapshot(include_evidence=False) == before,
+                        "Recording save failure changed account or installation state.")
+                after_files = tree_hashes(self.root)
+                require(all(after_files.get(name) == value for name, value in retained.items()),
+                        "Recording save failure changed earlier capture evidence.")
+                require("Recording failed" in self.inspect("recording.status").get("content", "")
+                        and "Show Evidence Folder" in self.inspect("recording.reveal").get("content", ""),
+                        "Failed recording UI offers a successful movie instead of incomplete evidence.")
+                self.capture_ui("maintenance-recording-failure")
+                step["retryReview"] = self.retry_review()
+                require(self.maintenance_snapshot(include_evidence=False) == before and tree_hashes(self.root) == after_files,
+                        "Retry review performed cleanup before confirmation.")
+                self.press("maintenance.cancel")
+                self.refusal()
+                require(self.maintenance_snapshot(include_evidence=False) == before and tree_hashes(self.root) == after_files,
+                        "Cancelling retry changed account, installation or incomplete evidence.")
+                self.retry_review()
+                self.press("maintenance.confirm")
+                self.wait_exit()
+                require_permission_removed(before["permissions"], self.permissions(), self.args.helper)
+                require({key: value for key, value in self.maintenance_snapshot(include_evidence=False).items() if key != "permissions"}
+                        == {key: value for key, value in before.items() if key != "permissions"},
+                        "Confirmed reset retry changed app, CLI, preferences or login registration.")
+                require(tree_hashes(self.root) == after_files, "Reset retry changed the failed recording evidence.")
+                step.update(sessionID=ended["id"], partialSHA256=NATIVE.digest(partial), partialBytes=partial.stat().st_size,
+                            retainedEvidenceEntries=len(retained))
+
+    @contextmanager
+    def immutable_bundle(self):
+        app = self.args.app
+        original = app.lstat()
+        require(stat.S_ISDIR(original.st_mode) and original.st_uid == os.getuid()
+                and not original.st_flags & stat.UF_IMMUTABLE,
+                "Immutable fixture requires the owned app directory without an existing immutable flag.")
+        try:
+            self.command(["/usr/bin/chflags", "uchg", app])
+            require(app.lstat().st_flags & stat.UF_IMMUTABLE, "Runner could not make the app directory immutable.")
+            yield
+        finally:
+            current = app.lstat()
+            require((current.st_dev, current.st_ino) == (original.st_dev, original.st_ino),
+                    "Immutable app fixture moved or changed identity; no replacement was modified.")
+            self.command(["/usr/bin/chflags", "nouchg", app])
+            require(not app.lstat().st_flags & stat.UF_IMMUTABLE, "Runner could not clear its immutable app fixture.")
 
     @contextmanager
     def foreign_wrapper(self):
@@ -390,11 +528,11 @@ class Run(SETUP.Run):
             app.rmdir()
             displaced.rename(app)
 
-    def refusal(self):
+    def refusal(self, timeout=15):
         def ready():
             elements = self.helper("snapshot")["elements"]
             return elements if any(item.get("identifier") == "maintenance.retry" for item in elements) else None
-        result = self.wait_for(ready, 15, "visible maintenance refusal and Retry control")
+        result = self.wait_for(ready, timeout, "visible maintenance refusal and Retry control")
         require(self.app.poll() is None, "Rejected maintenance quit the app.")
         return result
 
@@ -436,12 +574,7 @@ class Run(SETUP.Run):
             self.inspect("maintenance.confirm")
             self.press("maintenance.cancel")
         with self.evidence.step("real_uninstall_preserves_evidence_and_trashes_exact_bundle") as step:
-            self.helper("menu", title="Settings…")
-            self.helper("select", identifier="settings.page.capture")
-            if int(self.inspect("settings.startup.enabled")["AXValue"]) == 0:
-                self.press("settings.startup.enabled")
-            before_login = self.wait_for(lambda: records if (records := self.login()) and any(item["enabled"] for item in records) else None,
-                                         15, "actual login-item registration")
+            before_login = self.enable_launch_at_login()
             self.open_maintenance()
             screenshot = Path.home() / "Pictures" / ("ShareX-retained-" + str(uuid.uuid4()) + ".png")
             screenshot.parent.mkdir(parents=True, exist_ok=True)
@@ -456,18 +589,41 @@ class Run(SETUP.Run):
             retained = {str(path): NATIVE.digest(path) for path in (screenshot, unrelated)}
             app_stat = self.args.app.stat()
             bundle = tree_hashes(self.args.app)
-            self.press("maintenance.uninstall")
+
+            def require_cleanup():
+                require(not self.wrapper.exists() and not self.wrapper.is_symlink(), "Uninstall left the exact managed CLI installed.")
+                require(self.defaults() in (None, {}), "Uninstall left app preferences in the real account domain.")
+                require_permission_removed(before_permissions, self.permissions(), self.args.helper, all_services=True)
+                require(not any(item["enabled"] for item in self.login()), "Uninstall left an enabled login registration.")
+                require(tree_hashes(self.root) == evidence, "Uninstall changed retained capture evidence.")
+                require(self.defaults(foreign_domain) == before_defaults, "Uninstall changed unrelated app preferences.")
+                require({path: NATIVE.digest(Path(path)) for path in retained} == retained, "Uninstall changed unrelated user files.")
+
+            with self.evidence.step("partial_uninstall_reports_completed_cleanup_before_retry") as failure_step:
+                with self.immutable_bundle():
+                    self.press("maintenance.uninstall")
+                    self.inspect("maintenance.confirm")
+                    self.press("maintenance.confirm")
+                    failure_step["failureUI"] = self.refusal(timeout=45)
+                    text = json.dumps(failure_step["failureUI"])
+                    completed = ["Capture stopped. Completed recordings are saved.", "Launch at login is unregistered.",
+                                 "Removed the exact ShareX CLI wrapper", "ShareX preferences are cleared.", "ShareX permissions are reset."]
+                    require(all(message in text for message in completed), "Partial uninstall omitted its completed cleanup actions.")
+                    require_cleanup()
+                    require(tree_hashes(self.args.app) == bundle, "Failed Trash move changed the installed app contents.")
+                    failure_step.update(completedActions=completed, retainedEvidenceEntries=len(evidence))
+                    self.capture_ui("maintenance-partial-uninstall-failure")
+                failure_step["retryReview"] = self.retry_review()
+                text = json.dumps(failure_step["retryReview"])
+                require("No CLI wrapper exists at ~/.local/bin/sharex." in text,
+                        "Retry reused the old CLI review after the actual wrapper was removed.")
+                require_cleanup()
+                require(tree_hashes(self.args.app) == bundle, "Retry review removed or changed the app before confirmation.")
             self.press("maintenance.confirm")
             self.wait_exit()
             require(not self.args.app.exists(), "Uninstall left the installed app in place.")
             trashed = exact_trashed_bundle(Path.home() / ".Trash", (app_stat.st_dev, app_stat.st_ino), bundle)
-            require(not self.wrapper.exists() and not self.wrapper.is_symlink(), "Uninstall left the exact managed CLI installed.")
-            require(self.defaults() in (None, {}), "Uninstall left app preferences in the real account domain.")
-            require_permission_removed(before_permissions, self.permissions(), self.args.helper, all_services=True)
-            require(not any(item["enabled"] for item in self.login()), "Uninstall left an enabled login registration.")
-            require(tree_hashes(self.root) == evidence, "Uninstall changed retained capture evidence.")
-            require(self.defaults(foreign_domain) == before_defaults, "Uninstall changed unrelated app preferences.")
-            require({path: NATIVE.digest(Path(path)) for path in retained} == retained, "Uninstall changed unrelated user files.")
+            require_cleanup()
             step.update(trashedBundle=str(trashed), retainedEvidenceFiles=len(evidence),
                         retainedFiles=retained, loginBefore=before_login, loginAfter=self.login())
 

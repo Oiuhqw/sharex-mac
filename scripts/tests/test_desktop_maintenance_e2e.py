@@ -6,6 +6,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+import uuid
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "e2e-desktop-maintenance.py"
@@ -89,6 +90,98 @@ class NativeTargetTests(unittest.TestCase):
         for elements in ([], [{"identifier": "recording.target.display.a"}, {"identifier": "recording.target.display.b"}]):
             with self.subTest(elements=elements), self.assertRaisesRegex(DRIVER.Failure, "Expected one display"):
                 DRIVER.target_identifier(elements, "display")
+
+    def test_refresh_can_wait_for_missing_target_but_never_accepts_ambiguity(self):
+        self.assertIsNone(DRIVER.target_identifier([], "window", "fixture", required=False))
+        with self.assertRaisesRegex(DRIVER.Failure, "Expected one display"):
+            DRIVER.target_identifier([{"identifier": "recording.target.display.a"},
+                                      {"identifier": "recording.target.display.b"}], "display", required=False)
+
+    def test_snapshot_can_select_combined_accessibility_label(self):
+        elements = [{"identifier": "recording.target.window.fixture", "AXValue": "Unique fixture, helper"},
+                    {"identifier": "recording.target.window.other", "AXValue": "Settings, ShareX"}]
+        self.assertEqual(DRIVER.target_identifier(elements, "window", "Unique fixture", required=False),
+                         "recording.target.window.fixture")
+
+
+class FailedRecordingProofTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.session = {"id": str(uuid.uuid4()).upper(), "origin": "human", "state": "failed", "stopReason": "maintenance",
+                        "failure": {"code": "storage_failed", "message": "Cannot publish the completed artifact."},
+                        "artifacts": [{"id": str(uuid.uuid4()).upper(), "kind": "recording", "state": "failed"}]}
+        folder = self.root / self.session["id"] / self.session["artifacts"][0]["id"]
+        folder.mkdir(parents=True)
+        self.partial = folder / "capture.partial.mp4"
+        self.partial.write_bytes(b"preserved incomplete recording evidence")
+        self.blocked = folder / "capture.mp4"
+        self.run = DRIVER.Run.__new__(DRIVER.Run)
+        self.run.root = self.root
+
+    def test_collision_fixture_preserves_partial_and_removes_only_its_empty_directory(self):
+        before = self.partial.read_bytes()
+        with self.run.blocked_recording_publish(self.session) as (partial, blocked):
+            self.assertEqual(partial, self.partial)
+            self.assertEqual(blocked, self.blocked)
+            DRIVER.require_failed_recording(self.session, partial, blocked)
+        self.assertFalse(self.blocked.exists())
+        self.assertEqual(self.partial.read_bytes(), before)
+
+    def test_collision_fixture_removes_its_directory_after_failure(self):
+        with self.assertRaisesRegex(RuntimeError, "evaluation failed"):
+            with self.run.blocked_recording_publish(self.session):
+                raise RuntimeError("evaluation failed")
+        self.assertFalse(self.blocked.exists())
+        self.assertTrue(self.partial.is_file())
+
+    def test_collision_fixture_does_not_replace_an_existing_movie(self):
+        self.blocked.write_bytes(b"existing evidence")
+        with self.assertRaises(FileExistsError):
+            with self.run.blocked_recording_publish(self.session):
+                self.fail("Existing publication destination was admitted")
+        self.assertEqual(self.blocked.read_bytes(), b"existing evidence")
+
+    def test_collision_fixture_does_not_delete_unexpected_files(self):
+        with self.assertRaisesRegex(DRIVER.Failure, "reserved recording destination"):
+            with self.run.blocked_recording_publish(self.session):
+                (self.blocked / "unexpected").write_bytes(b"preserve me")
+        self.assertEqual((self.blocked / "unexpected").read_bytes(), b"preserve me")
+
+    def test_failure_proof_rejects_success_state_or_published_artifact(self):
+        self.blocked.mkdir()
+        with self.assertRaisesRegex(DRIVER.Failure, "failed manual recording"):
+            DRIVER.require_failed_recording({**self.session, "state": "completed"}, self.partial, self.blocked)
+        for mutation in ({"state": "completed"}, {"path": "/tmp/capture.mp4"}, {"sha256": "claimed-success"}):
+            artifact = {**self.session["artifacts"][0], **mutation}
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(DRIVER.Failure, "published movie"):
+                DRIVER.require_failed_recording({**self.session, "artifacts": [artifact]}, self.partial, self.blocked)
+
+    def test_failure_proof_rejects_an_unrelated_failure(self):
+        self.blocked.mkdir()
+        session = {**self.session, "failure": {"code": "storage_failed", "message": "Disk unavailable"}}
+        with self.assertRaisesRegex(DRIVER.Failure, "reason other than"):
+            DRIVER.require_failed_recording(session, self.partial, self.blocked)
+
+    def test_failure_proof_requires_preserved_nonempty_partial(self):
+        self.blocked.mkdir()
+        self.partial.write_bytes(b"")
+        with self.assertRaisesRegex(DRIVER.Failure, "lost its real partial"):
+            DRIVER.require_failed_recording(self.session, self.partial, self.blocked)
+
+    @unittest.skipUnless(sys.platform == "darwin", "Requires real macOS immutable-file semantics.")
+    def test_immutable_bundle_refuses_move_and_clears_flag_after_failure(self):
+        app = self.root / "ShareX.app"
+        app.mkdir()
+        self.run.args = SimpleNamespace(app=app)
+        self.run.command = lambda command: subprocess.run(command, check=True, capture_output=True)
+        with self.assertRaisesRegex(RuntimeError, "evaluation failed"):
+            with self.run.immutable_bundle():
+                with self.assertRaises(PermissionError):
+                    app.rename(self.root / "moved.app")
+                raise RuntimeError("evaluation failed")
+        app.rename(self.root / "moved.app")
 
 
 class PreservationProofTests(unittest.TestCase):
