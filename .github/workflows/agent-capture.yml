@@ -33,7 +33,7 @@ on:
         type: boolean
         default: false
       frame_gap_replay:
-        description: Diagnostic only; compare warm CLI and socket status polling
+        description: Diagnostic only; compare startup sinks after original native prefixes
         type: boolean
         default: false
       frame_gap_workload:
@@ -134,18 +134,6 @@ jobs:
           bash scripts/ci-capture-permissions.sh /Applications/ShareX.app
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool false
 
-      - name: Replay matched warm CLI and socket status workloads
-        if: ${{ !cancelled() && inputs.frame_gap_replay && steps.capture-permission.outcome == 'success' }}
-        timeout-minutes: 30
-        env:
-          SHAREX_FRAME_GAP_WORKLOAD: '1'
-          SHAREX_FRAME_GAP_FIXTURE_TRACE: '1'
-          SHAREX_FRAME_GAP_TRACE_DIR: ${{ github.workspace }}/frame-gap-replay-traces
-        run: |
-          defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
-          python3 scripts/frame-gap-replay.py --app /Applications/ShareX.app \
-            --build-settings "$PWD/agent-build-settings.json" --out "$PWD/frame-gap-replay-out"
-
       - name: Collect bounded paired frame gap experiment
         if: ${{ !cancelled() && inputs.frame_gap_probe && steps.capture-permission.outcome == 'success' }}
         timeout-minutes: 35
@@ -159,7 +147,7 @@ jobs:
 
       - name: Build and authorize independent setup driver
         id: setup-helper
-        if: ${{ !cancelled() && !inputs.frame_gap_probe && !inputs.frame_gap_replay && !inputs.frame_gap_workload && steps.capture-permission.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.frame_gap_probe && !inputs.frame_gap_workload && steps.capture-permission.outcome == 'success' }}
         run: |
           xcrun swiftc -parse-as-library -swift-version 6 -O -target arm64-apple-macosx14.0 \
             scripts/e2e-agent-setup.swift -o "$RUNNER_TEMP/sharex-agent-setup-helper"
@@ -167,12 +155,27 @@ jobs:
           bash scripts/ci-capture-permissions.sh --helper "$RUNNER_TEMP/sharex-agent-setup-helper"
 
       - name: Validate setup UI, recording controls, and old capture deletion
+        id: setup-ui
         if: ${{ !cancelled() && !inputs.frame_gap_surfaces && steps.setup-helper.outcome == 'success' }}
         timeout-minutes: 8
         run: |
           python3 scripts/e2e-agent-setup.py --app /Applications/ShareX.app \
             --build-settings "$PWD/agent-build-settings.json" \
             --helper "$RUNNER_TEMP/sharex-agent-setup-helper" --out "$PWD/agent-setup-out"
+
+      - name: Compare first noisy startup after original native prefixes
+        if: ${{ !cancelled() && inputs.frame_gap_replay && steps.setup-ui.outcome == 'success' }}
+        timeout-minutes: 34
+        run: |
+          defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
+          python3 scripts/frame-gap-startup.py --app /Applications/ShareX.app \
+            --build-settings "$PWD/agent-build-settings.json" --setup-result "$PWD/agent-setup-out/result.json" \
+            --commit '${{ github.sha }}' --out "$PWD/frame-gap-startup-out"
+
+      - name: Print startup sink comparison
+        if: ${{ always() && inputs.frame_gap_replay }}
+        run: |
+          if test -f frame-gap-startup-out/comparison.json; then cat frame-gap-startup-out/comparison.json; fi
 
       - name: Capture real pixels and verify decoded media
         if: ${{ !cancelled() && !inputs.frame_gap_surfaces && !inputs.frame_gap_probe && !inputs.frame_gap_replay && !inputs.frame_gap_workload && steps.capture-permission.outcome == 'success' }}
@@ -272,7 +275,7 @@ jobs:
           if test -f agent-clients-out/result.json; then cat agent-clients-out/result.json; fi
 
       - name: Validate manual recording, permission reset, and real uninstall
-        if: ${{ !cancelled() && !inputs.frame_gap_surfaces && steps.setup-helper.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.frame_gap_surfaces && !inputs.frame_gap_replay && steps.setup-helper.outcome == 'success' }}
         timeout-minutes: 15
         run: |
           python3 scripts/e2e-desktop-maintenance.py --app /Applications/ShareX.app \
@@ -293,7 +296,7 @@ jobs:
           fi
 
       - name: Store validation evidence
-        if: ${{ always() && (inputs.store_artifacts || inputs.frame_gap_full || inputs.frame_gap_surfaces) }}
+        if: ${{ always() && (inputs.store_artifacts || inputs.frame_gap_full || inputs.frame_gap_surfaces || inputs.frame_gap_replay) }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: agent-capture-${{ github.sha }}
@@ -310,6 +313,7 @@ jobs:
             frame-gap-workload-out
             frame-gap-replay-out
             frame-gap-replay-traces
+            frame-gap-startup-out
             frame-gap-full-traces
             frame-gap-surfaces-out
             !frame-gap-surfaces-out/**/client-home/**

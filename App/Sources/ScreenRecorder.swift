@@ -20,7 +20,11 @@ struct RecordedVideo: Sendable {
 @MainActor
 final class ScreenRecorder {
     private let stream: SCStream
+    #if FRAME_GAP_PROBE
+    private let writer: any FrameGapCaptureSink
+    #else
     private let writer: CaptureVideoWriter
+    #endif
     private let partialURL: URL
     private let width: Int
     private let height: Int
@@ -35,11 +39,20 @@ final class ScreenRecorder {
          onLimit: @escaping @Sendable (String) -> Void) throws {
         partialURL = url; width = target.configuration.width; height = target.configuration.height
         #if FRAME_GAP_PROBE
+        let selection = try FrameGapStartupSelection.select(target: target, options: options, url: url)
         probeContext = FrameGapContext(videoPath: url.path, width: width, height: height,
-                                      fps: options.fps, queueDepth: target.configuration.queueDepth)
+                                      fps: options.fps, queueDepth: target.configuration.queueDepth, startupSink: selection)
         #endif
         target.configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(options.fps))
+        #if FRAME_GAP_PROBE
+        if selection?.arm == "metadata" {
+            writer = FrameGapStartupMetadata(url: url, onFailure: onFailure, onLimit: onLimit)
+        } else {
+            writer = try CaptureVideoWriter(url: url, width: width, height: height, options: options, onFailure: onFailure, onLimit: onLimit)
+        }
+        #else
         writer = try CaptureVideoWriter(url: url, width: width, height: height, options: options, onFailure: onFailure, onLimit: onLimit)
+        #endif
         stream = SCStream(filter: target.filter, configuration: target.configuration, delegate: writer)
         try stream.addStreamOutput(writer, type: .screen, sampleHandlerQueue: writer.queue)
     }
@@ -73,6 +86,7 @@ final class ScreenRecorder {
             writer.freeze()
             let stopFailure = await stopStream()
             #if FRAME_GAP_PROBE
+            if stopFailure != nil { probeOperations.record("stream.stopFailure", "instant") }
             defer {
                 writer.flushProbeAfterStop(operations: probeOperations.events,
                     operationOverflow: probeOperations.overflow, context: probeContext)
@@ -133,6 +147,22 @@ private final class StopContinuation: @unchecked Sendable {
         value?.resume(returning: failure)
     }
 }
+
+#if FRAME_GAP_PROBE
+protocol FrameGapCaptureSink: SCStreamOutput, SCStreamDelegate, Sendable {
+    var queue: DispatchQueue { get }
+    func begin(_ callback: @escaping @Sendable (Result<RecorderStatistics, Error>) -> Void)
+    func captureFailed(_ error: AgentFailure)
+    func cancelStartup()
+    func statistics() async -> RecorderStatistics
+    func freeze()
+    func finish() async throws -> RecorderStatistics
+    func probeSnapshot() async -> FrameGapSnapshot
+    func flushProbeAfterStop(operations: [FrameGapOperation], operationOverflow: Int, context: FrameGapContext)
+}
+
+extension CaptureVideoWriter: FrameGapCaptureSink {}
+#endif
 
 private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     let queue = DispatchQueue(label: "com.sharexmac.agent.video", qos: .userInitiated)
@@ -406,24 +436,9 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
     // This optional path also instruments the real agent/client flow in a diagnostic build.
     // ScreenRecorder calls it only after stopStream and writer finalization have returned.
     func flushProbeAfterStop(operations: [FrameGapOperation], operationOverflow: Int, context: FrameGapContext) {
-        guard let path = ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_TRACE_DIR"] else { return }
         queue.async {
-            do {
-                let directory = URL(fileURLWithPath: path, isDirectory: true)
-                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                var snapshot = self.probeTrace.snapshot()
-                snapshot.operations = operations
-                snapshot.operationOverflow = operationOverflow
-                snapshot.context = context
-                snapshot.history = FrameGapHistory.shared.snapshot()
-                snapshot.writerID = self.probeID
-                try encoder.encode(snapshot).write(
-                    to: directory.appendingPathComponent(self.probeID + "-" + self.url.deletingPathExtension().lastPathComponent + "-trace.json"), options: .atomic)
-            } catch {
-                FileHandle.standardError.write(Data("Frame gap trace flush failed: \(error)\n".utf8))
-            }
+            self.probeTrace.snapshot().flushAfterStop(operations: operations, operationOverflow: operationOverflow,
+                                                    context: context, writerID: self.probeID)
         }
     }
     #endif

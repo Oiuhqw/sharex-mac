@@ -202,6 +202,25 @@ struct FrameGapSnapshot: Codable, Sendable {
     var context: FrameGapContext?
     var history: FrameGapHistorySnapshot?
     var writerID: String?
+
+    func flushAfterStop(operations: [FrameGapOperation], operationOverflow: Int, context: FrameGapContext, writerID: String? = nil) {
+        guard let path = ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_TRACE_DIR"] else { return }
+        do {
+            var snapshot = self
+            snapshot.operations = operations; snapshot.operationOverflow = operationOverflow
+            snapshot.context = context; snapshot.history = FrameGapHistory.shared.snapshot(); snapshot.writerID = writerID
+            let directory = URL(fileURLWithPath: path, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = URL(fileURLWithPath: context.videoPath)
+            let identity = writerID ?? "metadata-" + url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(snapshot).write(to: directory.appendingPathComponent(
+                identity + "-" + url.deletingPathExtension().lastPathComponent + "-trace.json"), options: .atomic)
+        } catch {
+            FileHandle.standardError.write(Data("Frame gap trace flush failed: \(error)\n".utf8))
+        }
+    }
 }
 
 struct FrameGapHistoryEvent: Codable, Sendable {
@@ -276,14 +295,145 @@ struct FrameGapContext: Codable, Sendable {
     let queueDepth: Int
     let machTimebaseNumerator: UInt32
     let machTimebaseDenominator: UInt32
+    let startupSink: FrameGapStartupSelection?
 
-    init(videoPath: String, width: Int, height: Int, fps: Int, queueDepth: Int) {
+    init(videoPath: String, width: Int, height: Int, fps: Int, queueDepth: Int, startupSink: FrameGapStartupSelection? = nil) {
         self.videoPath = videoPath; self.width = width; self.height = height
         self.fps = fps; self.queueDepth = queueDepth
+        self.startupSink = startupSink
         var timebase = mach_timebase_info_data_t()
         mach_timebase_info(&timebase)
         machTimebaseNumerator = timebase.numer
         machTimebaseDenominator = timebase.denom
+    }
+}
+
+struct FrameGapStartupSelection: Codable, Sendable {
+    let arm: String
+    let requestID: String
+    let priorWriters: Int
+    let completedWriters: Int
+    let selectionUptime: Double
+    @MainActor private static var selected = false
+
+    @MainActor
+    static func select(target: CaptureTargets.Resolved, options: RecordingOptions, url: URL) throws -> Self? {
+        let environment = ProcessInfo.processInfo.environment
+        guard let arm = environment["SHAREX_FRAME_GAP_STARTUP_SINK"] else { return nil }
+        let requestID = url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+        let expectedID = environment["SHAREX_FRAME_GAP_STARTUP_REQUEST_ID"]?.uppercased()
+        guard options.maxBytes == 1_048_576 || requestID == expectedID else { return nil }
+        let history = FrameGapHistory.shared.snapshot()
+        let prior = history.events.filter { $0.name == "writer.init" }.count
+        let completed = history.events.filter { $0.name == "writer.complete" }.count
+        guard ["control", "metadata"].contains(arm), !selected, requestID == expectedID,
+              prior == 7, completed == 7, history.overflow == 0,
+              options.maxBytes == 1_048_576, options.maxDurationSeconds == 30, options.fps == 15,
+              target.target.kind == .window, target.configuration.queueDepth == 3,
+              target.configuration.pixelFormat == kCVPixelFormatType_32BGRA,
+              !FrameGapOwnedBuffer.enabled else {
+            throw AgentFailure(.recordingFailed, "Startup sink diagnostic request or seven-writer prefix did not match.")
+        }
+        selected = true
+        FrameGapHistory.shared.record("startupSink.selected.\(arm)", requestID: requestID)
+        return Self(arm: arm, requestID: requestID, priorWriters: prior, completedWriters: completed,
+                    selectionUptime: FrameGapTrace.now())
+    }
+}
+
+final class FrameGapStartupMetadata: NSObject, FrameGapCaptureSink, @unchecked Sendable {
+    let queue = DispatchQueue(label: "com.sharexmac.agent.video", qos: .userInitiated)
+    private let trace = FrameGapTrace()
+    private let url: URL
+    private let onFailure: @Sendable (AgentFailure) -> Void
+    private let onLimit: @Sendable (String) -> Void
+    private var startup: (@Sendable (Result<RecorderStatistics, Error>) -> Void)?
+    private var startedAt: Date?
+    private var firstUptime: Double?
+    private var endingDuration: Double?
+    private var finishing = false
+    private var failure: AgentFailure?
+
+    init(url: URL, onFailure: @escaping @Sendable (AgentFailure) -> Void,
+         onLimit: @escaping @Sendable (String) -> Void) {
+        self.url = url; self.onFailure = onFailure; self.onLimit = onLimit
+        super.init()
+    }
+
+    func begin(_ callback: @escaping @Sendable (Result<RecorderStatistics, Error>) -> Void) {
+        queue.async {
+            self.startup = callback
+            self.trace.startHeartbeat(on: self.queue)
+            self.queue.asyncAfter(deadline: .now() + 12) { [weak self] in
+                guard let self, self.startup != nil else { return }
+                self.fail(AgentFailure(.startupTimeout, "Metadata diagnostic received no complete frame within 12 seconds."))
+            }
+        }
+    }
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
+        var event = trace.enter(sampleBuffer, type: outputType)
+        event.finishing = finishing; event.failed = failure != nil
+        defer { trace.leave(event) }
+        guard !finishing, failure == nil, event.screen, event.valid, event.image,
+              event.status == SCFrameStatus.complete.rawValue, event.pts != nil, firstUptime == nil else { return }
+        firstUptime = FrameGapTrace.now(); startedAt = Date()
+        FrameGapHistory.shared.record("startupSink.firstComplete", requestID: url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent)
+        let callback = startup; startup = nil; callback?(.success(snapshot()))
+        queue.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, !self.finishing, self.failure == nil else { return }
+            self.onLimit("diagnostic_metadata_complete")
+        }
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        queue.async {
+            self.trace.streamFailed(error)
+            self.fail(AgentFailure(.recordingFailed, "Metadata diagnostic stream stopped: \(error.localizedDescription)"))
+        }
+    }
+
+    func captureFailed(_ error: AgentFailure) { queue.async { self.fail(error) } }
+    func cancelStartup() {
+        queue.async {
+            if self.firstUptime == nil { self.fail(AgentFailure(.interrupted, "Metadata diagnostic stopped before its first frame.")) }
+        }
+    }
+    func statistics() async -> RecorderStatistics {
+        await withCheckedContinuation { continuation in queue.async { continuation.resume(returning: self.snapshot()) } }
+    }
+    func freeze() {
+        queue.async {
+            self.finishing = true
+            self.endingDuration = self.firstUptime.map { FrameGapTrace.now() - $0 }
+        }
+    }
+    func finish() async throws -> RecorderStatistics {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<RecorderStatistics, Error>) in
+            queue.async {
+                self.trace.stopHeartbeat()
+                continuation.resume(throwing: self.failure ?? AgentFailure(.recordingFailed,
+                    "Metadata-only diagnostic capture ended. No encoder frames or video artifact were produced."))
+            }
+        }
+    }
+    func probeSnapshot() async -> FrameGapSnapshot {
+        await withCheckedContinuation { continuation in queue.async { continuation.resume(returning: self.trace.snapshot()) } }
+    }
+    func flushProbeAfterStop(operations: [FrameGapOperation], operationOverflow: Int, context: FrameGapContext) {
+        queue.async {
+            self.trace.snapshot().flushAfterStop(operations: operations, operationOverflow: operationOverflow, context: context)
+        }
+    }
+    private func snapshot() -> RecorderStatistics {
+        RecorderStatistics(acceptedFrames: 0, droppedFrames: 0, startedAt: startedAt,
+                           durationSeconds: endingDuration ?? firstUptime.map { FrameGapTrace.now() - $0 } ?? 0)
+    }
+    private func fail(_ error: AgentFailure) {
+        guard failure == nil, !finishing else { return }
+        failure = error
+        let callback = startup; startup = nil; callback?(.failure(error))
+        onFailure(error)
     }
 }
 
