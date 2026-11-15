@@ -349,7 +349,17 @@ class Run(SETUP.Run):
         require(self.maintenance_snapshot() == before, f"Cancelling {operation} changed account, evidence or installation state.")
 
     def wait_exit(self):
-        self.wait_for(lambda: self.app.poll() is not None, 30, "maintenance to quit the owned app")
+        try:
+            self.wait_for(lambda: self.app.poll() is not None, 30, "maintenance to quit the owned app")
+        except Failure:
+            try:
+                sample = self.evidence.directory / "termination-sample.txt"
+                self.command(["/usr/bin/sample", str(self.app.pid), "2", "-file", sample], timeout=10, check=False)
+                if sample.is_file():
+                    self.evidence.emit("termination_sample", text=sample.read_text(encoding="utf-8", errors="replace")[:30000])
+            except Exception as diagnostic:
+                self.evidence.emit("termination_sample_unavailable", reason=str(diagnostic))
+            raise
         require(self.app.returncode == 0, f"Maintenance exited with code {self.app.returncode}.")
 
     def maintenance_stories(self):
