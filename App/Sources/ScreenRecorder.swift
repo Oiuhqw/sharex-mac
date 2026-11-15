@@ -158,6 +158,7 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
     #if FRAME_GAP_PROBE
     private let probeTrace = FrameGapTrace()
     private let probeID = UUID().uuidString
+    private let probeOwnedBuffers = FrameGapOwnedBuffer.enabled
     #endif
 
     init(url: URL, width: Int, height: Int, options: RecordingOptions, onFailure: @escaping @Sendable (AgentFailure) -> Void,
@@ -226,6 +227,7 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
         #if FRAME_GAP_PROBE
         var event = probeTrace.enter(sampleBuffer, type: outputType)
+        event.ownedBuffers = probeOwnedBuffers
         event.retainedSurfaceID = FrameGapTrace.surfaceID(lastSample)
         event.writerStatus = writer.status.rawValue
         event.finishing = finishing
@@ -244,17 +246,28 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
         guard ready else { dropped += 1; return }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard pts.isValid, pts.isNumeric else { dropped += 1; return }
+        #if FRAME_GAP_PROBE
+        let acceptedSample: CMSampleBuffer
+        do { acceptedSample = probeOwnedBuffers ? try FrameGapOwnedBuffer.copy(sampleBuffer, event: &event) : sampleBuffer }
+        catch {
+            event.copyError = error.localizedDescription
+            fail(AgentFailure(.recordingFailed, "Owned-buffer diagnostic failed: \(error.localizedDescription)"))
+            return
+        }
+        #else
+        let acceptedSample = sampleBuffer
+        #endif
         if firstPTS == nil { writer.startSession(atSourceTime: pts) }
         #if FRAME_GAP_PROBE
         event.appendStart = FrameGapTrace.now()
         #endif
-        let appended = input.append(sampleBuffer)
+        let appended = input.append(acceptedSample)
         #if FRAME_GAP_PROBE
         event.appendEnd = FrameGapTrace.now()
         event.appended = appended
         #endif
         guard appended else { fail(writerFailure()); return }
-        accepted += 1; lastSample = sampleBuffer
+        accepted += 1; lastSample = acceptedSample
         if firstPTS == nil {
             #if FRAME_GAP_PROBE
             FrameGapHistory.shared.record("writer.firstAppend", writerID: probeID)

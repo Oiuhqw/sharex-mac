@@ -29,6 +29,122 @@ struct FrameGapCallback: Codable, Sendable {
     var appendStart: Double?
     var appendEnd: Double?
     var appended: Bool?
+    var ownedBuffers = false
+    var copyStart: Double?
+    var copyEnd: Double?
+    var copySucceeded: Bool?
+    var copyError: String?
+    var copyDisjoint: Bool?
+    var sourceBaseAddress: UInt64?
+    var ownedBaseAddress: UInt64?
+    var sourceBytesPerRow: Int?
+    var ownedBytesPerRow: Int?
+    var copyWidth: Int?
+    var copyHeight: Int?
+    var copyPixelFormat: UInt32?
+    var copyBytes: Int?
+    var ownedSurfaceID: UInt32?
+}
+
+enum FrameGapOwnedBuffer {
+    static let enabled = ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_OWNED_BUFFERS"] == "1"
+
+    static func copy(_ sample: CMSampleBuffer, event: inout FrameGapCallback) throws -> CMSampleBuffer {
+        event.copyStart = FrameGapTrace.now()
+        event.copySucceeded = false
+        defer { event.copyEnd = FrameGapTrace.now() }
+        guard let source = CMSampleBufferGetImageBuffer(sample),
+              let format = CMSampleBufferGetFormatDescription(sample),
+              CMSampleBufferGetNumSamples(sample) == 1, CMSampleBufferDataIsReady(sample),
+              CVPixelBufferGetPixelFormatType(source) == kCVPixelFormatType_32BGRA,
+              !CVPixelBufferIsPlanar(source) else {
+            throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic requires one ready, packed BGRA frame.")
+        }
+        let width = CVPixelBufferGetWidth(source), height = CVPixelBufferGetHeight(source)
+        event.copyWidth = width; event.copyHeight = height
+        event.copyPixelFormat = CVPixelBufferGetPixelFormatType(source)
+        var owned: CVPixelBuffer?
+        let attributes: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any]()]
+        let allocation = CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+            kCVPixelFormatType_32BGRA, attributes as CFDictionary, &owned)
+        guard allocation == kCVReturnSuccess, let owned else {
+            throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic allocation failed with status \(allocation).")
+        }
+        guard CVPixelBufferLockBaseAddress(source, .readOnly) == kCVReturnSuccess else {
+            throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic could not lock the source pixels.")
+        }
+        defer { CVPixelBufferUnlockBaseAddress(source, .readOnly) }
+        guard CVPixelBufferLockBaseAddress(owned, []) == kCVReturnSuccess else {
+            throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic could not lock the owned pixels.")
+        }
+        defer { CVPixelBufferUnlockBaseAddress(owned, []) }
+        guard let sourceBase = CVPixelBufferGetBaseAddress(source),
+              let ownedBase = CVPixelBufferGetBaseAddress(owned) else {
+            throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic received inaccessible pixels.")
+        }
+        let sourceStride = CVPixelBufferGetBytesPerRow(source), ownedStride = CVPixelBufferGetBytesPerRow(owned)
+        let rowBytes = width * 4
+        guard width > 0, height > 0, sourceStride >= rowBytes, ownedStride >= rowBytes,
+              CVPixelBufferGetDataSize(source) >= sourceStride * height,
+              CVPixelBufferGetDataSize(owned) >= ownedStride * height else {
+            throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic received an invalid BGRA row layout.")
+        }
+        let sourceAddress = UInt64(UInt(bitPattern: sourceBase)), ownedAddress = UInt64(UInt(bitPattern: ownedBase))
+        let ownedSurfaceID = CVPixelBufferGetIOSurface(owned).map { IOSurfaceGetID($0.takeUnretainedValue()) }
+        event.sourceBaseAddress = sourceAddress; event.ownedBaseAddress = ownedAddress
+        event.sourceBytesPerRow = sourceStride; event.ownedBytesPerRow = ownedStride
+        event.ownedSurfaceID = ownedSurfaceID
+        let addressDisjoint = sourceAddress + UInt64(sourceStride * height) <= ownedAddress ||
+            ownedAddress + UInt64(ownedStride * height) <= sourceAddress
+        let surfaceDisjoint = event.surfaceID == nil || ownedSurfaceID == nil || event.surfaceID != ownedSurfaceID
+        event.copyDisjoint = addressDisjoint && surfaceDisjoint
+        guard event.copyDisjoint == true else {
+            throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic allocated overlapping pixel storage.")
+        }
+        for row in 0..<height {
+            let destination = ownedBase.advanced(by: row * ownedStride)
+            memcpy(destination, sourceBase.advanced(by: row * sourceStride), rowBytes)
+            if ownedStride > rowBytes { memset(destination.advanced(by: rowBytes), 0, ownedStride - rowBytes) }
+        }
+        event.copyBytes = rowBytes * height
+        for mode in [CVAttachmentMode.shouldPropagate, .shouldNotPropagate] {
+            if let attachments = CVBufferCopyAttachments(source, mode) { CVBufferSetAttachments(owned, attachments, mode) }
+        }
+        guard CMVideoFormatDescriptionMatchesImageBuffer(format, imageBuffer: owned) else {
+            throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic did not preserve the source format.")
+        }
+        var timing = CMSampleTimingInfo()
+        let timingStatus = CMSampleBufferGetSampleTimingInfo(sample, at: 0, timingInfoOut: &timing)
+        guard timingStatus == noErr else {
+            throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic could not read timing, status \(timingStatus).")
+        }
+        var result: CMSampleBuffer?
+        let sampleStatus = CMSampleBufferCreateReadyWithImageBuffer(allocator: kCFAllocatorDefault,
+            imageBuffer: owned, formatDescription: format, sampleTiming: &timing, sampleBufferOut: &result)
+        guard sampleStatus == noErr, let result else {
+            throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic could not wrap pixels, status \(sampleStatus).")
+        }
+        for mode in [kCMAttachmentMode_ShouldPropagate, kCMAttachmentMode_ShouldNotPropagate] {
+            if let attachments = CMCopyDictionaryOfAttachments(allocator: kCFAllocatorDefault, target: sample, attachmentMode: mode) {
+                CMSetAttachments(result, attachments: attachments, attachmentMode: mode)
+            }
+        }
+        if let sourceAttachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) {
+            guard CFArrayGetCount(sourceAttachments) == 1,
+                  let ownedAttachments = CMSampleBufferGetSampleAttachmentsArray(result, createIfNecessary: true),
+                  CFArrayGetCount(ownedAttachments) == 1 else {
+                throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic could not copy the frame attachments.")
+            }
+            let sourceDictionary = unsafeBitCast(CFArrayGetValueAtIndex(sourceAttachments, 0), to: CFDictionary.self)
+            let ownedDictionary = unsafeBitCast(CFArrayGetValueAtIndex(ownedAttachments, 0), to: CFMutableDictionary.self)
+            CFDictionaryApplyFunction(sourceDictionary, { key, value, context in
+                let destination = Unmanaged<CFMutableDictionary>.fromOpaque(context!).takeUnretainedValue()
+                CFDictionarySetValue(destination, key, value)
+            }, Unmanaged.passUnretained(ownedDictionary).toOpaque())
+        }
+        event.copySucceeded = true
+        return result
+    }
 }
 
 struct FrameGapLimit: Codable, Sendable {
