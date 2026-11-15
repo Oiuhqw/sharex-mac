@@ -8,6 +8,10 @@ on:
         default: false
   workflow_dispatch:
     inputs:
+      frame_gap_probe:
+        description: Diagnostic only; collect paired recorder and metadata traces
+        type: boolean
+        default: false
       store_artifacts:
         description: Upload native evidence and build logs
         type: boolean
@@ -49,19 +53,23 @@ jobs:
           printf 'DEVELOPMENT_TEAM =\nSHAREX_LOCAL_CONFIG = present\nCODE_SIGN_IDENTITY = -\n' > Local.xcconfig
           scripts/ci-setup.sh
 
-      - name: Build production Release app
+      - name: Build Release app (optional diagnostic flag)
         id: release-build
         if: ${{ !cancelled() && steps.project.outcome == 'success' }}
         run: |
           set -o pipefail
+          probe_flags=()
+          if [[ '${{ inputs.frame_gap_probe }}' == true ]]; then
+            probe_flags+=(SWIFT_ACTIVE_COMPILATION_CONDITIONS=FRAME_GAP_PROBE)
+          fi
           xcodebuild build -project ShareXMac.xcodeproj -scheme ShareX -configuration Release \
             -destination 'platform=macOS' -derivedDataPath build-agent -disableAutomaticPackageResolution \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" "${probe_flags[@]}" \
             2>&1 | tee agent-build.log
           xcodebuild -showBuildSettings -json -project ShareXMac.xcodeproj -scheme ShareX \
             -configuration Release -destination 'platform=macOS' -derivedDataPath build-agent \
             -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" > agent-build-settings.json
+            CODE_SIGN_IDENTITY="" "${probe_flags[@]}" > agent-build-settings.json
 
       - name: Install and sign app
         id: installed
@@ -82,9 +90,20 @@ jobs:
           bash scripts/ci-capture-permissions.sh /Applications/ShareX.app
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool false
 
+      - name: Collect bounded paired frame gap experiment
+        if: ${{ !cancelled() && inputs.frame_gap_probe && steps.capture-permission.outcome == 'success' }}
+        timeout-minutes: 35
+        run: |
+          python3 scripts/frame-gap-probe.py --app /Applications/ShareX.app --pairs 6 --out "$PWD/frame-gap-probe-out"
+
+      - name: Print frame gap experiment
+        if: ${{ always() && inputs.frame_gap_probe }}
+        run: |
+          if test -f frame-gap-probe-out/experiment.json; then cat frame-gap-probe-out/experiment.json; fi
+
       - name: Build and authorize independent setup driver
         id: setup-helper
-        if: ${{ !cancelled() && steps.capture-permission.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.frame_gap_probe && steps.capture-permission.outcome == 'success' }}
         run: |
           xcrun swiftc -parse-as-library -swift-version 6 -O -target arm64-apple-macosx14.0 \
             scripts/e2e-agent-setup.swift -o "$RUNNER_TEMP/sharex-agent-setup-helper"
@@ -100,7 +119,7 @@ jobs:
             --helper "$RUNNER_TEMP/sharex-agent-setup-helper" --out "$PWD/agent-setup-out"
 
       - name: Capture real pixels and verify decoded media
-        if: ${{ !cancelled() && steps.capture-permission.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.frame_gap_probe && steps.capture-permission.outcome == 'success' }}
         timeout-minutes: 18
         run: |
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
@@ -108,7 +127,7 @@ jobs:
             --build-settings "$PWD/agent-build-settings.json" --out "$PWD/agent-e2e-out"
 
       - name: Print native report
-        if: always()
+        if: ${{ always() && !inputs.frame_gap_probe }}
         run: |
           if test -f agent-setup-out/result.json; then cat agent-setup-out/result.json; fi
           if test -f agent-e2e-out/result.json; then
@@ -119,7 +138,7 @@ jobs:
 
       - name: Prepare runtime for pinned agent clients
         id: client-runtime
-        if: ${{ !cancelled() && steps.capture-permission.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.frame_gap_probe && steps.capture-permission.outcome == 'success' }}
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '24'
@@ -156,7 +175,7 @@ jobs:
             --helper "$RUNNER_TEMP/sharex-agent-setup-helper" --out "$PWD/desktop-maintenance-out"
 
       - name: Print desktop maintenance report and failure diagnostics
-        if: always()
+        if: ${{ always() && !inputs.frame_gap_probe }}
         run: |
           if test -f desktop-maintenance-out/result.json; then
             cat desktop-maintenance-out/result.json
@@ -182,5 +201,6 @@ jobs:
             agent-setup-out
             agent-clients-out
             desktop-maintenance-out
+            frame-gap-probe-out
             !agent-clients-out/client-home/**
           if-no-files-found: warn

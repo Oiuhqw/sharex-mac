@@ -48,11 +48,18 @@ final class ScreenRecorder {
     func cancelStartup() { writer.cancelStartup() }
     func statistics() async -> RecorderStatistics { await writer.statistics() }
 
+    #if FRAME_GAP_PROBE
+    func probeSnapshot() async -> FrameGapSnapshot { await writer.probeSnapshot() }
+    #endif
+
     func finish() async throws -> RecordedVideo {
         if let finishTask { return try await finishTask.value }
         let task = Task { @MainActor in
             writer.freeze()
             let stopFailure = await stopStream()
+            #if FRAME_GAP_PROBE
+            defer { writer.flushProbeAfterStop() }
+            #endif
             let stats = try await writer.finish()
             if let stopFailure { throw stopFailure }
             let url = partialURL, expectedWidth = width, expectedHeight = height
@@ -130,6 +137,10 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
     private var endingDuration: Double?
     private var finishing = false
     private var failure: AgentFailure?
+    #if FRAME_GAP_PROBE
+    private let probeTrace = FrameGapTrace()
+    private let probeID = UUID().uuidString
+    #endif
 
     init(url: URL, width: Int, height: Int, options: RecordingOptions, onFailure: @escaping @Sendable (AgentFailure) -> Void,
          onLimit: @escaping @Sendable (String) -> Void) throws {
@@ -153,6 +164,9 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
 
     func begin(_ callback: @escaping @Sendable (Result<RecorderStatistics, Error>) -> Void) {
         queue.async {
+            #if FRAME_GAP_PROBE
+            self.probeTrace.startHeartbeat(on: self.queue)
+            #endif
             self.startup = callback
             guard self.writer.startWriting() else { self.fail(self.writerFailure()); return }
             self.queue.asyncAfter(deadline: .now() + 12) {
@@ -170,20 +184,43 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
     func captureFailed(_ error: AgentFailure) { queue.async { self.fail(error) } }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        #if FRAME_GAP_PROBE
+        queue.async { self.probeTrace.streamFailed(error) }
+        #endif
         captureFailed(AgentFailure(.recordingFailed, "The capture stream stopped: \(error.localizedDescription)"))
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
+        #if FRAME_GAP_PROBE
+        var event = probeTrace.enter(sampleBuffer, type: outputType)
+        event.retainedSurfaceID = FrameGapTrace.surfaceID(lastSample)
+        event.writerStatus = writer.status.rawValue
+        event.finishing = finishing
+        event.failed = failure != nil
+        defer { probeTrace.leave(event) }
+        #endif
         guard outputType == .screen, !finishing, failure == nil, sampleBuffer.isValid,
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
               let raw = attachments.first?[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete,
               CMSampleBufferGetImageBuffer(sampleBuffer) != nil else { return }
         guard writer.status == .writing else { fail(writerFailure()); return }
-        guard input.isReadyForMoreMediaData else { dropped += 1; return }
+        let ready = input.isReadyForMoreMediaData
+        #if FRAME_GAP_PROBE
+        event.writerReady = ready
+        #endif
+        guard ready else { dropped += 1; return }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard pts.isValid, pts.isNumeric else { dropped += 1; return }
         if firstPTS == nil { writer.startSession(atSourceTime: pts) }
-        guard input.append(sampleBuffer) else { fail(writerFailure()); return }
+        #if FRAME_GAP_PROBE
+        event.appendStart = FrameGapTrace.now()
+        #endif
+        let appended = input.append(sampleBuffer)
+        #if FRAME_GAP_PROBE
+        event.appendEnd = FrameGapTrace.now()
+        event.appended = appended
+        #endif
+        guard appended else { fail(writerFailure()); return }
         accepted += 1; lastSample = sampleBuffer
         if firstPTS == nil {
             firstPTS = pts; firstUptime = ProcessInfo.processInfo.systemUptime; startedAt = Date()
@@ -212,14 +249,28 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
     }
 
     private func checkLimits() {
+        #if FRAME_GAP_PROBE
+        var event = FrameGapLimit(entryUptime: FrameGapTrace.now())
+        defer { probeTrace.leave(event) }
+        #endif
         guard !finishing, failure == nil, let firstUptime else { return }
         let reason: String?
         if ProcessInfo.processInfo.systemUptime - firstUptime >= options.maxDurationSeconds {
             reason = "duration_limit"
         } else {
             do {
+                #if FRAME_GAP_PROBE
+                event.fileStart = FrameGapTrace.now()
+                #endif
                 let bytes = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
+                #if FRAME_GAP_PROBE
+                event.fileEnd = FrameGapTrace.now()
+                event.volumeStart = FrameGapTrace.now()
+                #endif
                 let available = try url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage ?? 0
+                #if FRAME_GAP_PROBE
+                event.volumeEnd = FrameGapTrace.now()
+                #endif
                 if bytes >= options.maxBytes - min(options.maxBytes / 10, 16_777_216) { reason = "byte_limit" }
                 else if available < CaptureLimits().diskReserveBytes + 8_388_608 { reason = "disk_reserve" }
                 else { reason = nil }
@@ -286,6 +337,31 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
         RecorderStatistics(acceptedFrames: accepted, droppedFrames: dropped, startedAt: startedAt,
             durationSeconds: endingDuration ?? firstUptime.map { ProcessInfo.processInfo.systemUptime - $0 } ?? 0)
     }
+    #if FRAME_GAP_PROBE
+    func probeSnapshot() async -> FrameGapSnapshot {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: self.probeTrace.snapshot()) }
+        }
+    }
+
+    // This optional path also instruments the real agent/client flow in a diagnostic build.
+    // ScreenRecorder calls it only after stopStream and writer finalization have returned.
+    func flushProbeAfterStop() {
+        guard let path = ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_TRACE_DIR"] else { return }
+        queue.async {
+            do {
+                let directory = URL(fileURLWithPath: path, isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                try encoder.encode(self.probeTrace.snapshot()).write(
+                    to: directory.appendingPathComponent(self.probeID + "-" + self.url.deletingPathExtension().lastPathComponent + "-trace.json"), options: .atomic)
+            } catch {
+                FileHandle.standardError.write(Data("Frame gap trace flush failed: \(error)\n".utf8))
+            }
+        }
+    }
+    #endif
     private func writerFailure() -> AgentFailure {
         AgentFailure(.recordingFailed, writer.error?.localizedDescription ?? "The video writer rejected the capture.")
     }
@@ -297,6 +373,9 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
         onFailure(error)
     }
     private func complete(_ result: Result<RecorderStatistics, Error>) {
+        #if FRAME_GAP_PROBE
+        probeTrace.stopHeartbeat()
+        #endif
         let continuation = completion; completion = nil; lastSample = nil
         limitTimer?.cancel(); limitTimer = nil
         continuation?.resume(with: result)

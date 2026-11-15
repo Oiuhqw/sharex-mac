@@ -4,6 +4,16 @@ import Foundation
 
 @MainActor
 private final class PatternView: NSView {
+    struct Draw: Codable {
+        let entryUptime: Double
+        let exitUptime: Double
+        let tick: Int
+        let stage: Int
+        let noisy: Bool
+    }
+    let traceEnabled = ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_FIXTURE_TRACE"] == "1"
+    var drawTrace: [Draw] = []
+    var traceOverflow = 0
     var stage = 0
     var tick = 0
     var noisy = false
@@ -11,6 +21,15 @@ private final class PatternView: NSView {
     override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
+        let entry = traceEnabled ? ProcessInfo.processInfo.systemUptime : 0
+        defer {
+            if traceEnabled {
+                if drawTrace.count < 100000 {
+                    drawTrace.append(Draw(entryUptime: entry, exitUptime: ProcessInfo.processInfo.systemUptime,
+                                          tick: tick, stage: stage, noisy: noisy))
+                } else { traceOverflow += 1 }
+            }
+        }
         draws += 1
         let colors: [(CGFloat, CGFloat, CGFloat)] = [
             (230, 32, 40), (32, 210, 80), (30, 80, 230), (240, 210, 40)
@@ -112,6 +131,7 @@ private final class Fixture: NSObject, NSApplicationDelegate {
         window.contentView = view
         self.window = window
         self.view = view
+        if view.traceEnabled { view.drawTrace.reserveCapacity(100000) }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         timer = Timer.scheduledTimer(timeInterval: 1.0 / 30, target: self,
@@ -190,6 +210,17 @@ private final class Fixture: NSObject, NSApplicationDelegate {
             FileHandle.standardError.write(Data("Fixture state write failed: \(error)\n".utf8))
             NSApp.terminate(nil)
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        guard let view, view.traceEnabled else { return }
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(view.drawTrace).write(to: directory.appendingPathComponent("draw-trace.json"), options: .atomic)
+            let overflow = Data("\(view.traceOverflow)\n".utf8)
+            try overflow.write(to: directory.appendingPathComponent("draw-trace-overflow.txt"), options: .atomic)
+        } catch { failure = "Fixture draw trace flush failed: \(error)" }
     }
 }
 

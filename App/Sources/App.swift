@@ -8,6 +8,9 @@ import SwiftUI
 @MainActor
 enum Main {
     static func main() {
+        #if FRAME_GAP_PROBE
+        if FrameGapProbe.handlesMode() { return }
+        #endif
         if CommandLine.arguments.dropFirst().first == "--agent" {
             let appURL = Bundle.main.bundleURL
             let code = AgentCommandRunner.run(Array(CommandLine.arguments.dropFirst(2))) {
