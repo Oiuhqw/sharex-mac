@@ -1,5 +1,6 @@
 import importlib.util
 import contextlib
+import errno
 import io
 import json
 import os
@@ -74,6 +75,21 @@ class DocumentationTests(unittest.TestCase):
 
 @unittest.skipUnless(HAS_WAIT_API, "Owned-group cleanup needs POSIX waitid and WNOWAIT")
 class OwnedChildTests(unittest.TestCase):
+    def test_exited_child_without_getpgid_is_cleaned_and_reaped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            child = PROBE.OwnedChild("finished", python_child("pass"), Path(temporary))
+            try:
+                self.assertTrue(child.wait(time.monotonic() + 3))
+                with mock.patch.object(os, "getpgid", side_effect=ProcessLookupError(errno.ESRCH, "No such process")):
+                    child.close(time.monotonic() + 1)
+                self.assertTrue(child.record["cleanupComplete"], json.dumps(child.record, indent=2))
+                self.assertEqual(child.process.returncode, 0)
+                with self.assertRaises(ChildProcessError):
+                    os.waitid(os.P_PID, child.process.pid, os.WEXITED | os.WNOHANG)
+            finally:
+                if child.process.returncode is None:
+                    child.process.wait(timeout=2)
+
     def test_nonzero_exit_preserves_raw_bytes_and_reaps_after_group_cleanup(self):
         with tempfile.TemporaryDirectory() as temporary:
             out = Path(temporary)
