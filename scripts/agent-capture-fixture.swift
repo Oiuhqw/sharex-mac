@@ -214,14 +214,26 @@ private final class Fixture: NSObject, NSApplicationDelegate {
             "windowBounds": bounds, "scale": window?.backingScaleFactor ?? 1,
             "stage": view?.stage ?? 0, "commandID": lastCommand,
             "uptime": ProcessInfo.processInfo.systemUptime,
-            "clipboardChangeCount": NSPasteboard.general.changeCount,
-            "frontmostPID": NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0,
+            "clipboardChangeCount": {
+                recordOperation("clipboardChangeCount", "begin")
+                defer { recordOperation("clipboardChangeCount", "end") }
+                return NSPasteboard.general.changeCount
+            }(),
+            "frontmostPID": {
+                recordOperation("frontmostApplication", "begin")
+                defer { recordOperation("frontmostApplication", "end") }
+                return NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+            }(),
             "observedWindows": observedWindows
         ]
         if let failure { state["reason"] = failure }
         do {
+            recordOperation("stateSerialization", "begin")
             let data = try JSONSerialization.data(withJSONObject: state, options: [.sortedKeys])
+            recordOperation("stateSerialization", "end")
+            recordOperation("stateWrite", "begin")
             try data.write(to: directory.appendingPathComponent("state.json"), options: .atomic)
+            recordOperation("stateWrite", "end")
         } catch {
             FileHandle.standardError.write(Data("Fixture state write failed: \(error)\n".utf8))
             NSApp.terminate(nil)
