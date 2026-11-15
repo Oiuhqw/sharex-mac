@@ -13,6 +13,8 @@ import uuid
 SOURCE = Path(__file__).resolve().parents[1] / "agent-capture-fixture.swift"
 WRITE_START = "fixture-test-write-start"
 WRITE_END = "fixture-test-write-end"
+WRITE_HELD = "fixture-test-write-held"
+COMMAND_HANDLED = "fixture-test-command-handled"
 
 
 @unittest.skipUnless(sys.platform == "darwin", "The fixture requires a macOS desktop.")
@@ -26,10 +28,24 @@ class NativeFixtureTests(unittest.TestCase):
 
         def slow_write(match):
             indent = match[1]
-            return (f'{indent}FileHandle.standardError.write(Data("{WRITE_START}\\n".utf8))\n'
+            return (f'{indent}let snapshot = try JSONSerialization.jsonObject(with: data) as! [String: Any]\n'
+                    f'{indent}let commandID = snapshot["commandID"] as! String\n'
+                    f'{indent}let gate = URL(fileURLWithPath: CommandLine.arguments[1])\n'
+                    f'{indent}    .appendingPathComponent("hold-\\(commandID)")\n'
                     f"{indent}Thread.sleep(forTimeInterval: 0.75)\n"
+                    f'{indent}if FileManager.default.fileExists(atPath: gate.path) {{\n'
+                    f'{indent}    FileHandle.standardError.write(Data("{WRITE_HELD}\\t\\(commandID)\\n".utf8))\n'
+                    f'{indent}    let deadline = ProcessInfo.processInfo.systemUptime + 10\n'
+                    f'{indent}    while FileManager.default.fileExists(atPath: gate.path) {{\n'
+                    f'{indent}        guard ProcessInfo.processInfo.systemUptime < deadline else {{\n'
+                    f'{indent}            throw NSError(domain: "FixtureTestWriteGateTimeout", code: 1)\n'
+                    f'{indent}        }}\n'
+                    f'{indent}        Thread.sleep(forTimeInterval: 0.01)\n'
+                    f'{indent}    }}\n'
+                    f'{indent}}}\n'
+                    f'{indent}FileHandle.standardError.write(Data("{WRITE_START}\\t\\(commandID)\\n".utf8))\n'
                     f"{match[0]}\n"
-                    f'{indent}FileHandle.standardError.write(Data("{WRITE_END}\\n".utf8))')
+                    f'{indent}FileHandle.standardError.write(Data("{WRITE_END}\\t\\(commandID)\\n".utf8))')
 
         source, count = re.subn(pattern, slow_write, source)
         if count != 1:
@@ -37,8 +53,11 @@ class NativeFixtureTests(unittest.TestCase):
         source = source.replace("NSApp.terminate(nil)", "NSApp.terminate(nil)\n            NSApp.terminate(nil)")
         blocked = "screen.visibleFrame.width >= 760"
         encoding = 'if let failure { state["reason"] = failure }'
-        if source.count(blocked) != 1 or source.count(encoding) != 1:
+        handled = "lastCommand = id"
+        if any(source.count(point) != 1 for point in (blocked, encoding, handled)):
             raise AssertionError("Fixture launch or JSON serialization injection point changed.")
+        source = source.replace(handled, handled + '\n            FileHandle.standardError.write('
+                                f'Data("{COMMAND_HANDLED}\\t\\(id)\\n".utf8))')
         variants = {
             "slow": source,
             "blocked": source.replace(blocked, "screen.visibleFrame.width >= 1_000_000"),
@@ -90,8 +109,15 @@ class NativeFixtureTests(unittest.TestCase):
         self.previous_state = value
         return value
 
-    def events(self):
-        return [line for line in self.log_path.read_text().splitlines() if line in (WRITE_START, WRITE_END)]
+    def events(self, *kinds):
+        return [tuple(line.split("\t", 1)) for line in self.log_path.read_text().splitlines()
+                if line.partition("\t")[0] in (kinds or (WRITE_START, WRITE_END))]
+
+    def assert_paired_writes(self, events):
+        self.assertEqual(len(events) % 2, 0, events)
+        for start, end in zip(events[::2], events[1::2]):
+            self.assertEqual(start[0], WRITE_START)
+            self.assertEqual(end, (WRITE_END, start[1]))
 
     def wait_for(self, predicate, description, timeout=6):
         deadline = time.monotonic() + timeout
@@ -117,10 +143,17 @@ class NativeFixtureTests(unittest.TestCase):
         return self.wait_for(lambda: (state if (state := self.state())
                                      and state["commandID"] == command_id else None), action)
 
-    def next_write(self):
-        previous = self.events().count(WRITE_START)
-        return self.wait_for(lambda: (starts if (starts := self.events().count(WRITE_START)) > previous else None),
-                             "a write before quit")
+    def quit_during_write(self, hold_final=False):
+        previous_id = self.previous_state["commandID"]
+        gate = self.directory / f"hold-{previous_id}"
+        gate.touch()
+        self.wait_for(lambda: (WRITE_HELD, previous_id) in self.events(WRITE_HELD), "a held write before quit")
+        command_id = self.command("quit")
+        if hold_final:
+            (self.directory / f"hold-{command_id}").touch()
+        self.wait_for(lambda: (COMMAND_HANDLED, command_id) in self.events(COMMAND_HANDLED), "quit command")
+        gate.unlink()
+        return command_id
 
     def test_slow_atomic_writes_preserve_animation_commands_static_proof_and_final_ack(self):
         self.launch()
@@ -143,14 +176,16 @@ class NativeFixtureTests(unittest.TestCase):
                 self.assertEqual(state[field], static[field], field)
         self.assertGreaterEqual(observations[-1]["uptime"] - static["uptime"], 2)
 
-        active = self.next_write()
-        quit_id = self.command("quit")
+        quit_id = self.quit_during_write()
         self.assertEqual(self.process.wait(timeout=6), 0, self.log_path.read_text())
         final = self.state()
         self.assertEqual(final["commandID"], quit_id)
         self.assertEqual(final["draws"], static["draws"])
         self.assertGreater(final["uptime"], observations[-1]["uptime"])
-        self.assertEqual(self.events(), [WRITE_START, WRITE_END] * (active + 1),
+        events = self.events()
+        self.assert_paired_writes(events)
+        self.assertEqual(events[-2:], [(WRITE_START, quit_id), (WRITE_END, quit_id)])
+        self.assertEqual(events.count((WRITE_START, quit_id)), 1,
                          "Quit must drain the active write and publish exactly one final snapshot.")
 
     def test_blocked_launch_publishes_reason_before_exit_three(self):
@@ -159,7 +194,7 @@ class NativeFixtureTests(unittest.TestCase):
         state = self.state()
         self.assertEqual(state["status"], "blocked")
         self.assertIn("local desktop", state["reason"])
-        self.assertEqual(self.events(), [WRITE_START, WRITE_END])
+        self.assertEqual(self.events(), [(WRITE_START, ""), (WRITE_END, "")])
 
     def test_serialization_failure_exits_three_without_writing(self):
         self.launch("encoding-failure")
@@ -172,19 +207,22 @@ class NativeFixtureTests(unittest.TestCase):
         self.state_path.mkdir()
         self.launch()
         self.assertEqual(self.process.wait(timeout=6), 3)
-        self.assertEqual(self.events(), [WRITE_START])
+        self.assertEqual(self.events(), [(WRITE_START, "")])
         self.assertIn("Fixture state write failed:", self.log_path.read_text())
 
     def test_final_write_failure_exits_three(self):
         self.launch()
         self.wait_for(self.state, "first state")
-        active = self.next_write()
-        self.command("quit")
-        self.wait_for(lambda: self.events().count(WRITE_START) == active + 1, "final write")
+        quit_id = self.quit_during_write(hold_final=True)
+        self.wait_for(lambda: (WRITE_HELD, quit_id) in self.events(WRITE_HELD), "held final write")
         self.state_path.unlink()
         self.state_path.mkdir()
+        (self.directory / f"hold-{quit_id}").unlink()
         self.assertEqual(self.process.wait(timeout=6), 3)
-        self.assertEqual(self.events(), [WRITE_START, WRITE_END] * active + [WRITE_START])
+        events = self.events()
+        self.assert_paired_writes(events[:-1])
+        self.assertEqual(events[-1], (WRITE_START, quit_id))
+        self.assertEqual(events.count((WRITE_START, quit_id)), 1)
         self.assertIn("Fixture state write failed:", self.log_path.read_text())
 
 
