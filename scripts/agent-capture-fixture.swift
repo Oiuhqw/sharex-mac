@@ -4,6 +4,7 @@ import Foundation
 
 @MainActor
 private final class PatternView: NSView {
+    enum DrawPrimitive: String { case cgImage = "cgimage", blackRectangle = "black-rectangle" }
     struct BitmapDraw: Codable {
         let entryUptime: Double
         let exitUptime: Double
@@ -20,6 +21,8 @@ private final class PatternView: NSView {
         let destination: [Double]
         let rgbNonzeroCount: Int
         let finalSeed: UInt64
+        let drawPrimitive: String
+        let cgImageConstructed: Bool
     }
     struct Draw: Codable {
         let entryUptime: Double
@@ -36,6 +39,17 @@ private final class PatternView: NSView {
             fatalError("Bitmap component mask must be 0 or 255.")
         }
         return mask
+    }()
+    let bitmapDrawPrimitive: DrawPrimitive = {
+        let value = ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_BITMAP_DRAW_PRIMITIVE"] ?? "cgimage"
+        guard let primitive = DrawPrimitive(rawValue: value) else {
+            fatalError("Bitmap draw primitive must be cgimage or black-rectangle.")
+        }
+        if primitive == .blackRectangle {
+            precondition(ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_BITMAP_COMPONENT_MASK"] == "0",
+                         "The black rectangle requires component mask 0.")
+        }
+        return primitive
     }()
     var drawTrace: [Draw] = []
     var traceOverflow = 0
@@ -107,7 +121,19 @@ private final class PatternView: NSView {
                 let destination = CGRect(x: 0, y: bounds.height * 0.88,
                                          width: bounds.width, height: bounds.height * 0.12)
                 let drawEntry = traceEnabled ? ProcessInfo.processInfo.systemUptime : 0
-                context.draw(image, in: destination)
+                let actualPrimitive = withExtendedLifetime((provider, image)) { () -> DrawPrimitive in
+                    switch bitmapDrawPrimitive {
+                    case .cgImage:
+                        context.draw(image, in: destination)
+                        return .cgImage
+                    case .blackRectangle:
+                        context.saveGState()
+                        context.setFillColor(CGColor(colorSpace: CGColorSpaceCreateDeviceRGB(), components: [0, 0, 0, 1])!)
+                        context.fill(destination)
+                        context.restoreGState()
+                        return .blackRectangle
+                    }
+                }
                 if traceEnabled {
                     bitmap = BitmapDraw(entryUptime: drawEntry, exitUptime: ProcessInfo.processInfo.systemUptime,
                                         componentMask: bitmapComponentMask, width: image.width, height: image.height,
@@ -118,7 +144,8 @@ private final class PatternView: NSView {
                                         shouldInterpolate: image.shouldInterpolate,
                                         destination: [Double(destination.minX), Double(destination.minY),
                                                       Double(destination.width), Double(destination.height)],
-                                        rgbNonzeroCount: rgbNonzeroCount, finalSeed: seed)
+                                        rgbNonzeroCount: rgbNonzeroCount, finalSeed: seed,
+                                        drawPrimitive: actualPrimitive.rawValue, cgImageConstructed: true)
                 }
             }
         }

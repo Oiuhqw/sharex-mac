@@ -33,7 +33,7 @@ on:
         type: boolean
         default: false
       frame_gap_replay:
-        description: Diagnostic only; profile one original-prefix metadata source capture
+        description: Diagnostic only; compare six original-prefix bitmap draw-path arms
         type: boolean
         default: false
       frame_gap_workload:
@@ -221,31 +221,17 @@ jobs:
             --build-settings "$PWD/agent-build-settings.json" \
             --helper "$RUNNER_TEMP/sharex-agent-setup-helper" --out "$PWD/agent-setup-out"
 
-      - name: Discover installed profiler before the fresh source target
+      - name: Compare six bitmap draw-path targets after the original native prefix
         if: ${{ !cancelled() && inputs.frame_gap_replay && steps.setup-ui.outcome == 'success' }}
-        run: |
-          python3 scripts/profiler-preflight.py --commit '${{ github.sha }}' --out "$PWD/profiler-preflight-out"
-
-      - name: Profile one source target after the original native prefix
-        if: ${{ !cancelled() && inputs.frame_gap_replay && steps.setup-ui.outcome == 'success' }}
-        timeout-minutes: 10
+        timeout-minutes: 34
         run: |
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
           python3 scripts/frame-gap-startup.py --app /Applications/ShareX.app \
             --build-settings "$PWD/agent-build-settings.json" --setup-result "$PWD/agent-setup-out/result.json" \
-            --comparison source-profile --profile-preflight "$PWD/profiler-preflight-out" \
+            --comparison bitmap-draw-path \
             --commit '${{ github.sha }}' --out "$PWD/frame-gap-startup-out"
 
-      - name: Re-report selected source profile sample indices
-        if: ${{ !cancelled() && inputs.frame_gap_replay }}
-        run: |
-          probe_python="$(python3 -c 'import sys; print(sys.executable)')"
-          sudo -n "$probe_python" scripts/profiler-clock-probe.py --commit '${{ github.sha }}' \
-            --preflight "$PWD/profiler-preflight-out" --source-profile \
-            --capability "$PWD/frame-gap-startup-out/arm-01-original/native/profile" \
-            --out "$PWD/profiler-source-clock-out"
-
-      - name: Print source profile collection
+      - name: Print bitmap draw-path comparison
         if: ${{ always() && inputs.frame_gap_replay }}
         run: |
           if test -f frame-gap-startup-out/comparison.json; then cat frame-gap-startup-out/comparison.json; fi

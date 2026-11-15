@@ -165,12 +165,38 @@ class PrefixTests(unittest.TestCase):
                  mock.patch.object(STARTUP.sys, "stderr"), self.assertRaises(SystemExit) as raised:
                 STARTUP.main()
             self.assertEqual(raised.exception.code, 2)
-        for content, mask in STARTUP.BITMAP_COMPONENT_MASKS.items():
+        for content in ("original", "constant"):
+            mask, _ = STARTUP.BITMAP_CONDITIONS[content]
             with mock.patch.object(STARTUP.sys, "argv", base + valid[:-1] + [content]), \
                  mock.patch.dict(STARTUP.os.environ, {"SHAREX_FRAME_GAP_BITMAP_COMPONENT_MASK": str(mask)}), \
                  mock.patch.object(STARTUP, "run_arm", return_value=0) as arm:
                 self.assertEqual(STARTUP.main(), 0)
                 self.assertEqual(arm.call_args.args[0].bitmap_content, content)
+
+    def test_draw_path_parser_requires_matching_mask_primitive_and_no_profiler(self):
+        base = ["startup", "--app", "/app", "--build-settings", "/settings", "--out", "/out",
+                "--comparison", "bitmap-draw-path", "--arm", "metadata", "--noise-timing", "before"]
+        for content, (mask, primitive) in STARTUP.BITMAP_CONDITIONS.items():
+            for invalid in (None, "mask", "primitive", "profiler"):
+                environment = {"SHAREX_FRAME_GAP_BITMAP_COMPONENT_MASK": str(mask),
+                               "SHAREX_FRAME_GAP_BITMAP_DRAW_PRIMITIVE": primitive}
+                arguments = base + ["--bitmap-content", content]
+                if invalid == "mask":
+                    environment["SHAREX_FRAME_GAP_BITMAP_COMPONENT_MASK"] = str(255 - mask)
+                if invalid == "primitive":
+                    environment["SHAREX_FRAME_GAP_BITMAP_DRAW_PRIMITIVE"] = "wrong"
+                if invalid == "profiler":
+                    arguments += ["--profile-preflight", "/profile"]
+                with self.subTest(content=content, invalid=invalid), \
+                     mock.patch.object(STARTUP.sys, "argv", arguments), mock.patch.dict(STARTUP.os.environ, environment), \
+                     mock.patch.object(STARTUP, "run_arm", return_value=0) as arm, mock.patch.object(STARTUP.sys, "stderr"):
+                    if invalid:
+                        with self.assertRaises(SystemExit) as raised:
+                            STARTUP.main()
+                        self.assertEqual(raised.exception.code, 2)
+                        arm.assert_not_called()
+                    else:
+                        self.assertEqual(STARTUP.main(), 0)
 
 
 class LateNoisePollingTests(unittest.TestCase):
@@ -297,7 +323,7 @@ class ComparisonTests(unittest.TestCase):
                 calls.append((arguments, environment, timeout))
                 return {"exitCode": 1 if len(calls) == 1 else 0, "timedOut": False}
 
-            def analysis(directory, arm, request_id, noise_timing=None, bitmap_content=None):
+            def analysis(directory, arm, request_id, noise_timing=None, bitmap_content=None, draw_primitive=None):
                 failed = len(calls) == 1
                 return {"result": {"status": "failed" if failed else "diagnostic_complete",
                                    "byteLimitE2EPassed": arm == "control" and not failed}, "errors": []}
@@ -322,11 +348,15 @@ class ComparisonTests(unittest.TestCase):
 
     def test_workflow_enables_capture_after_setup_and_excludes_maintenance(self):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/agent-capture.yml").read_text()
-        startup = workflow.split("- name: Profile one source target after the original native prefix", 1)[1].split("- name:", 1)[0]
+        startup = workflow.split("- name: Compare six bitmap draw-path targets after the original native prefix", 1)[1].split("- name:", 1)[0]
         self.assertIn("steps.setup-ui.outcome == 'success'", startup)
         self.assertLess(startup.index("agentCaptureEnabled -bool true"), startup.index("python3 scripts/frame-gap-startup.py"))
-        self.assertIn("--comparison source-profile", startup)
-        self.assertIn("--profile-preflight", startup)
+        self.assertIn("--comparison bitmap-draw-path", startup)
+        self.assertNotIn("--profile-preflight", startup)
+        self.assertIn("timeout-minutes: 34", startup)
+        native = workflow.split("  native:", 1)[-1]
+        self.assertNotIn("python3 scripts/profiler-preflight.py", native)
+        self.assertNotIn("scripts/profiler-clock-probe.py", native)
         dispatch = workflow.split("  workflow_dispatch:", 1)[1].split("permissions:", 1)[0]
         self.assertEqual(sum(line.startswith("      ") and not line.startswith("       ")
                              and line.endswith(":") for line in dispatch.splitlines()), 10)
@@ -353,7 +383,7 @@ class ComparisonTests(unittest.TestCase):
                 self.assertEqual(timeout, 480)
                 return {"exitCode": 1 if len(calls) == 1 else 0, "timedOut": False}
 
-            def analysis(directory, arm, request_id, noise_timing, bitmap_content=None):
+            def analysis(directory, arm, request_id, noise_timing, bitmap_content=None, draw_primitive=None):
                 self.assertEqual((arm, noise_timing), (calls[-1][0].arm, calls[-1][0].noise_timing))
                 self.assertEqual(request_id, calls[-1][1]["SHAREX_FRAME_GAP_STARTUP_REQUEST_ID"])
                 failed = len(calls) == 1
@@ -515,7 +545,8 @@ class AnalysisTests(unittest.TestCase):
     def bitmap_evidence(self, root, content):
         trace, events = self.timing_evidence(root, "before")
         result_path = root / "native/result.json"
-        STARTUP.GAP.save(result_path, {**STARTUP.GAP.read_json(result_path), "bitmapContent": content})
+        STARTUP.GAP.save(result_path, {**STARTUP.GAP.read_json(result_path), "bitmapContent": content,
+                                       "drawPrimitive": STARTUP.BITMAP_CONDITIONS[content][1]})
         draws_path = root / "native/fixture/draw-trace.json"
         draws = STARTUP.GAP.read_json(draws_path)
         for tick, row in enumerate(draws):
@@ -523,7 +554,7 @@ class AnalysisTests(unittest.TestCase):
             if row["noisy"]:
                 seed = tick + 1
                 nonzero = 0
-                mask = STARTUP.BITMAP_COMPONENT_MASKS[content]
+                mask, primitive = STARTUP.BITMAP_CONDITIONS[content]
                 for _ in range(640 * 56):
                     seed = (seed * 6364136223846793005 + 1442695040888963407) % (2 ** 64)
                     nonzero += sum(((seed >> shift) & mask) != 0 for shift in (24, 32, 40))
@@ -533,13 +564,14 @@ class AnalysisTests(unittest.TestCase):
                                  "bitsPerComponent": 8, "bitsPerPixel": 32, "bytesPerRow": 2560,
                                  "byteCount": 143360, "bitmapInfo": 5, "colorSpaceModel": 1,
                                  "shouldInterpolate": False, "destination": [0, 422.4, 640, 57.6],
-                                 "rgbNonzeroCount": nonzero, "finalSeed": seed}
+                                 "rgbNonzeroCount": nonzero, "finalSeed": seed,
+                                 "drawPrimitive": primitive, "cgImageConstructed": True}
         STARTUP.GAP.save(draws_path, draws)
         (root / "native/agent-capture-fixture").write_bytes(b"identical fixture binary")
         return trace, events, draws
 
     def test_bitmap_content_keeps_actual_draw_proof_and_source_gap_without_production_success(self):
-        for content in STARTUP.BITMAP_COMPONENT_MASKS:
+        for content in STARTUP.BITMAP_CONDITIONS:
             with self.subTest(content=content), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 trace, _, draws = self.bitmap_evidence(root, content)
@@ -553,7 +585,8 @@ class AnalysisTests(unittest.TestCase):
                 self.assertEqual(result["errors"], [])
                 self.assertEqual(result["firstBitmapDraw"], draws[1])
                 self.assertEqual(result["bitmapDrawCount"], 4)
-                self.assertEqual(result["firstBitmapDraw"]["bitmap"]["rgbNonzeroCount"] == 0, content == "constant")
+                self.assertEqual(result["firstBitmapDraw"]["bitmap"]["rgbNonzeroCount"] == 0,
+                                 STARTUP.BITMAP_CONDITIONS[content][0] == 0)
                 window = result["postNoiseFirstSecond"]
                 self.assertAlmostEqual(window["maximumPTSInterval"]["seconds"], 0.6)
                 self.assertAlmostEqual(window["maximumAllSourcePTSInterval"]["seconds"], 0.3)
@@ -649,6 +682,73 @@ class AnalysisTests(unittest.TestCase):
                 self.assertTrue(all(run["firstBitmapDraw"] for run in result["runs"]))
                 self.assertFalse(result["productionE2EPassed"])
                 self.assertEqual(result["fixtureBinarySHA256"], STARTUP.WORKLOAD.digest(args.out / "arm-01-original/native/agent-capture-fixture"))
+
+    def test_draw_path_proof_rejects_image_fallback_and_missing_construction(self):
+        for content, (_, primitive) in STARTUP.BITMAP_CONDITIONS.items():
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                _, _, original = self.bitmap_evidence(root, content)
+                self.assertEqual(STARTUP.analyze_arm(root, "metadata", REQUEST, "before", content, primitive)["errors"], [])
+                for mutation in (lambda proof: proof.pop("drawPrimitive"),
+                                 lambda proof: proof.update(drawPrimitive="cgimage" if primitive != "cgimage" else "black-rectangle"),
+                                 lambda proof: proof.pop("cgImageConstructed"),
+                                 lambda proof: proof.update(cgImageConstructed=False)):
+                    draws = json.loads(json.dumps(original))
+                    mutation(draws[-1]["bitmap"])
+                    STARTUP.GAP.save(root / "native/fixture/draw-trace.json", draws)
+                    result = STARTUP.analyze_arm(root, "metadata", REQUEST, "before", content, primitive)
+                    self.assertTrue(any("layout" in error for error in result["errors"]), result["errors"])
+
+    def test_six_draw_path_arms_finish_before_pixel_check_and_pixel_failure_keeps_all_traces(self):
+        for pixel_status in ("passed", "failed"):
+            with self.subTest(pixels=pixel_status), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                binary = root / "ShareX.app/Contents/MacOS/ShareX"
+                binary.parent.mkdir(parents=True)
+                binary.write_bytes(b"fixed app")
+                setup = root / "setup.json"
+                STARTUP.GAP.save(setup, {"status": "passed"})
+                args = SimpleNamespace(out=root / "comparison", app=root / "ShareX.app", build_settings=root / "settings",
+                                       setup_result=setup, commit="diagnostic", comparison="bitmap-draw-path")
+                calls = []
+
+                def harness(arguments, log, environment, timeout):
+                    with mock.patch.object(STARTUP.sys, "argv", [str(part) for part in arguments[1:]]), \
+                         mock.patch.dict(STARTUP.os.environ, environment), \
+                         mock.patch.object(STARTUP, "run_arm", side_effect=lambda parsed: calls.append((parsed, environment)) or 0):
+                        self.assertEqual(STARTUP.main(), 0)
+                    self.assertEqual(timeout, 240)
+                    directory = log.parent
+                    (directory / "traces").rmdir()
+                    self.bitmap_evidence(directory, calls[-1][0].bitmap_content)
+                    for path in directory.rglob("*"):
+                        if path.suffix in (".json", ".jsonl"):
+                            path.write_text(path.read_text().replace(REQUEST, environment["SHAREX_FRAME_GAP_STARTUP_REQUEST_ID"]))
+                    return {"exitCode": 0, "timedOut": False}
+
+                def pixels(*values):
+                    self.assertEqual(len(calls), 6)
+                    self.assertEqual(len(STARTUP.GAP.read_json(args.out / "comparison.json")["runs"]), 6)
+                    return {"status": pixel_status}
+
+                with mock.patch.object(STARTUP.sys, "platform", "darwin"), \
+                     mock.patch.dict(STARTUP.os.environ, {"GITHUB_ACTIONS": "true"}), \
+                     mock.patch.object(STARTUP.WORKLOAD, "bounded_harness", side_effect=harness), \
+                     mock.patch.object(STARTUP, "compare_black_pixels", side_effect=pixels), mock.patch("builtins.print"):
+                    self.assertEqual(STARTUP.run_comparison(args), int(pixel_status != "passed"))
+                summary = STARTUP.GAP.read_json(args.out / "comparison.json")
+                self.assertEqual(summary["order"], ["original", "constant", "rectangle", "rectangle", "constant", "original"])
+                self.assertEqual([call.bitmap_content for call, _ in calls], summary["order"])
+                self.assertEqual([env["SHAREX_FRAME_GAP_BITMAP_COMPONENT_MASK"] for _, env in calls], ["255", "0", "0", "0", "0", "255"])
+                self.assertEqual([env["SHAREX_FRAME_GAP_BITMAP_DRAW_PRIMITIVE"] for _, env in calls],
+                                 ["cgimage", "cgimage", "black-rectangle", "black-rectangle", "cgimage", "cgimage"])
+                self.assertTrue(all(call.arm == "metadata" and call.noise_timing == "before" for call, _ in calls))
+                self.assertEqual(len({env["SHAREX_FRAME_GAP_STARTUP_REQUEST_ID"] for _, env in calls}), 6)
+                self.assertFalse(summary["profilerPresent"])
+                self.assertFalse(summary["productionE2EPassed"])
+                self.assertEqual(summary["incompleteArms"], 0)
+                self.assertEqual(summary["status"], "diagnostic_complete" if pixel_status == "passed" else "diagnostic_incomplete")
+                self.assertTrue(all(Path(row["trace"]).is_file() and row["bitmapDrawCount"] == 4 for row in summary["runs"]))
 
     def test_after_arm_accepts_noise_after_first_pts_and_keeps_crossing_gaps_and_fixture_stalls(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -855,6 +955,110 @@ class AnalysisTests(unittest.TestCase):
             self.assertFalse(result["runs"][1]["preNoiseCapture"]["qualified"])
             self.assertTrue(result["runs"][2]["preNoiseCapture"]["qualified"])
             self.assertTrue(all(Path(row["trace"]).exists() for row in result["runs"]))
+
+
+class PixelCheckTests(unittest.TestCase):
+    def test_pixel_comparison_rejects_edge_mismatch_or_changed_png_hash(self):
+        for outcome in ("equal", "edge_mismatch", "changed_hash"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                args = SimpleNamespace(out=root, app=root / "app", build_settings=root / "settings")
+                captures = []
+
+                def harness(arguments, log, environment, timeout):
+                    content = arguments[arguments.index("--bitmap-content") + 1]
+                    output = Path(arguments[arguments.index("--out") + 1])
+                    output.mkdir()
+                    captures.append(content)
+                    self.assertEqual(timeout, 90)
+                    self.assertEqual(environment["SHAREX_FRAME_GAP_BITMAP_COMPONENT_MASK"], "0")
+                    for key in ("SHAREX_FRAME_GAP_TRACE_DIR", "SHAREX_FRAME_GAP_STARTUP_SINK", "SHAREX_FRAME_GAP_STARTUP_REQUEST_ID"):
+                        self.assertNotIn(key, environment)
+                    STARTUP.GAP.save(output / "pixel-check.json", {"status": "passed", "png": str(output / "capture.png"),
+                        "expectation": str(output / "expected.json"), "sha256": content,
+                        "installedBinarySHA256": "app", "fixtureBinarySHA256": "fixture"})
+                    return {"exitCode": 0, "timedOut": False}
+
+                comparison = {"status": "failed" if outcome == "edge_mismatch" else "passed",
+                              "mismatchedPixels": int(outcome == "edge_mismatch"),
+                              "referenceSHA256": "constant", "sha256": "changed" if outcome == "changed_hash" else "rectangle"}
+                with mock.patch.object(STARTUP.WORKLOAD, "bounded_harness", side_effect=harness), \
+                     mock.patch.object(STARTUP.subprocess, "run", return_value=SimpleNamespace(
+                         returncode=int(outcome == "edge_mismatch"), stdout=json.dumps(comparison), stderr="")), \
+                     mock.patch.dict(STARTUP.os.environ, {"SHAREX_FRAME_GAP_TRACE_DIR": "must-remove",
+                         "SHAREX_FRAME_GAP_STARTUP_SINK": "metadata", "SHAREX_FRAME_GAP_STARTUP_REQUEST_ID": "target"}):
+                    result = STARTUP.compare_black_pixels(args, "app", "fixture")
+                self.assertEqual(captures, ["constant", "rectangle"])
+                self.assertEqual(result["status"], "passed" if outcome == "equal" else "failed")
+                self.assertEqual(STARTUP.GAP.read_json(root / "pixel-equivalence/result.json"), result)
+
+    def test_readiness_waits_for_actual_pixels_and_fails_without_retrying_decoder_errors(self):
+        for outcome, expected_status in (("ready", "passed"), ("never_ready", "failed"), ("decoder_error", "failed")):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                _, _, draws = AnalysisTests().bitmap_evidence(root / "proof", "rectangle")
+                args = SimpleNamespace(out=root / "pixel", bitmap_content="rectangle")
+                run = mock.Mock()
+                run.app.pid, run.fixture.pid = 21, 22
+                run.binary = root / "ShareX"
+                run.binary.write_bytes(b"app")
+                state = {"mode": "static", "pid": 22, "windowID": 23, "draws": 10, "tick": 1, "stage": 0}
+                run.control.return_value = state
+                run.preflight.side_effect = lambda: (args.out / "agent-capture-fixture").write_bytes(b"fixture")
+                clock = [0.0]
+                captures = []
+                sleeps = []
+
+                def capture(*values):
+                    session = {"id": f"session-{len(captures)}", "state": "completed",
+                               "artifacts": [{"kind": "screenshot", "id": "image"}]}
+                    (args.out / f"{session['id']}-image.png").write_bytes(b"retained PNG")
+                    captures.append(session)
+                    return session
+
+                def decode(*values, **kwargs):
+                    clock[0] += 0.2
+                    if outcome == "decoder_error":
+                        return {"exitCode": 1, "stdout": json.dumps({"status": "failed", "reason": "bad PNG"})}
+                    status = "passed" if outcome == "ready" and len(captures) == 5 else "pending_presentation"
+                    return {"exitCode": 0 if status == "passed" else 3, "stdout": json.dumps({"status": status})}
+
+                def cleanup(**kwargs):
+                    fixture = args.out / "fixture"
+                    fixture.mkdir()
+                    STARTUP.GAP.save(fixture / "draw-trace.json", draws)
+                    for name in ("draw-trace-overflow.txt", "operation-trace-overflow.txt"):
+                        (fixture / name).write_text("0")
+                    return []
+
+                def sleep(seconds):
+                    sleeps.append(seconds)
+                    clock[0] += seconds
+
+                run.cli.side_effect = capture
+                run.command.side_effect = decode
+                run.validate_media.return_value = {"status": "passed"}
+                run.cleanup.side_effect = cleanup
+                with mock.patch.object(STARTUP.NATIVE, "Run", return_value=run), \
+                     mock.patch.object(STARTUP.NATIVE, "media_expectation", return_value={"width": 640, "height": 480}), \
+                     mock.patch.object(STARTUP.time, "monotonic", side_effect=lambda: clock[0]), \
+                     mock.patch.object(STARTUP.time, "sleep", side_effect=sleep):
+                    self.assertEqual(STARTUP.run_pixel_check(args), int(expected_status != "passed"))
+                result = STARTUP.GAP.read_json(args.out / "pixel-check.json")
+                self.assertEqual(result["status"], expected_status)
+                self.assertEqual(len(result["attempts"]), len(captures))
+                self.assertTrue(all(Path(row["png"]).is_file() for row in result["attempts"]))
+                self.assertFalse(result["productionE2EPassed"])
+                run.cleanup.assert_called_once()
+                if outcome == "ready":
+                    self.assertEqual(len(captures), 5)
+                    self.assertEqual(sleeps, [0.1] * 4)
+                elif outcome == "never_ready":
+                    self.assertGreaterEqual(clock[0], result["readinessDeadlineUptime"])
+                    self.assertLess(clock[0], result["readinessDeadlineUptime"] + 0.3)
+                else:
+                    self.assertEqual(len(captures), 1)
+                    self.assertEqual(sleeps, [])
 
 
 if __name__ == "__main__":

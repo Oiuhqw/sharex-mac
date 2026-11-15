@@ -122,7 +122,7 @@ private func fileHash(_ url: URL) throws -> String {
     return hash.finalize().map { String(format: "%02x", $0) }.joined()
 }
 
-private func verifyPNG(_ url: URL, expected: Expectation) throws -> [String: Any] {
+private func decodePNG(_ url: URL) throws -> (width: Int, height: Int, bytes: [UInt8]) {
     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
           CGImageSourceGetCount(source) == 1,
           CGImageSourceGetType(source) as String? == UTType.png.identifier,
@@ -131,7 +131,7 @@ private func verifyPNG(_ url: URL, expected: Expectation) throws -> [String: Any
     }
     let stride = image.width * 4
     var bytes = [UInt8](repeating: 0, count: stride * image.height)
-    let sample = try bytes.withUnsafeMutableBytes { buffer -> [String: Any] in
+    try bytes.withUnsafeMutableBytes { buffer in
         guard let context = CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
                                       bitsPerComponent: 8, bytesPerRow: stride,
                                       space: CGColorSpace(name: CGColorSpace.sRGB)!,
@@ -140,13 +140,70 @@ private func verifyPNG(_ url: URL, expected: Expectation) throws -> [String: Any
             throw VerificationError("Cannot allocate an independent PNG decoder.")
         }
         context.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height)))
-        return try Pixels(width: image.width, height: image.height, rowBytes: stride,
-                          bytes: buffer.baseAddress!.assumingMemoryBound(to: UInt8.self), bgra: false).inspect(expected)
+    }
+    return (image.width, image.height, bytes)
+}
+
+private func verifyPNG(_ url: URL, expected: Expectation) throws -> [String: Any] {
+    let image = try decodePNG(url)
+    let sample = try image.bytes.withUnsafeBytes { buffer in
+        try Pixels(width: image.width, height: image.height, rowBytes: image.width * 4,
+                   bytes: buffer.baseAddress!.assumingMemoryBound(to: UInt8.self), bgra: false).inspect(expected)
     }
     guard expected.stages == [sample["stage"] as? Int ?? -1] else {
         throw VerificationError("PNG marker does not show the requested fixture stage.")
     }
     return ["kind": "png", "width": image.width, "height": image.height, "sample": sample]
+}
+
+private func verifyBlackBand(_ url: URL, expected: Expectation, reference: URL?) throws -> [String: Any] {
+    let image = try decodePNG(url)
+    guard image.width == expected.width, image.height == expected.height,
+          image.width >= 640, image.width % 640 == 0, image.height == image.width / 640 * 480 else {
+        throw VerificationError("Black-band PNG dimensions differ from the actual 640x480 point fixture.")
+    }
+    let firstRow = Int(floor(Double(image.height) * 0.86))
+    let blackRow = Int(ceil(Double(image.height) * 0.88))
+    let surroundingRow = Int(floor(Double(image.height) * 0.87))
+    var nonblack = 0
+    var surroundingMatches = true
+    for y in blackRow..<image.height {
+        for x in 0..<image.width {
+            let offset = (y * image.width + x) * 4
+            if image.bytes[offset..<offset + 4].elementsEqual([0, 0, 0, 255]) == false { nonblack += 1 }
+        }
+    }
+    for x in 0..<image.width {
+        let offset = (surroundingRow * image.width + x) * 4
+        let expectedRGB = x < image.width / 2 ? [30, 80, 230] : [240, 210, 40]
+        if !matches(image.bytes[offset..<offset + 3].map(Int.init), expectedRGB)
+            || image.bytes[offset + 3] != 255 { surroundingMatches = false }
+    }
+    var result: [String: Any] = ["kind": "black-band", "width": image.width, "height": image.height,
+        "firstComparedRow": firstRow, "firstOpaqueBlackRow": blackRow, "surroundingRow": surroundingRow,
+        "interiorNonblackPixels": nonblack, "surroundingRowMatches": surroundingMatches,
+        "status": surroundingMatches ? (nonblack == 0 ? "passed" : "pending_presentation") : "failed"]
+    if let reference {
+        let other = try decodePNG(reference)
+        guard other.width == image.width, other.height == image.height else {
+            throw VerificationError("Black-band reference PNG dimensions differ.")
+        }
+        var mismatchedPixels = 0
+        var maximumChannelDifference = 0
+        for pixel in (firstRow * image.width)..<(image.height * image.width) {
+            let offset = pixel * 4
+            let differences = (0..<4).map { abs(Int(image.bytes[offset + $0]) - Int(other.bytes[offset + $0])) }
+            let maximum = differences.max()!
+            if maximum > 0 { mismatchedPixels += 1 }
+            maximumChannelDifference = max(maximumChannelDifference, maximum)
+        }
+        result["comparedPixels"] = (image.height - firstRow) * image.width
+        result["mismatchedPixels"] = mismatchedPixels
+        result["maximumChannelDifference"] = maximumChannelDifference
+        result["referenceSHA256"] = try fileHash(reference)
+        if mismatchedPixels != 0 { result["status"] = "failed" }
+    }
+    return result
 }
 
 private func verifyVideo(_ url: URL, expected: Expectation) async throws -> [String: Any] {
@@ -293,26 +350,39 @@ private struct Main {
         var result: [String: Any] = ["status": "failed"]
         var code: Int32 = 1
         do {
-            guard CommandLine.arguments.count == 3 else {
-                throw VerificationError("Usage: verify-agent-media MEDIA_PATH EXPECTATION_JSON")
+            let arguments = CommandLine.arguments
+            let blackBand = arguments.count > 1 && arguments[1] == "--black-band"
+            guard blackBand ? (arguments.count == 4 || arguments.count == 5) : arguments.count == 3 else {
+                throw VerificationError("Usage: verify-agent-media [--black-band] MEDIA_PATH EXPECTATION_JSON [REFERENCE_PNG]")
             }
-            let url = URL(fileURLWithPath: CommandLine.arguments[1])
+            let index = blackBand ? 2 : 1
+            let url = URL(fileURLWithPath: arguments[index])
             let expected = try JSONDecoder().decode(Expectation.self,
-                from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2])))
+                from: Data(contentsOf: URL(fileURLWithPath: arguments[index + 1])))
             guard expected.width > 0, expected.height > 0, expected.fps > 0,
                   !expected.anchors.isEmpty, !expected.stages.isEmpty else {
                 throw VerificationError("Incomplete media expectation.")
             }
-            switch url.pathExtension.lowercased() {
-            case "png": result = try verifyPNG(url, expected: expected)
-            case "mp4": result = try await verifyVideo(url, expected: expected)
-            default: throw VerificationError("Only PNG and MP4 evidence is accepted.")
+            if blackBand {
+                result = try verifyBlackBand(url, expected: expected,
+                    reference: arguments.count == 5 ? URL(fileURLWithPath: arguments[4]) : nil)
+                code = result["status"] as? String == "passed" ? 0 : (result["status"] as? String == "pending_presentation" ? 3 : 1)
+            } else {
+                switch url.pathExtension.lowercased() {
+                case "png": result = try verifyPNG(url, expected: expected)
+                case "mp4": result = try await verifyVideo(url, expected: expected)
+                default: throw VerificationError("Only PNG and MP4 evidence is accepted.")
+                }
+                result["status"] = "passed"
+                code = 0
             }
             result["sha256"] = try fileHash(url)
             result["bytes"] = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
-            result["status"] = "passed"
-            code = 0
-        } catch { result["reason"] = String(describing: error) }
+        } catch {
+            result["status"] = "failed"
+            result["reason"] = String(describing: error)
+            code = 1
+        }
         if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]),
            let line = String(data: data, encoding: .utf8) { print(line) }
         exit(code)
