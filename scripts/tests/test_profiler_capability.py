@@ -213,6 +213,25 @@ class OwnedChildTests(unittest.TestCase):
                 finally:
                     child.process.wait(timeout=2)
 
+    def test_nonascii_owned_state_never_accepts_denied_signal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            child = PROBE.OwnedChild("finished", python_child("pass"), Path(temporary))
+            try:
+                self.assertTrue(child.wait(time.monotonic() + 3))
+                stdout = (f"{os.getpid()} {os.getpgrp()} R\n"
+                          f"{child.process.pid} {child.process.pid} ").encode("ascii") + b"Z\xff\n"
+                observation = subprocess.CompletedProcess([], 0, stdout, b"")
+                with mock.patch.object(os, "killpg", side_effect=PermissionError(errno.EPERM, "denied")), \
+                     mock.patch.object(PROBE.subprocess, "run", return_value=observation):
+                    child.close(time.monotonic() + 1)
+                self.assertFalse(child.record["cleanupComplete"])
+                event = child.record["signals"][0]
+                self.assertEqual(event["signalError"]["errno"], errno.EPERM)
+                self.assertEqual(event["groupObservation"]["stdout"], stdout.decode("ascii", errors="replace"))
+                self.assertNotIn("noLiveMembers", event)
+            finally:
+                child.process.wait(timeout=2)
+
     def test_nonzero_exit_preserves_raw_bytes_and_reaps_after_group_cleanup(self):
         with tempfile.TemporaryDirectory() as temporary:
             out = Path(temporary)
