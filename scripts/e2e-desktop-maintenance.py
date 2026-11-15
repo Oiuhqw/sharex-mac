@@ -205,7 +205,7 @@ class Run(SETUP.Run):
 
     def start_human(self, mode, cursor=False):
         self.control("stage", stage=0)
-        self.control("front", floating=mode == "display")
+        self.control("front", floating=False)
         self.open_recording()
         self.wait_for(lambda: self.inspect("recording.refresh").get("AXEnabled") == 1,
                       15, "initial recording target refresh")

@@ -6,6 +6,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 import uuid
 
 
@@ -79,6 +80,30 @@ class LoginProofTests(unittest.TestCase):
 
 
 class NativeTargetTests(unittest.TestCase):
+    def test_fixture_does_not_float_over_the_manual_target_picker(self):
+        for mode in ("display", "window"):
+            with self.subTest(mode=mode):
+                run = DRIVER.Run.__new__(DRIVER.Run)
+                run.geometry = {"title": "Unique fixture"}
+                run.control = mock.Mock()
+                run.open_recording = mock.Mock()
+                run.inspect = mock.Mock(return_value={"AXEnabled": 1})
+                run.press = mock.Mock()
+                run.wait_for = lambda check, *_: check()
+
+                def helper(action, **options):
+                    if action == "snapshot":
+                        return {"elements": [{"identifier": "recording.refresh", "AXEnabled": 1},
+                                             {"identifier": f"recording.target.{mode}.fixture",
+                                              "AXValue": "Unique fixture"}]}
+                    self.assertEqual(action, "select")
+                    self.assertEqual(run.control.call_args, mock.call("front", floating=False))
+                    raise StopIteration("Target selection reached")
+
+                run.helper = helper
+                with self.assertRaisesRegex(StopIteration, "Target selection reached"):
+                    run.start_human(mode)
+
     def test_selects_exact_fixture_window_from_accessible_row_content(self):
         elements = [{"identifier": "recording.target.window.fixture", "content": "Unique fixture"},
                     {"identifier": "recording.target.window.other", "content": "Settings"},

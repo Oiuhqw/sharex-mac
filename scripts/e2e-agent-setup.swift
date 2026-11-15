@@ -159,9 +159,20 @@ private final class AccessibilityDriver {
             }
             let point = CGPoint(x: bounds.midX, y: bounds.midY)
             var hit: AXUIElement?
-            guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &hit) == .success,
+            let hitStatus = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &hit)
+            var hitPID: pid_t = 0
+            var hitDescription = "none"
+            if let hit {
+                AXUIElementGetPid(hit, &hitPID)
+                hitDescription = "role \(text(hit, "AXRole").prefix(120)), title \(text(hit, "AXTitle").prefix(120))"
+                    + ", identifier \(text(hit, "AXIdentifier").prefix(120)), frame \(String(describing: frame(hit)))"
+            }
+            let diagnostic = "AXError \(hitStatus.rawValue), hitPID \(hitPID), hit \(hitDescription)"
+                + "; target \(text(target, "AXIdentifier").prefix(120)), frame \(String(describing: frame(target)))"
+                + "; row \(bounds); window \(text(window, "AXTitle").prefix(120)), frame \(String(describing: frame(window)))"
+            guard hitStatus == .success,
                   let hit, ancestors(hit).contains(where: { CFEqual($0, row) }) else {
-                throw GateError.failed("The requested row is not the pointer target.")
+                throw GateError.failed("The requested row is not the pointer target. \(diagnostic)")
             }
             let types: [CGEventType] = [.mouseMoved, .leftMouseDown, .leftMouseUp]
             let events = types.compactMap {
@@ -177,7 +188,7 @@ private final class AccessibilityDriver {
                 RunLoop.current.run(until: min(Date().addingTimeInterval(0.1), deadline))
                 if (value(row, "AXSelected") as? NSNumber)?.boolValue == true { return }
             } while Date() < deadline
-            throw GateError.failed("The requested row did not become selected after its click.")
+            throw GateError.failed("The requested row did not become selected after its click. \(diagnostic)")
         }
         for candidate in path {
             if actions(candidate).contains("AXPress") {
