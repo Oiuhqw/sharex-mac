@@ -192,7 +192,7 @@ class RetainedWorkloadTests(unittest.TestCase):
         self.assertEqual(report["originalVerdicts"]["missingTraceCount"], 6)
         self.assertIn("sourceWorkloadSHA256", report)
         for item in report["runs"]:
-            self.assertTrue(Path(item["evidence"]).is_relative_to(self.output))
+            self.assertTrue(Path(item["evidence"]).resolve().is_relative_to(self.output.resolve()))
             self.assertIn("DO-NOT-OPEN-REMOTE", item["originalEvidencePath"])
         for path, contents in before.items():
             self.assertEqual(path.read_bytes(), contents, str(path))
