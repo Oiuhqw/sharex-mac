@@ -825,7 +825,8 @@ def compare_black_pixels(args, app_hash, fixture_hash):
             environment = {**os.environ, "SHAREX_FRAME_GAP_WORKLOAD": "1", "SHAREX_FRAME_GAP_FIXTURE_TRACE": "1",
                            "SHAREX_FRAME_GAP_BITMAP_COMPONENT_MASK": "0",
                            "SHAREX_FRAME_GAP_BITMAP_DRAW_PRIMITIVE": BITMAP_CONDITIONS[content][1]}
-            for key in ("SHAREX_FRAME_GAP_STARTUP_SINK", "SHAREX_FRAME_GAP_STARTUP_REQUEST_ID", "SHAREX_FRAME_GAP_TRACE_DIR"):
+            for key in ("SHAREX_FRAME_GAP_STARTUP_SINK", "SHAREX_FRAME_GAP_STARTUP_REQUEST_ID",
+                        "SHAREX_FRAME_GAP_TRACE_DIR", "SHAREX_FRAME_GAP_WRITER_LIFETIME"):
                 environment.pop(key, None)
             output = directory / content
             command = [sys.executable, __file__, "--pixel-check", "--comparison", "bitmap-draw-path",
@@ -937,6 +938,7 @@ def run_comparison(args):
                        "SHAREX_FRAME_GAP_STARTUP_SINK": arm, "SHAREX_FRAME_GAP_STARTUP_REQUEST_ID": request_id,
                        "SHAREX_FRAME_GAP_BITMAP_COMPONENT_MASK": str(BITMAP_CONDITIONS[bitmap_content or "original"][0]),
                        "SHAREX_FRAME_GAP_BITMAP_DRAW_PRIMITIVE": BITMAP_CONDITIONS[bitmap_content or "original"][1]}
+        environment.pop("SHAREX_FRAME_GAP_WRITER_LIFETIME", None)
         if writer_lifetime:
             environment["SHAREX_FRAME_GAP_WRITER_LIFETIME"] = writer_lifetime
         record = {"arm": arm, "noiseTiming": noise_timing, "bitmapContent": bitmap_content,
@@ -1018,6 +1020,8 @@ def main():
     parser.add_argument("--profile-preflight", type=Path)
     args = parser.parse_args()
     args.out = args.out.resolve()
+    if args.comparison != "writer-lifetime" and "SHAREX_FRAME_GAP_WRITER_LIFETIME" in os.environ:
+        parser.error("The writer lifetime environment requires a writer-lifetime comparison.")
     if args.writer_lifetime and (args.comparison != "writer-lifetime" or not args.arm):
         parser.error("A writer lifetime condition requires a writer-lifetime comparison arm.")
     if args.comparison == "writer-lifetime" and args.arm:
