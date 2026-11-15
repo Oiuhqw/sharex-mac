@@ -993,7 +993,8 @@ class PixelCheckTests(unittest.TestCase):
                 self.assertEqual(STARTUP.GAP.read_json(root / "pixel-equivalence/result.json"), result)
 
     def test_readiness_waits_for_actual_pixels_and_fails_without_retrying_decoder_errors(self):
-        for outcome, expected_status in (("ready", "passed"), ("never_ready", "failed"), ("decoder_error", "failed")):
+        for outcome, expected_status in (("ready", "passed"), ("never_ready", "failed"), ("decoder_error", "failed"),
+                                         ("deadline_ready", "passed"), ("late_ready", "failed")):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 _, _, draws = AnalysisTests().bitmap_evidence(root / "proof", "rectangle")
@@ -1018,6 +1019,9 @@ class PixelCheckTests(unittest.TestCase):
 
                 def decode(*values, **kwargs):
                     clock[0] += 0.2
+                    if outcome in ("deadline_ready", "late_ready"):
+                        clock[0] = 5.0 if outcome == "deadline_ready" else 6.0
+                        return {"exitCode": 0, "stdout": json.dumps({"status": "passed"})}
                     if outcome == "decoder_error":
                         return {"exitCode": 1, "stdout": json.dumps({"status": "failed", "reason": "bad PNG"})}
                     status = "passed" if outcome == "ready" and len(captures) == 5 else "pending_presentation"
@@ -1059,6 +1063,13 @@ class PixelCheckTests(unittest.TestCase):
                 else:
                     self.assertEqual(len(captures), 1)
                     self.assertEqual(sleeps, [])
+                if outcome in ("deadline_ready", "late_ready"):
+                    attempt = result["attempts"][0]
+                    self.assertEqual(result["readinessDeadlineUptime"], 5.0)
+                    self.assertEqual(attempt["completedUptime"], 5.0 if outcome == "deadline_ready" else 6.0)
+                    self.assertEqual(attempt["pixels"]["status"], "passed")
+                    if outcome == "late_ready":
+                        self.assertIn("completed after the readiness deadline", result["reason"])
 
 
 if __name__ == "__main__":

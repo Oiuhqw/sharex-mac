@@ -639,12 +639,15 @@ def run_pixel_check(args):
             attempt.update(png=str(png), sha256=WORKLOAD.digest(png),
                            pixels=json.loads(checked["stdout"]), exitCode=checked["exitCode"],
                            after=run.control("observe", observedPID=run.app.pid))
+            attempt["completedUptime"] = time.monotonic()
             NATIVE.require(all(attempt["after"][key] == before[key]
                                for key in ("mode", "pid", "windowID", "draws", "tick", "stage")),
                            "Pixel-check fixture changed while its static screenshot was captured.")
             GAP.save(args.out / "pixel-check.json", report)
             NATIVE.require((checked["exitCode"], attempt["pixels"].get("status")) in
                            ((0, "passed"), (3, "pending_presentation")), "Black-band decoder failed.")
+            NATIVE.require(attempt["completedUptime"] <= deadline,
+                           "Pixel-check attempt completed after the readiness deadline.")
             if checked["exitCode"] == 0 and attempt["pixels"].get("status") == "passed":
                 report.update(status="passed", png=str(png), sha256=attempt["sha256"], expectation=str(expected_path))
                 break
