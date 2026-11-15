@@ -31,7 +31,7 @@ class SurfaceComparisonTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.built = self.root / "built.app"
         binary = self.built / "Contents/MacOS/ShareX"
         binary.parent.mkdir(parents=True)
@@ -189,6 +189,26 @@ class SurfaceComparisonTests(unittest.TestCase):
         trace["callbacks"][0]["ownedBuffers"] = False
         SURFACES.GAP.save(path, trace)
         self.assertTrue(SURFACES.treatment_evidence(traces, "original")["errors"])
+
+
+class SurfaceAliasTests(unittest.TestCase):
+    def test_full_cycle_fixture_works_under_a_directory_alias(self):
+        factory = tempfile.TemporaryDirectory
+        with factory() as directory:
+            root = Path(directory)
+            target, alias = root / "real", root / "alias"
+            target.mkdir()
+            try:
+                alias.symlink_to(target, target_is_directory=True)
+            except OSError:
+                if sys.platform == "win32":
+                    self.skipTest("This Windows account cannot create directory symlinks.")
+                raise
+            with mock.patch.object(tempfile, "TemporaryDirectory", side_effect=lambda: factory(dir=alias)):
+                case = SurfaceComparisonTests("test_fixed_abba_keeps_all_phases_after_native_failure_and_all_evidence")
+                result = unittest.TestResult()
+                case.run(result)
+            self.assertEqual(result.errors + result.failures, [])
 
 
 if __name__ == "__main__":
