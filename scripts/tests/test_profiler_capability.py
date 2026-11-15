@@ -1,4 +1,6 @@
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -256,6 +258,146 @@ class ProbeLifecycleTests(unittest.TestCase):
             self.assertTrue(report["collector"]["cleanupComplete"])
             self.assertTrue(report["helper"]["cleanupComplete"])
             self.assertEqual((out / "report/system.spindump.txt").read_bytes(), b"partial")
+
+
+@unittest.skipUnless(HAS_WAIT_API, "Owned-group cleanup needs POSIX waitid and WNOWAIT")
+class SignalBoundaryTests(unittest.TestCase):
+    def test_sigterm_during_helper_construction(self):
+        self.check_signal_boundary("helper", "__init__", (signal.SIGTERM,))
+
+    def test_sigint_during_helper_construction(self):
+        self.check_signal_boundary("helper", "__init__", (signal.SIGINT,))
+
+    def test_sigterm_during_collector_construction(self):
+        self.check_signal_boundary("collector", "__init__", (signal.SIGTERM,))
+
+    def test_sigint_during_collector_construction(self):
+        self.check_signal_boundary("collector", "__init__", (signal.SIGINT,))
+
+    def test_sigterm_during_collector_cleanup(self):
+        self.check_signal_boundary("collector", "close", (signal.SIGTERM,))
+
+    def test_sigint_during_collector_cleanup(self):
+        self.check_signal_boundary("collector", "close", (signal.SIGINT,))
+
+    def test_repeated_signals_during_collector_cleanup(self):
+        self.check_signal_boundary("collector", "close", (signal.SIGTERM, signal.SIGINT, signal.SIGTERM))
+
+    def test_cancellation_during_successful_collection_cleanup_prevents_success(self):
+        self.check_signal_boundary("collector", "close", (signal.SIGINT, signal.SIGTERM), collector_exits=True)
+
+    def check_signal_boundary(self, target_name, target_function, signals, collector_exits=False):
+        children = {}
+        fired = False
+
+        def trace(frame, event, arg):
+            nonlocal fired
+            if event != "line" or frame.f_code.co_filename != str(SCRIPT):
+                return trace
+            child = frame.f_locals.get("self")
+            if not isinstance(child, PROBE.OwnedChild) or getattr(child, "process", None) is None:
+                return trace
+            children[child.path.stem] = child
+            if (not fired and child.path.stem == target_name and frame.f_code.co_name == target_function
+                    and child.record.get("pid") is not None
+                    and (target_function == "__init__" or any(event.get("sent") for event in child.record["signals"]))):
+                fired = True
+                for signum in signals:
+                    os.kill(os.getpid(), signum)
+            return trace
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            docs = documentation(root / "preflight")
+            out = root / "out"
+            collector_code = ("import pathlib,signal,sys,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+                              "pathlib.Path(sys.argv[2]).write_bytes(b'partial'); "
+                              + ("pass" if collector_exits else "time.sleep(60)"))
+            collect = PROBE.collect_probe
+            handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+            started = time.monotonic()
+            try:
+                with mock.patch.object(PROBE, "collector_command", side_effect=lambda pid, path:
+                                       python_child(collector_code, pid, path)), \
+                     mock.patch.object(PROBE, "collect_probe", side_effect=lambda *args, **kwargs:
+                                       collect(*args, **kwargs, total_seconds=7)), \
+                     mock.patch.object(PROBE.sys, "platform", "darwin"), \
+                     mock.patch.object(PROBE.os, "geteuid", return_value=0), \
+                     mock.patch.object(sys, "argv", [str(SCRIPT), "--out", str(out), "--preflight", str(docs),
+                                                     "--commit", "test"]), contextlib.redirect_stdout(io.StringIO()):
+                    sys.settrace(trace)
+                    try:
+                        result = PROBE.main()
+                    except BaseException as error:
+                        self.fail(f"Supervisor escaped finalization with {type(error).__name__}: {error}")
+                    finally:
+                        sys.settrace(None)
+                self.assertTrue(fired, "The real signal must reach the requested lifecycle boundary")
+                self.assertEqual(result, 1)
+                self.assertLess(time.monotonic() - started, 7)
+                report = json.loads((out / "capability.json").read_text())
+                self.assertEqual(report["outcome"], "incomplete")
+                self.assertEqual(report["error"]["type"], "InterruptedError")
+                self.assertEqual(report["remainingOwnedProcessGroups"], [])
+                for name, child in children.items():
+                    self.assertIsNotNone(child.process.returncode, name)
+                    with self.assertRaises(ChildProcessError, msg=name):
+                        os.waitid(os.P_PID, child.process.pid, os.WEXITED | os.WNOHANG)
+                    if name in ("helper", "collector"):
+                        self.assertTrue(report[name]["cleanupComplete"], name)
+                        self.assertEqual(report[name]["pid"], child.process.pid)
+                if target_function == "close":
+                    self.assertEqual((out / "report/system.spindump.txt").read_bytes(), b"partial")
+            finally:
+                sys.settrace(None)
+                for sig, handler in handlers.items():
+                    signal.signal(sig, handler)
+                for child in children.values():
+                    if child.process.returncode is None:
+                        os.killpg(child.process.pid, signal.SIGKILL)
+                        child.process.wait(timeout=2)
+
+    def test_helper_evidence_failure_after_launch_still_reaps_child(self):
+        self.check_evidence_failure("helper")
+
+    def test_collector_evidence_failure_after_launch_still_reaps_child(self):
+        self.check_evidence_failure("collector")
+
+    def check_evidence_failure(self, target_name):
+        children = []
+        popen = subprocess.Popen
+        write_json = PROBE.preflight.write_json
+
+        def launch(*args, **kwargs):
+            child = popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        def write(path, record):
+            if path.name == f"{target_name}.json" and "pid" in record:
+                raise OSError("Injected postlaunch evidence write failure")
+            write_json(path, record)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            docs = documentation(root / "preflight")
+            try:
+                with mock.patch.object(PROBE.subprocess, "Popen", side_effect=launch), \
+                     mock.patch.object(PROBE.preflight, "write_json", side_effect=write), \
+                     mock.patch.object(PROBE, "collector_command", return_value=PROBE.HELPER):
+                    report = PROBE.collect_probe(root / "out", "test", docs, total_seconds=7)
+                self.assertEqual(report["outcome"], "incomplete")
+                self.assertIn("evidence write failure", report["error"]["message"])
+                self.assertEqual(report["remainingOwnedProcessGroups"], [])
+                for child in children:
+                    self.assertIsNotNone(child.returncode)
+                    with self.assertRaises(ChildProcessError):
+                        os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG)
+            finally:
+                for child in children:
+                    if child.returncode is None:
+                        os.killpg(child.pid, signal.SIGKILL)
+                        child.wait(timeout=2)
 
 
 if __name__ == "__main__":
