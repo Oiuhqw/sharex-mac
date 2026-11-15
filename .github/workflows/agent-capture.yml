@@ -134,7 +134,7 @@ jobs:
 
       - name: Prepare runtime for pinned agent clients
         id: client-runtime
-        if: ${{ !cancelled() && steps.capture-permission.outcome == 'success' }}
+        if: ${{ false }} # The timing probe stops after native capture evaluation.
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '24'
@@ -163,7 +163,7 @@ jobs:
           if test -f agent-clients-out/result.json; then cat agent-clients-out/result.json; fi
 
       - name: Validate manual recording, permission reset, and real uninstall
-        if: ${{ !cancelled() && steps.setup-helper.outcome == 'success' }}
+        if: ${{ false }} # The feature branch runs the full installed workflow separately.
         timeout-minutes: 15
         run: |
           python3 scripts/e2e-desktop-maintenance.py --app /Applications/ShareX.app \
