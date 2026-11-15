@@ -857,6 +857,7 @@ class Run:
             started = client.call("recording.start", {**self.selection("window"), "fps": 15,
                                   "maxDurationSeconds": 30, "maxBytes": 1048576})
             completed = self.terminal(started["id"], timeout=40)
+            step["session"] = completed
             require(completed["state"] == "completed" and completed["stopReason"] == "byte_limit",
                     "Byte limit did not stop the real noisy video before its duration limit.")
             step["media"] = self.validate_media(completed, "window", "recording", [0], minimum=0.5, maximum=30)

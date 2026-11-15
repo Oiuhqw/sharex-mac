@@ -33,6 +33,9 @@ private final class PatternView: NSView {
         NSRect(x: CGFloat(tick % 90) / 90 * bounds.width * 0.9,
                y: bounds.height * 0.89, width: bounds.width * 0.1,
                height: bounds.height * 0.06).fill()
+        NSColor(calibratedWhite: CGFloat(tick % 16) / 15, alpha: 1).setFill()
+        NSRect(x: bounds.width * 0.46, y: bounds.height * 0.74,
+               width: bounds.width * 0.08, height: bounds.height * 0.04).fill()
         if noisy {
             let width = 640
             let height = 56
