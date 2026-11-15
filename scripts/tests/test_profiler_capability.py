@@ -90,6 +90,129 @@ class OwnedChildTests(unittest.TestCase):
                 if child.process.returncode is None:
                     child.process.wait(timeout=2)
 
+    def test_exit_during_each_identity_getter_still_reaps_child(self):
+        for getter in ("getpgid", "getsid"):
+            with self.subTest(getter=getter), tempfile.TemporaryDirectory() as temporary:
+                child = PROBE.OwnedChild("race", python_child("import time; time.sleep(60)"), Path(temporary))
+
+                def exit_before_lookup(pid):
+                    if not child.exited():
+                        os.kill(pid, signal.SIGTERM)
+                        child.wait(time.monotonic() + 2)
+                    raise ProcessLookupError(errno.ESRCH, "No such process")
+
+                try:
+                    with mock.patch.object(os, getter, side_effect=exit_before_lookup):
+                        child.close(time.monotonic() + 3)
+                    self.assertTrue(child.record["cleanupComplete"], json.dumps(child.record, indent=2))
+                    self.assertEqual(child.process.returncode, -signal.SIGTERM)
+                    with self.assertRaises(ChildProcessError):
+                        os.waitid(os.P_PID, child.process.pid, os.WEXITED | os.WNOHANG)
+                finally:
+                    if child.process.returncode is None:
+                        child.close(time.monotonic() + 1)
+
+    def test_exit_between_signals_still_reaps_child(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            child = PROBE.OwnedChild("race", python_child("import time; time.sleep(60)"), Path(temporary))
+            getpgid = os.getpgid
+            killpg = os.killpg
+
+            def lookup(pid):
+                if child.exited():
+                    raise ProcessLookupError(errno.ESRCH, "No such process")
+                return getpgid(pid)
+
+            def signal_and_wait(pgid, sig):
+                killpg(pgid, sig)
+                if sig == signal.SIGTERM:
+                    child.wait(time.monotonic() + 2)
+
+            try:
+                with mock.patch.object(os, "getpgid", side_effect=lookup), \
+                     mock.patch.object(os, "killpg", side_effect=signal_and_wait):
+                    child.close(time.monotonic() + 3)
+                self.assertTrue(child.record["cleanupComplete"], json.dumps(child.record, indent=2))
+                self.assertEqual(child.process.returncode, -signal.SIGTERM)
+            finally:
+                if child.process.returncode is None:
+                    child.close(time.monotonic() + 1)
+
+    def test_live_child_with_missing_or_wrong_identity_is_never_signalled(self):
+        for getter in ("getpgid", "getsid"):
+            for error in (ProcessLookupError(errno.ESRCH, "No such process"), None):
+                with self.subTest(getter=getter, error=error), tempfile.TemporaryDirectory() as temporary:
+                    child = PROBE.OwnedChild("live", PROBE.HELPER, Path(temporary))
+                    try:
+                        with mock.patch.object(os, getter, side_effect=error, return_value=os.getpid()), \
+                             mock.patch.object(os, "killpg") as kill_group:
+                            child.close(time.monotonic() + 1)
+                            kill_group.assert_not_called()
+                        self.assertFalse(child.record["cleanupComplete"])
+                        self.assertFalse(child.exited())
+                    finally:
+                        child.close(time.monotonic() + 1)
+
+    def test_absent_or_denied_zombie_group_is_observed_before_reap(self):
+        for error in (ProcessLookupError(errno.ESRCH, "No such process"),
+                      PermissionError(errno.EPERM, "Operation not permitted")):
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as temporary:
+                child = PROBE.OwnedChild("finished", python_child("pass"), Path(temporary))
+                try:
+                    self.assertTrue(child.wait(time.monotonic() + 3))
+                    with mock.patch.object(os, "killpg", side_effect=error):
+                        child.close(time.monotonic() + 1)
+                    self.assertTrue(child.record["cleanupComplete"], json.dumps(child.record, indent=2))
+                    self.assertEqual(child.process.returncode, 0)
+                    self.assertTrue(all("noLiveMembers" in event for event in child.record["signals"]))
+                    self.assertTrue(all(event["signalError"]["errno"] == error.errno for event in child.record["signals"]))
+                    with self.assertRaises(ChildProcessError):
+                        os.waitid(os.P_PID, child.process.pid, os.WEXITED | os.WNOHANG)
+                finally:
+                    if child.process.returncode is None:
+                        child.process.wait(timeout=2)
+
+    def test_absent_or_denied_live_group_remains_cleanup_failure(self):
+        for error in (ProcessLookupError(errno.ESRCH, "No such process"),
+                      PermissionError(errno.EPERM, "Operation not permitted")):
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as temporary:
+                child = PROBE.OwnedChild("live", PROBE.HELPER, Path(temporary))
+                try:
+                    with mock.patch.object(os, "killpg", side_effect=error):
+                        child.close(time.monotonic() + 1)
+                    self.assertFalse(child.record["cleanupComplete"])
+                    self.assertIn(str(error), child.record["cleanupError"])
+                    self.assertFalse(child.exited())
+                    self.assertTrue(all("noLiveMembers" not in event for event in child.record["signals"]))
+                finally:
+                    child.close(time.monotonic() + 1)
+
+    def test_failed_or_incomplete_group_observation_never_accepts_denial(self):
+        observations = (
+            subprocess.CompletedProcess([], 1, b"", b"ps failed"),
+            subprocess.CompletedProcess([], 0, b"", b""),
+            subprocess.CompletedProcess([], 0, b"invalid\n", b""),
+            subprocess.CompletedProcess([], 0, b"\xff\n", b""),
+            subprocess.CompletedProcess([], 0, b"\xc2\xb2 1 Z\n", b""),
+            subprocess.CompletedProcess([], 0, b"999999 999999 Z\n", b""),
+            subprocess.TimeoutExpired("ps", 0.25),
+        )
+        for observation in observations:
+            with self.subTest(observation=observation), tempfile.TemporaryDirectory() as temporary:
+                child = PROBE.OwnedChild("finished", python_child("pass"), Path(temporary))
+                try:
+                    self.assertTrue(child.wait(time.monotonic() + 3))
+                    with mock.patch.object(os, "killpg", side_effect=PermissionError(errno.EPERM, "denied")), \
+                         mock.patch.object(PROBE.subprocess, "run", side_effect=
+                                           observation if isinstance(observation, Exception) else None,
+                                           return_value=observation):
+                        child.close(time.monotonic() + 1)
+                    self.assertFalse(child.record["cleanupComplete"])
+                    self.assertEqual(child.record["signals"][0]["signalError"]["errno"], errno.EPERM)
+                    self.assertNotIn("noLiveMembers", child.record["signals"][0])
+                finally:
+                    child.process.wait(timeout=2)
+
     def test_nonzero_exit_preserves_raw_bytes_and_reaps_after_group_cleanup(self):
         with tempfile.TemporaryDirectory() as temporary:
             out = Path(temporary)
@@ -113,7 +236,13 @@ class OwnedChildTests(unittest.TestCase):
     def test_early_parent_exit_still_cleans_owned_descendant(self):
         self.check_descendant_cleanup(parent_exits=True)
 
-    def check_descendant_cleanup(self, parent_exits):
+    def test_exited_parent_without_getpgid_still_cleans_owned_descendant(self):
+        self.check_descendant_cleanup(parent_exits=True, missing_getpgid=True)
+
+    def test_denied_signal_with_exited_parent_and_live_descendant_remains_failure(self):
+        self.check_descendant_cleanup(parent_exits=True, deny_signal=True)
+
+    def check_descendant_cleanup(self, parent_exits, missing_getpgid=False, deny_signal=False):
         with tempfile.TemporaryDirectory() as temporary:
             out = Path(temporary)
             heartbeat = out / "descendant-heartbeat"
@@ -130,8 +259,19 @@ class OwnedChildTests(unittest.TestCase):
             try:
                 child.wait(time.monotonic() + 0.4)
                 self.assertTrue(heartbeat.is_file())
+                if deny_signal:
+                    with mock.patch.object(os, "killpg", side_effect=PermissionError(errno.EPERM, "denied")):
+                        child.close(time.monotonic() + 1)
+                    self.assertFalse(child.record["cleanupComplete"])
+                    self.assertTrue(child.exited())
+                    self.assertEqual(child.record["signals"][0]["signalError"]["errno"], errno.EPERM)
+                    self.assertNotIn("noLiveMembers", child.record["signals"][0])
             finally:
-                child.close(time.monotonic() + 1)
+                with contextlib.ExitStack() as patches:
+                    if missing_getpgid:
+                        patches.enter_context(mock.patch.object(os, "getpgid", side_effect=
+                                              ProcessLookupError(errno.ESRCH, "No such process")))
+                    child.close(time.monotonic() + 1)
                 unrelated_alive = unrelated.poll() is None
                 unrelated.kill()
                 unrelated.wait(timeout=2)

@@ -107,18 +107,48 @@ class OwnedChild:
             self.save()
         return self.record["status"] == "completed"
 
-    def signal_group(self, sig):
+    def signal_group(self, sig, deadline):
         # WNOWAIT retains the direct child's PID even after exit, so this group cannot be reused.
         os.waitid(os.P_PID, self.process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-        pgid = os.getpgid(self.process.pid)
-        sid = os.getsid(self.process.pid)
-        if pgid != self.process.pid or sid != self.process.pid:
-            raise RuntimeError("Owned child is no longer its recorded session and process-group leader")
+        identity = "process_getters"
+        try:
+            for getter in (os.getpgid, os.getsid):
+                if getter(self.process.pid) != self.process.pid:
+                    raise RuntimeError("Owned child is no longer its recorded session and process-group leader")
+        except ProcessLookupError:
+            if not self.exited():
+                raise
+            identity = "exited_unreaped_child"
         event = {"signal": sig.name, "requested": preflight.clock(), "pid": self.process.pid,
-                 "verifiedPGID": pgid, "verifiedSID": sid, "ownership": "unreaped_direct_child"}
+                 "verifiedPGID": self.process.pid, "verifiedSID": self.process.pid,
+                 "ownership": "unreaped_direct_child", "identityVerification": identity}
         self.record["signals"].append(event)
-        os.killpg(pgid, sig)
+        try:
+            os.killpg(self.process.pid, sig)
+        except (ProcessLookupError, PermissionError) as error:
+            event["signalError"] = {"type": type(error).__name__, "errno": error.errno, "message": str(error)}
+            if self.group_has_live_members(event, deadline):
+                raise
+            event["noLiveMembers"] = preflight.clock()
+            return
         event["sent"] = preflight.clock()
+
+    def group_has_live_members(self, event, deadline):
+        argv = ("/bin/ps", "-axo", "pid=,pgid=,stat=")
+        result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
+                                timeout=max(0, min(0.25, deadline - time.monotonic())), check=False)
+        event["groupObservation"] = {"argv": list(argv), "returnCode": result.returncode,
+                                     "stdout": result.stdout.decode("ascii", errors="replace"),
+                                     "stderr": result.stderr.decode("utf-8", errors="replace"),
+                                     "observed": preflight.clock()}
+        if result.returncode != 0:
+            raise RuntimeError("Owned-group process observation failed")
+        rows = [line.split() for line in event["groupObservation"]["stdout"].splitlines()]
+        if (not rows or any(len(row) != 3 or not all(value.isdigit() for value in row[:2]) for row in rows)
+                or not any(int(row[0]) == os.getpid() for row in rows)):
+            raise RuntimeError("Owned-group process observation has invalid process identities")
+        return (not self.exited()
+                or any(int(pgid) == self.process.pid and not state.startswith("Z") for _, pgid, state in rows))
 
     def close(self, deadline):
         if self.process is None:
@@ -126,9 +156,9 @@ class OwnedChild:
             self.save()
             return
         try:
-            self.signal_group(signal.SIGTERM)
+            self.signal_group(signal.SIGTERM, deadline)
             time.sleep(max(0, min(0.1, deadline - time.monotonic())))
-            self.signal_group(signal.SIGKILL)
+            self.signal_group(signal.SIGKILL, deadline)
             self.record["exitCode"] = self.process.wait(timeout=max(0, deadline - time.monotonic()))
             if self.record["status"] == "running":
                 self.record["status"] = "stopped"
