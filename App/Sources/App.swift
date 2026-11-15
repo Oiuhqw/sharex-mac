@@ -73,7 +73,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     lazy var maintenance = AppMaintenance(agent: agent, login: launchAtLogin,
         checkOwnership: { [unowned self] in try self.checkMaintenanceOwnership() },
         freeze: { [unowned self] in try self.freezeForMaintenance() },
-        quit: { NSApp.terminate(nil) })
+        quit: {
+            // Leave the current main-actor job before AppKit starts its modal termination loop.
+            NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0)
+        })
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
