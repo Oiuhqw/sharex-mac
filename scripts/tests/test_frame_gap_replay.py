@@ -102,6 +102,73 @@ class SocketTests(unittest.TestCase):
                 REPLAY.socket_response(connection, {"id": "request"}, 123)
 
 
+class ReplayOwnershipTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        evidence = REPLAY.NATIVE.Evidence(Path(temporary.name))
+        self.addCleanup(evidence.events.close)
+        self.run = REPLAY.ReplayRun(SimpleNamespace(), evidence)
+        self.run.binary = Path("/Applications/ShareX.app/Contents/MacOS/ShareX")
+        self.run.app = mock.Mock(pid=6837)
+        self.run.app.poll.return_value = None
+        self.mcp = mock.Mock(pid=7379)
+        self.mcp.poll.return_value = None
+        self.run.clients = [SimpleNamespace(process=self.mcp)]
+        self.run.children = [self.run.app, self.mcp]
+        self.run.command = mock.Mock(return_value={"exitCode": 0, "stdout": "7379\n6837\n"})
+
+    def test_owned_persistent_mcp_is_accepted_alongside_its_app(self):
+        self.run.require_owned_app()
+        self.run.command.assert_called_once_with(["/usr/bin/pgrep", "-x", "ShareX"], timeout=5, check=False)
+
+    def test_startup_before_mcp_connect_still_accepts_only_the_app(self):
+        self.run.clients = []
+        self.run.command.return_value["stdout"] = "6837\n"
+        self.run.require_owned_app()
+
+    def test_foreign_missing_replaced_or_duplicate_processes_are_rejected(self):
+        for output in ("6837\n7379\n9000\n", "6837\n", "7379\n", "9000\n7379\n", "6837\n7379\n7379\n"):
+            with self.subTest(output=output):
+                self.run.command.return_value["stdout"] = output
+                with self.assertRaises(REPLAY.NATIVE.Failure):
+                    self.run.require_owned_app()
+        self.run.command.return_value = {"exitCode": 2, "stdout": "6837\n7379\n"}
+        with self.assertRaises(REPLAY.NATIVE.Failure):
+            self.run.require_owned_app()
+
+    def test_client_not_registered_as_an_owned_child_is_rejected(self):
+        self.run.children = [self.run.app]
+        with self.assertRaisesRegex(REPLAY.NATIVE.Failure, "owned child"):
+            self.run.require_owned_app()
+        self.run.command.assert_not_called()
+
+    def test_exited_app_or_reused_exited_mcp_pid_cannot_pass(self):
+        self.run.app.poll.return_value = 0
+        with self.assertRaisesRegex(REPLAY.NATIVE.Failure, "exited"):
+            self.run.require_owned_app()
+        self.run.command.assert_not_called()
+        self.run.app.poll.return_value = None
+        self.mcp.poll.return_value = 0
+        with self.assertRaises(REPLAY.NATIVE.Failure):
+            self.run.require_owned_app()
+
+    def test_direct_request_rejects_the_owned_mcp_as_socket_peer(self):
+        self.run.require_owned_app()
+        session_id = str(uuid.uuid4())
+        self.run.owned_session_ids.add(session_id)
+        self.run.endpoint = Path("/tmp/sharex-agent/agent.sock")
+        connection = mock.Mock()
+        connection.getsockopt.return_value = self.mcp.pid
+        socket_context = mock.MagicMock()
+        socket_context.__enter__.return_value = connection
+        with mock.patch.object(REPLAY.socket, "AF_UNIX", 1, create=True), \
+                mock.patch.object(REPLAY.socket, "socket", return_value=socket_context), \
+                self.assertRaisesRegex(REPLAY.NATIVE.Failure, "another process"):
+            self.run.direct("recording.status", session_id)
+        connection.sendall.assert_not_called()
+
+
 class CaptureFailureTests(unittest.TestCase):
     def fake_run(self):
         run = mock.Mock()

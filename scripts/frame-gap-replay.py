@@ -118,6 +118,20 @@ class ReplayRun(NATIVE.Run):
             return result
         return super().command(command, **kwargs)
 
+    def require_owned_app(self):
+        NATIVE.require(self.app.poll() is None, "The installed ShareX app exited.")
+        expected = [str(self.app.pid)]
+        for client in self.clients:
+            if client.process.poll() is None:
+                NATIVE.require(any(child is client.process for child in self.children),
+                               "Live MCP client is not an owned child process.")
+                expected.append(str(client.process.pid))
+        running = self.command(["/usr/bin/pgrep", "-x", self.binary.name], timeout=5, check=False)
+        pids = running["stdout"].split()
+        NATIVE.require(running["exitCode"] == 0 and sorted(pids) == sorted(expected),
+                       f"Expected the owned ShareX app and live MCP PIDs {expected}; found {pids} "
+                       f"with process check exit code {running['exitCode']}.")
+
     def direct(self, operation, session_id, request_id=None, timeout=25):
         NATIVE.require(self.app.poll() is None, "Owned app exited before the direct request.")
         NATIVE.require(session_id in self.owned_session_ids, "Direct request does not name an owned capture.")
