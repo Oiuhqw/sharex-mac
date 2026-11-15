@@ -215,7 +215,7 @@ class ReadOnlyScopeTests(unittest.TestCase):
         self.assertIn("if: ${{ inputs.frame_gap_probe }}", discovery)
         self.assertIn("DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer", discovery)
         self.assertIn('python3 scripts/profiler-preflight.py', discovery)
-        test_command = "python3 -m unittest discover -s scripts/tests -p test_profiler_preflight.py -v"
+        test_command = "python3 -m unittest discover -s scripts/tests -p 'test_profiler*.py' -v"
         self.assertLess(discovery.index(test_command), discovery.index("python3 scripts/profiler-preflight.py"))
         upload = discovery.split("- name: Store profiler discovery evidence", 1)[1]
         self.assertIn("if: ${{ always() }}", upload)

@@ -41,7 +41,7 @@ on:
         type: boolean
         default: false
       frame_gap_probe:
-        description: Diagnostic only; discover installed Mac profiler documentation without capture
+        description: Diagnostic only; collect profiler documentation and one-second system capability probe
         type: boolean
         default: false
       store_artifacts:
@@ -67,11 +67,16 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Test profiler discovery collector
-        run: python3 -m unittest discover -s scripts/tests -p test_profiler_preflight.py -v
+        run: python3 -m unittest discover -s scripts/tests -p 'test_profiler*.py' -v
 
       - name: Discover installed Mac profiling tools
         run: |
           python3 scripts/profiler-preflight.py --commit '${{ github.sha }}' --out "$PWD/profiler-preflight-out"
+
+      - name: Collect bounded profiler capability evidence
+        run: |
+          probe_python="$(python3 -c 'import sys; print(sys.executable)')"
+          sudo -n "$probe_python" scripts/profiler-capability.py --commit '${{ github.sha }}' --preflight "$PWD/profiler-preflight-out" --out "$PWD/profiler-capability-out"
 
       - name: Store profiler discovery evidence
         if: ${{ always() }}
@@ -81,6 +86,15 @@ jobs:
           retention-days: 3
           path: profiler-preflight-out
           if-no-files-found: error
+
+      - name: Store profiler capability evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: profiler-capability-${{ github.sha }}
+          retention-days: 3
+          path: profiler-capability-out
+          if-no-files-found: warn
 
   native:
     if: ${{ !inputs.frame_gap_probe }}
