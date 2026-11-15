@@ -167,7 +167,7 @@ class Run(SETUP.Run):
         return value
 
     def login(self):
-        value = self.command(["/usr/bin/sfltool", "dumpbtm"], timeout=15)
+        value = self.command(["/usr/bin/sudo", "-n", "/usr/bin/sfltool", "dumpbtm"], timeout=15)
         return login_records(value["stdout"], self.args.app)
 
     def capture_ui(self, label):
