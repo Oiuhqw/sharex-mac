@@ -3,6 +3,8 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -42,11 +44,12 @@ class WorkloadDiagnosticTests(unittest.TestCase):
                 (fixture / "draw-trace-overflow.txt").write_text("0")
                 (fixture / "operation-trace-overflow.txt").write_text("0")
                 session_id = str(uuid.uuid4()).upper()
+                artifact_id = str(uuid.uuid4()).upper()
                 snapshot = evidence / "session-snapshots" / session_id
-                snapshot.mkdir(parents=True)
+                (snapshot / artifact_id).mkdir(parents=True)
                 WORKLOAD.GAP.save(snapshot / "manifest.json", {"id": session_id, "state": "interrupted", "stopReason": "app_restart",
-                                  "artifacts": [{"kind": "recording"}]})
-                (snapshot / "video.partial.mp4").write_bytes(b"preserved failed session media")
+                                  "artifacts": [{"id": artifact_id, "kind": "recording"}]})
+                (snapshot / artifact_id / "capture.partial.mp4").write_bytes(b"preserved failed session media")
                 self.assertEqual(environment["SHAREX_FRAME_GAP_FIXTURE_TRACE"], "1")
                 return {"exitCode": 1 if len(calls) == 1 else 0, "timedOut": False}
 
@@ -110,6 +113,94 @@ class WorkloadDiagnosticTests(unittest.TestCase):
             run.fixture.wait.assert_called_once_with(timeout=5)
             events = [json.loads(line) for line in (evidence.directory / "events.jsonl").read_text().splitlines()]
             self.assertTrue(all("monotonicSeconds" in event for event in events))
+
+
+class RetainedWorkloadTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.output = Path(temporary.name)
+        self.source = {"installedBinarySHA256": "a" * 64, "runs": [], "status": "failed",
+                       "harnessStatus": "passed", "diagnosticStatus": "incomplete", "missingTraceCount": 6}
+
+    def add_run(self, cycle=1, kind="native", status="passed"):
+        evidence = self.output / f"cycle-{cycle:02d}" / kind
+        traces = evidence.parent / f"{kind}-traces"
+        fixture = evidence / "fixture"
+        fixture.mkdir(parents=True)
+        traces.mkdir()
+        WORKLOAD.GAP.save(evidence / "result.json", {"status": status, "statistics": {"passedSteps": 20}})
+        (evidence / "events.jsonl").write_text(json.dumps({"event": "run_finished", "status": status,
+                                                          "exitCode": 0 if status == "passed" else 1}) + "\n")
+        WORKLOAD.GAP.save(fixture / "draw-trace.json", [{"exitUptime": 10.1}])
+        WORKLOAD.GAP.save(fixture / "operation-trace.json", [{"name": "update", "phase": "begin", "uptime": 10}])
+        (fixture / "draw-trace-overflow.txt").write_text("0")
+        (fixture / "operation-trace-overflow.txt").write_text("0")
+        session_id, artifact_id = (str(uuid.uuid4()).upper() for _ in range(2))
+        snapshot = evidence / "session-snapshots" / session_id
+        (snapshot / artifact_id).mkdir(parents=True)
+        WORKLOAD.GAP.save(snapshot / "manifest.json", {"id": session_id, "state": "completed", "stopReason": "user_stop",
+                          "artifacts": [{"id": artifact_id, "kind": "recording", "state": "completed"}]})
+        (snapshot / artifact_id / "capture.mp4").write_bytes(b"original video")
+        trace_path = traces / "example-trace.json"
+        WORKLOAD.GAP.save(trace_path, {"context": {"videoPath": f"/Users/runner/Library/Application Support/ShareX/AgentSessions/{session_id}/{artifact_id}/capture.partial.mp4"},
+                          "callbacks": [], "limits": [], "heartbeats": [], "overflow": 0, "streamErrors": [],
+                          "operations": [{"name": "monitor.tick", "phase": "begin", "uptime": 10}], "operationOverflow": 0})
+        self.source["runs"].append({"cycle": cycle, "kind": kind, "exitCode": 0,
+            "binaryHashBefore": "a" * 64, "binaryHashAfter": "a" * 64,
+            "evidence": f"/DO-NOT-OPEN-REMOTE/cycle-{cycle:02d}/{kind}",
+            "traceDirectory": f"/DO-NOT-OPEN-REMOTE/cycle-{cycle:02d}/{kind}-traces",
+            "result": {"status": "passed"}, "retainedEvidence": {"missingTraces": ["obsolete join result"]}})
+        WORKLOAD.GAP.save(self.output / "workload.json", self.source)
+        return evidence, traces, session_id, artifact_id, trace_path
+
+    def test_trace_joins_both_nested_session_and_artifact_ids(self):
+        evidence, traces, session_id, artifact_id, _ = self.add_run()
+        result = WORKLOAD.retained_evidence(evidence, traces)
+        self.assertEqual(result["missingTraces"], [])
+        self.assertEqual(result["unmatchedTraces"], [])
+        self.assertEqual(result["traces"][0]["sessionID"], session_id)
+        self.assertEqual(result["traces"][0]["artifactID"], artifact_id)
+        self.assertTrue(result["traces"][0]["manifestMatched"])
+        self.assertEqual(result["recordingSessions"][session_id]["retainedVideos"][0]["bytes"], len(b"original video"))
+
+    def test_a_different_artifact_in_same_session_cannot_satisfy_coverage(self):
+        evidence, traces, session_id, _, trace_path = self.add_run()
+        trace = WORKLOAD.GAP.read_json(trace_path)
+        trace["context"]["videoPath"] = f"/Users/runner/{session_id}/{uuid.uuid4()}/capture.partial.mp4"
+        WORKLOAD.GAP.save(trace_path, trace)
+        result = WORKLOAD.retained_evidence(evidence, traces)
+        self.assertEqual(len(result["missingTraces"]), 1)
+        self.assertEqual(len(result["unmatchedTraces"]), 1)
+        self.assertFalse(result["traces"][0]["manifestMatched"])
+
+    def test_offline_cli_uses_local_raw_files_and_preserves_originals(self):
+        for cycle in range(1, 4):
+            for kind in ("native", "clients"):
+                self.add_run(cycle, kind, status="failed" if cycle == 1 and kind == "native" else "passed")
+        before = {path: path.read_bytes() for path in self.output.rglob("*") if path.is_file()}
+        result = subprocess.run([sys.executable, str(WORKLOAD.ROOT / "frame-gap-workload.py"), "--reanalyze", str(self.output)],
+                                capture_output=True, text=True, timeout=10, check=False)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stderr, "")
+        report = WORKLOAD.GAP.read_json(self.output / "workload-analysis-v2.json")
+        self.assertEqual(report["failedHarnessRuns"], 1)
+        self.assertEqual(report["missingTraceCount"], 0)
+        self.assertEqual(report["unmatchedTraceCount"], 0)
+        self.assertEqual(report["harnessStatus"], "failed")
+        self.assertEqual(report["diagnosticStatus"], "complete")
+        self.assertEqual(report["originalVerdicts"]["missingTraceCount"], 6)
+        self.assertIn("sourceWorkloadSHA256", report)
+        for item in report["runs"]:
+            self.assertTrue(Path(item["evidence"]).is_relative_to(self.output))
+            self.assertIn("DO-NOT-OPEN-REMOTE", item["originalEvidencePath"])
+        for path, contents in before.items():
+            self.assertEqual(path.read_bytes(), contents, str(path))
+        blocked = subprocess.run([sys.executable, str(WORKLOAD.ROOT / "frame-gap-workload.py"),
+                                  "--reanalyze", str(self.output), "--analysis-out", str(self.output / "workload.json")],
+                                 capture_output=True, text=True, timeout=10, check=False)
+        self.assertEqual(blocked.returncode, 1)
+        self.assertEqual((self.output / "workload.json").read_bytes(), before[self.output / "workload.json"])
 
 
 if __name__ == "__main__":
