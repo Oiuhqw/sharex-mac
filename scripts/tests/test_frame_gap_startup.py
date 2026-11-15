@@ -348,12 +348,12 @@ class ComparisonTests(unittest.TestCase):
 
     def test_workflow_enables_capture_after_setup_and_excludes_maintenance(self):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/agent-capture.yml").read_text()
-        startup = workflow.split("- name: Compare six bitmap draw-path targets after the original native prefix", 1)[1].split("- name:", 1)[0]
+        startup = workflow.split("- name: Compare eight writer lifetime targets after the original native prefix", 1)[1].split("- name:", 1)[0]
         self.assertIn("steps.setup-ui.outcome == 'success'", startup)
         self.assertLess(startup.index("agentCaptureEnabled -bool true"), startup.index("python3 scripts/frame-gap-startup.py"))
-        self.assertIn("--comparison bitmap-draw-path", startup)
+        self.assertIn("--comparison writer-lifetime", startup)
         self.assertNotIn("--profile-preflight", startup)
-        self.assertIn("timeout-minutes: 34", startup)
+        self.assertIn("timeout-minutes: 36", startup)
         native = workflow.split("  native:", 1)[-1]
         self.assertNotIn("python3 scripts/profiler-preflight.py", native)
         self.assertNotIn("scripts/profiler-clock-probe.py", native)

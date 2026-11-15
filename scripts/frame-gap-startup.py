@@ -30,6 +30,7 @@ WORKLOAD = module("startup_workload", "frame-gap-workload.py")
 GAP = WORKLOAD.GAP
 PROFILE = module("startup_profile", "profiler-capability.py")
 ORDER = ("control", "metadata", "metadata", "control")
+WRITER_LIFETIME_ORDER = ("retain", "release", "release", "retain", "release", "retain", "retain", "release")
 COMPARISONS = {
     "sinks": tuple((arm, None, None) for arm in ORDER),
     "noise-timing": (("metadata", "before", None), ("metadata", "after", None),
@@ -41,6 +42,7 @@ COMPARISONS = {
     "bitmap-draw-path": tuple(("metadata", "before", content) for content in
                              ("original", "constant", "rectangle", "rectangle", "constant", "original")),
     "source-profile": (("metadata", "before", "original"),),
+    "writer-lifetime": tuple(("metadata", "before", "original") for _ in WRITER_LIFETIME_ORDER),
 }
 BITMAP_CONDITIONS = {"original": (255, "cgimage"), "constant": (0, "cgimage"), "rectangle": (0, "black-rectangle")}
 LATE_NOISE_DELAY_SECONDS = 1.0
@@ -246,6 +248,8 @@ def run_arm(args):
               "noiseTiming": args.noise_timing, "bitmapContent": args.bitmap_content,
               "drawPrimitive": BITMAP_CONDITIONS[args.bitmap_content or "original"][1],
               "status": "failed", "byteLimitE2EPassed": False, "productionE2EPassed": False}
+    if args.writer_lifetime:
+        report["requestedWriterLifetime"] = args.writer_lifetime
     handlers = {}
 
     def interrupted(signum, frame):
@@ -270,6 +274,11 @@ def run_arm(args):
         if cleanup_errors:
             report.update(status="failed", cleanupErrors=cleanup_errors)
         report.update(steps=evidence.steps, verified=run.verified, sessions=run.sessions)
+        if args.writer_lifetime:
+            traces = [GAP.read_json(path) for path in Path(os.environ["SHAREX_FRAME_GAP_TRACE_DIR"]).glob("*-trace.json")]
+            selected = [trace["context"] for trace in traces
+                        if ((trace.get("context") or {}).get("startupSink") or {}).get("requestID") == run.request_id]
+            report["writerLifetime"] = selected[0].get("writerLifetime") if len(selected) == 1 else None
         GAP.save(args.out / "result.json", report)
         GAP.save(args.out / "metrics.json", run.metrics)
         evidence.emit("run_finished", status=report["status"], byteLimitE2EPassed=report["byteLimitE2EPassed"])
@@ -277,6 +286,17 @@ def run_arm(args):
         for signum, handler in handlers.items():
             signal.signal(signum, handler)
     return 0 if report["status"] == "diagnostic_complete" else 1
+
+
+def operation_spans(operations):
+    spans, pending = [], {}
+    for row in operations:
+        if row["phase"] == "begin":
+            pending[row["name"]] = row["uptime"]
+        elif row["name"] in pending:
+            start = pending.pop(row["name"])
+            spans.append({"name": row["name"], "start": start, "end": row["uptime"], "seconds": row["uptime"] - start})
+    return spans, pending
 
 
 def analyze_noise_timing(timing, request_id, trace, complete, draws, operations, events, status_launches, errors):
@@ -364,14 +384,7 @@ def analyze_noise_timing(timing, request_id, trace, complete, draws, operations,
     scale = trace["context"]["machTimebaseNumerator"] / trace["context"]["machTimebaseDenominator"] / 1e9
     display = [row for row in GAP.intervals([row["displayTime"] * scale for row in complete
                                             if row.get("displayTime") is not None]) if overlaps(row)]
-    spans = []
-    pending = {}
-    for row in operations:
-        if row["phase"] == "begin":
-            pending[row["name"]] = row["uptime"]
-        elif row["name"] in pending:
-            start = pending.pop(row["name"])
-            spans.append({"name": row["name"], "start": start, "end": row["uptime"], "seconds": row["uptime"] - start})
+    spans, _ = operation_spans(operations)
     window_spans = [row for row in spans if overlaps(row)]
     window_draws = [row for row in draws if row["exitUptime"] > noise and row["entryUptime"] < noise + 1]
     draw_intervals = [row for row in GAP.intervals([row["entryUptime"] for row in draws]) if overlaps(row)]
@@ -469,7 +482,119 @@ def analyze_bitmap_content(content, result, draws, errors, draw_primitive=None):
             "firstBitmapDraw": proofs[0] if proofs else None}
 
 
-def analyze_arm(directory, arm, request_id, noise_timing=None, bitmap_content=None, draw_primitive=None):
+def analyze_writer_lifetime(condition, trace, traces, result, started, draws, operations, errors):
+    history = trace.get("history") or {}
+    events = history.get("events", [])
+    context = trace["context"]
+    actual = context.get("writerLifetime")
+    if (actual != condition or result.get("writerLifetime") != actual
+            or result.get("requestedWriterLifetime") != condition):
+        errors.append("Actual writer lifetime mode differs from the requested condition or result.")
+    if started is None or history.get("overflow") != 0:
+        errors.append("Writer lifetime qualification requires target start and complete lifecycle history.")
+        return {"writerLifetime": actual, "writerLifecycle": None}
+    writers = {}
+    for event in events:
+        if event["name"] not in ("writer.init", "writer.complete", "writer.deinit"):
+            continue
+        identity = event.get("writerID")
+        uptime = event.get("uptime")
+        if not identity or not isinstance(uptime, (int, float)) or not math.isfinite(uptime):
+            errors.append("A writer lifecycle event omitted its identity or valid uptime.")
+            continue
+        writers.setdefault(identity, {}).setdefault(event["name"], []).append(event)
+    if len(writers) != 7:
+        errors.append("Writer lifecycle history does not contain exactly seven distinct writer IDs.")
+    lifetimes = []
+    for identity, records in sorted(writers.items()):
+        initialized = records.get("writer.init", [])
+        completed = records.get("writer.complete", [])
+        deinitialized = records.get("writer.deinit", [])
+        if len(initialized) != 1 or len(completed) != 1 or len(deinitialized) > 1:
+            errors.append(f"Writer {identity} has missing or duplicate lifecycle events.")
+            continue
+        init, done = initialized[0], completed[0]
+        deinit = deinitialized[0]["uptime"] if deinitialized else None
+        if not init["uptime"] <= done["uptime"] < started or (deinit is not None and deinit < done["uptime"]):
+            errors.append(f"Writer {identity} did not initialize and complete in order before target start.")
+        if init.get("writerLifetime") != condition:
+            errors.append(f"Writer {identity} did not use the selected timeout ownership mode.")
+        lifetimes.append({"writerID": identity, "initUptime": init["uptime"], "completeUptime": done["uptime"],
+                          "deinitEntryUptime": deinit})
+    prior_ids = [item.get("writerID") for _, item in traces if item is not trace]
+    if len(prior_ids) != 7 or len(set(prior_ids)) != 7 or set(prior_ids) != set(writers):
+        errors.append("The seven prior trace writer IDs do not match the lifecycle history IDs.")
+    if any((item.get("context") or {}).get("writerLifetime") != condition for _, item in traces):
+        errors.append("A prefix or target trace reports a different actual writer lifetime mode.")
+
+    def alive(uptime):
+        identities = [row["writerID"] for row in lifetimes if row["completeUptime"] <= uptime
+                      and (row["deinitEntryUptime"] is None or row["deinitEntryUptime"] > uptime)]
+        return {"uptime": uptime, "writerIDs": identities, "count": len(identities)}
+
+    at_start = alive(started)
+    if condition == "release" and (len(lifetimes) != 7 or any(
+            row["deinitEntryUptime"] is None or row["deinitEntryUptime"] >= started for row in lifetimes)):
+        errors.append("Release did not deliver all seven deinit entry events before target start.")
+    if condition == "retain" and at_start["count"] == 0:
+        errors.append("Retain has no live completed writer at target start and no delivered ownership contrast.")
+    callbacks = trace["callbacks"]
+    if context.get("fps") != 15 or context.get("queueDepth") != 3 or any(
+            row.get("image") and row.get("sourcePixelFormat") != 1111970369 for row in callbacks):
+        errors.append("Writer lifetime target changed the 15 FPS, BGRA, queue-depth-three source configuration.")
+    spans, pending = operation_spans(operations)
+    target_end = max((row["exitUptime"] for row in callbacks), default=started)
+    if any(uptime <= target_end for uptime in pending.values()):
+        errors.append("Fixture operation trace has unmatched begin events that can overlap the target.")
+    source = []
+    for index, row in enumerate(callbacks):
+        pts = row.get("pts")
+        if pts is None:
+            continue
+        if (not isinstance(pts, (int, float)) or not math.isfinite(pts) or not row.get("valid")
+                or not row.get("screen") or row.get("ptsTimescale", 0) <= 0 or row.get("ptsEpoch") != 0
+                or row.get("ptsFlags", 0) & 1 == 0 or row.get("ptsFlags", 0) & 28
+                or not math.isclose(row.get("ptsValue", math.inf) / row["ptsTimescale"], pts, abs_tol=1e-6, rel_tol=0)):
+            errors.append("An all-source endpoint lacks a valid raw source timestamp.")
+            continue
+        source.append((index, row))
+    if len(source) < 2:
+        errors.append("Writer lifetime target has fewer than two valid raw source timestamps.")
+    gaps = []
+    intervals = GAP.intervals([row["pts"] for _, row in source])
+    for index, interval in enumerate(intervals):
+        if interval["seconds"] <= 0:
+            errors.append("All-source timestamps did not increase.")
+        if interval["seconds"] <= GAP.QUALITY_GAP_SECONDS:
+            continue
+        (before_index, before), (after_index, after) = source[index:index + 2]
+        lower = min(interval["start"], before["entryUptime"])
+        upper = max(interval["end"], after["entryUptime"])
+        overlapping = [row for row in spans if row["end"] > lower and row["start"] < upper]
+        writes = [row for row in overlapping if row["name"] in ("stateWrite", "writeState")]
+        draw_count = sum(before["exitUptime"] < row["exitUptime"] < after["entryUptime"] for row in draws)
+        heartbeat_count = sum(before["exitUptime"] < value < after["entryUptime"] for value in trace["heartbeats"])
+        if after_index != before_index + 1:
+            errors.append("An all-source PTS gap has intervening callbacks without valid PTS.")
+        boundaries = {"sourceStart": alive(interval["start"]), "sourceEnd": alive(interval["end"]),
+                      "callbackStart": alive(before["entryUptime"]), "callbackEnd": alive(after["entryUptime"])}
+        gaps.append({**interval, "beforeCallbackIndex": before_index, "afterCallbackIndex": after_index,
+                     "liveCompletedWriters": boundaries, "fixtureOperationSpans": overlapping,
+                     "fixtureWriteSpans": writes, "previousCallbackSeconds": before["exitUptime"] - before["entryUptime"],
+                     "interveningCallbackCount": after_index - before_index - 1,
+                     "drawsCompleted": draw_count, "heartbeats": heartbeat_count, "rawTimelineReviewRequired": True,
+                     "retentionThroughoutGap": all(value["count"] > 0 for value in boundaries.values()),
+                     "ownershipAbsentAtGapStart": boundaries["sourceStart"]["count"] == 0 and boundaries["callbackStart"]["count"] == 0})
+    return {"writerLifetime": actual,
+        "sourceConfiguration": {key: context.get(key) for key in ("fps", "queueDepth", "width", "height", "writerLifetime")},
+        "writerLifecycle": {
+        "deinitMeaning": "Entry into wrapper deallocation only. Stored-property release, AVFoundation cleanup, and GPU cleanup completion are not observed.",
+        "writers": lifetimes, "atTargetStart": at_start, "allSourceGaps": gaps,
+        "unmatchedFixtureOperations": pending,
+        "allSourcePTSIntervals": intervals, "maximumAllSourcePTSInterval": GAP.maximum(intervals)}}
+
+
+def analyze_arm(directory, arm, request_id, noise_timing=None, bitmap_content=None, draw_primitive=None, writer_lifetime=None):
     result = GAP.read_json(directory / "native/result.json") or {}
     events_path = directory / "native/events.jsonl"
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()] if events_path.exists() else []
@@ -553,8 +678,10 @@ def analyze_arm(directory, arm, request_id, noise_timing=None, bitmap_content=No
     timing_analysis = analyze_noise_timing(noise_timing, request_id, trace, complete, draws, fixture_operations,
                                           events, status_launches, errors) if noise_timing else {}
     bitmap_analysis = analyze_bitmap_content(bitmap_content, result, draws, errors, draw_primitive) if bitmap_content else {}
+    lifetime_analysis = analyze_writer_lifetime(writer_lifetime, trace, traces, result, timing_analysis.get("targetStartUptime"),
+                                               draws, fixture_operations, errors) if writer_lifetime else {}
     return {"result": result, "errors": errors, "trace": str(path), "selection": selection,
-            **timing_analysis, **bitmap_analysis,
+            **timing_analysis, **bitmap_analysis, **lifetime_analysis,
             "writerConstructionCount": writer_count, "analysis": GAP.summarize({"trace": trace}, draws),
             "firstPTSInterval": pts_intervals[0] if pts_intervals else None,
             "firstDisplayTimeInterval": display_intervals[0] if display_intervals else None,
@@ -754,6 +881,19 @@ def run_comparison(args):
         summary.update(outcome="incomplete", profileCoverageValidated=False,
                        validationPending="Inspect original report and native re-reports for process coverage and clock alignment",
                        setupContext="Original setup UI ran once before the single source profile target.")
+    if comparison == "writer-lifetime":
+        summary.update(order=list(WRITER_LIFETIME_ORDER), profilerPresent=False, outcome="incomplete",
+            conditionEnvironment="SHAREX_FRAME_GAP_WRITER_LIFETIME",
+            perArmTimeoutSeconds=240,
+            acknowledgementCaveat="Every target uses metadata with original RGB255 CGImage drawing before startup, unchanged status polling, and a fixed three-second observation.",
+            lifetimeCaveat="Deinit records mark wrapper deallocation entry. They do not mark completion of stored-property release, AVFoundation cleanup, or GPU work. Earlier cleanup and prefix resource history are effects of the intervention.",
+            classificationRequired="Independent analysis must inspect raw callbacks, all overlapping fixture operations, draws, and heartbeats before classifying a gap as the residual failure. The collector applies no fixture-write duration cutoff and makes no causal verdict.",
+            cacheCaveat="The eight arms share one VM in a fixed order. Fresh app and fixture processes do not reset host state. Each arm runs once.",
+            interpretation={
+                "releaseGap": "Any valid release all-source gap above 500 ms without the known fixture write stall falsifies continued wrapper ownership as necessary for that occurrence.",
+                "candidate": "All four retain arms must reproduce with live completed wrappers throughout a qualified gap, and all four release arms must be valid and clean. This supports production review and original product E2E, not an automatic fix.",
+                "otherwise": "Other outcomes are inconclusive. Missing evidence or an undelivered lifetime contrast is incomplete, not a negative causal result.",
+                "limits": "This comparison cannot identify private GPU resources or establish an operating-system fault. Production E2E remains false."})
     if comparison == "noise-timing":
         summary["acknowledgementCaveat"] = "Every target uses metadata and acknowledges its first complete callback. The after arm waits for the noise control response before the first CLI status launch. Report this added launch delay; the inherited 100 ms polling delay and three-second observation remain unchanged."
     if comparison == "late-noise":
@@ -785,7 +925,8 @@ def run_comparison(args):
                 "qualification": "Independently inspect raw callbacks, overlapping fixture operations and draws, and heartbeats. A long synchronous fixture write can produce a different gap class; its presence does not isolate the remaining upstream-silence fault. No timing-only necessity verdict is automatic."})
     GAP.save(args.out / "comparison.json", summary)
     for index, (arm, noise_timing, bitmap_content) in enumerate(arms, 1):
-        label = bitmap_content or noise_timing or arm
+        writer_lifetime = WRITER_LIFETIME_ORDER[index - 1] if comparison == "writer-lifetime" else None
+        label = writer_lifetime or bitmap_content or noise_timing or arm
         directory = args.out / f"arm-{index:02d}-{label}"
         directory.mkdir()
         (directory / "traces").mkdir()
@@ -796,8 +937,12 @@ def run_comparison(args):
                        "SHAREX_FRAME_GAP_STARTUP_SINK": arm, "SHAREX_FRAME_GAP_STARTUP_REQUEST_ID": request_id,
                        "SHAREX_FRAME_GAP_BITMAP_COMPONENT_MASK": str(BITMAP_CONDITIONS[bitmap_content or "original"][0]),
                        "SHAREX_FRAME_GAP_BITMAP_DRAW_PRIMITIVE": BITMAP_CONDITIONS[bitmap_content or "original"][1]}
+        if writer_lifetime:
+            environment["SHAREX_FRAME_GAP_WRITER_LIFETIME"] = writer_lifetime
         record = {"arm": arm, "noiseTiming": noise_timing, "bitmapContent": bitmap_content,
                   "index": index, "requestID": request_id}
+        if writer_lifetime:
+            record["requestedWriterLifetime"] = writer_lifetime
         try:
             NATIVE.require(WORKLOAD.digest(binary) == initial_hash, "Installed binary changed between arms.")
             NATIVE.require(WORKLOAD.digest(fixture_source) == fixture_hash, "Fixture source changed between arms.")
@@ -807,12 +952,15 @@ def run_comparison(args):
                 arguments.extend(["--comparison", comparison, "--noise-timing", noise_timing])
             if bitmap_content:
                 arguments.extend(["--bitmap-content", bitmap_content])
+            if writer_lifetime:
+                arguments.extend(["--writer-lifetime", writer_lifetime])
             if comparison == "source-profile":
                 arguments.extend(["--profile-preflight", args.profile_preflight, "--commit", args.commit])
             record.update(WORKLOAD.bounded_harness(arguments,
-                          directory / "native.log", environment, 240 if comparison == "bitmap-draw-path" else 480))
-            primitive = BITMAP_CONDITIONS[bitmap_content][1] if comparison == "bitmap-draw-path" else None
-            record.update(analyze_arm(directory, arm, request_id, noise_timing, bitmap_content, primitive))
+                          directory / "native.log", environment, 240 if comparison in ("bitmap-draw-path", "writer-lifetime") else 480))
+            primitive = BITMAP_CONDITIONS[bitmap_content][1] if comparison in ("bitmap-draw-path", "writer-lifetime") else None
+            lifetime_arguments = {"writer_lifetime": writer_lifetime} if writer_lifetime else {}
+            record.update(analyze_arm(directory, arm, request_id, noise_timing, bitmap_content, primitive, **lifetime_arguments))
             if comparison == "source-profile":
                 record["profileCollection"] = GAP.read_json(directory / "native/profile/source-profile.json")
                 record["profileLauncher"] = GAP.read_json(directory / "native/profile-launch.json")
@@ -846,6 +994,9 @@ def run_comparison(args):
     pixel_check_passed = comparison != "bitmap-draw-path" or summary["pixelEquivalence"]["status"] == "passed"
     summary["status"] = "diagnostic_complete" if summary["incompleteArms"] == 0 and pixel_check_passed else "diagnostic_incomplete"
     summary["productionE2EPassed"] = False
+    if comparison == "writer-lifetime":
+        summary["outcome"] = ("collection_complete_requires_independent_classification" if summary["status"] == "diagnostic_complete"
+                              else "collection_incomplete_requires_independent_classification")
     GAP.save(args.out / "comparison.json", summary)
     return 0 if summary["status"] == "diagnostic_complete" and summary["failedControlGates"] == 0 else 1
 
@@ -860,12 +1011,18 @@ def main():
     parser.add_argument("--comparison", choices=COMPARISONS, default="sinks")
     parser.add_argument("--noise-timing", choices=("before", "after", "late"))
     parser.add_argument("--bitmap-content", choices=BITMAP_CONDITIONS)
+    parser.add_argument("--writer-lifetime", choices=("retain", "release"))
     parser.add_argument("--pixel-check", action="store_true")
     parser.add_argument("--setup-result", type=Path)
     parser.add_argument("--commit")
     parser.add_argument("--profile-preflight", type=Path)
     args = parser.parse_args()
     args.out = args.out.resolve()
+    if args.writer_lifetime and (args.comparison != "writer-lifetime" or not args.arm):
+        parser.error("A writer lifetime condition requires a writer-lifetime comparison arm.")
+    if args.comparison == "writer-lifetime" and args.arm:
+        if not args.writer_lifetime or os.environ.get("SHAREX_FRAME_GAP_WRITER_LIFETIME") != args.writer_lifetime:
+            parser.error("Writer lifetime arm must match its explicit environment condition.")
     if (args.comparison == "source-profile") != bool(args.profile_preflight):
         parser.error("Source profile requires --profile-preflight; other comparisons must omit it.")
     if args.profile_preflight:

@@ -33,7 +33,7 @@ on:
         type: boolean
         default: false
       frame_gap_replay:
-        description: Diagnostic only; compare six original-prefix bitmap draw-path arms
+        description: Diagnostic only; compare eight original-prefix writer lifetime arms
         type: boolean
         default: false
       frame_gap_workload:
@@ -221,17 +221,17 @@ jobs:
             --build-settings "$PWD/agent-build-settings.json" \
             --helper "$RUNNER_TEMP/sharex-agent-setup-helper" --out "$PWD/agent-setup-out"
 
-      - name: Compare six bitmap draw-path targets after the original native prefix
+      - name: Compare eight writer lifetime targets after the original native prefix
         if: ${{ !cancelled() && inputs.frame_gap_replay && steps.setup-ui.outcome == 'success' }}
-        timeout-minutes: 34
+        timeout-minutes: 36
         run: |
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
           python3 scripts/frame-gap-startup.py --app /Applications/ShareX.app \
             --build-settings "$PWD/agent-build-settings.json" --setup-result "$PWD/agent-setup-out/result.json" \
-            --comparison bitmap-draw-path \
+            --comparison writer-lifetime \
             --commit '${{ github.sha }}' --out "$PWD/frame-gap-startup-out"
 
-      - name: Print bitmap draw-path comparison
+      - name: Print writer lifetime comparison
         if: ${{ always() && inputs.frame_gap_replay }}
         run: |
           if test -f frame-gap-startup-out/comparison.json; then cat frame-gap-startup-out/comparison.json; fi

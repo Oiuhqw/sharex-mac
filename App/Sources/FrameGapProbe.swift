@@ -230,6 +230,19 @@ struct FrameGapHistoryEvent: Codable, Sendable {
     let requestID: String?
     let deadline: Double?
     let value: Bool?
+    let writerLifetime: FrameGapWriterLifetime?
+}
+
+enum FrameGapWriterLifetime: String, Codable, Sendable {
+    case retain, release
+
+    static let configured: Result<Self, AgentFailure> = {
+        let value = ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_WRITER_LIFETIME"] ?? "retain"
+        guard let mode = Self(rawValue: value) else {
+            return .failure(AgentFailure(.recordingFailed, "Writer lifetime diagnostic must be retain or release."))
+        }
+        return .success(mode)
+    }()
 }
 
 struct FrameGapHistorySnapshot: Codable, Sendable {
@@ -245,9 +258,9 @@ final class FrameGapHistory: @unchecked Sendable {
     private init() { events.reserveCapacity(20000) }
 
     func record(_ name: String, writerID: String? = nil, requestID: String? = nil,
-                deadline: Double? = nil, value: Bool? = nil) {
+                deadline: Double? = nil, value: Bool? = nil, writerLifetime: FrameGapWriterLifetime? = nil) {
         let event = FrameGapHistoryEvent(name: name, uptime: FrameGapTrace.now(), writerID: writerID,
-                                        requestID: requestID, deadline: deadline, value: value)
+                                        requestID: requestID, deadline: deadline, value: value, writerLifetime: writerLifetime)
         lock.lock()
         defer { lock.unlock() }
         if events.count < 20000 { events.append(event) } else { overflow += 1 }
@@ -296,8 +309,10 @@ struct FrameGapContext: Codable, Sendable {
     let machTimebaseNumerator: UInt32
     let machTimebaseDenominator: UInt32
     let startupSink: FrameGapStartupSelection?
+    let writerLifetime: FrameGapWriterLifetime
 
-    init(videoPath: String, width: Int, height: Int, fps: Int, queueDepth: Int, startupSink: FrameGapStartupSelection? = nil) {
+    init(videoPath: String, width: Int, height: Int, fps: Int, queueDepth: Int, startupSink: FrameGapStartupSelection? = nil) throws {
+        writerLifetime = try FrameGapWriterLifetime.configured.get()
         self.videoPath = videoPath; self.width = width; self.height = height
         self.fps = fps; self.queueDepth = queueDepth
         self.startupSink = startupSink

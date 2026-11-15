@@ -40,7 +40,7 @@ final class ScreenRecorder {
         partialURL = url; width = target.configuration.width; height = target.configuration.height
         #if FRAME_GAP_PROBE
         let selection = try FrameGapStartupSelection.select(target: target, options: options, url: url)
-        probeContext = FrameGapContext(videoPath: url.path, width: width, height: height,
+        probeContext = try FrameGapContext(videoPath: url.path, width: width, height: height,
                                       fps: options.fps, queueDepth: target.configuration.queueDepth, startupSink: selection)
         #endif
         target.configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(options.fps))
@@ -189,10 +189,14 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
     private let probeTrace = FrameGapTrace()
     private let probeID = UUID().uuidString
     private let probeOwnedBuffers = FrameGapOwnedBuffer.enabled
+    private let probeWriterLifetime: FrameGapWriterLifetime
     #endif
 
     init(url: URL, width: Int, height: Int, options: RecordingOptions, onFailure: @escaping @Sendable (AgentFailure) -> Void,
          onLimit: @escaping @Sendable (String) -> Void) throws {
+        #if FRAME_GAP_PROBE
+        probeWriterLifetime = try FrameGapWriterLifetime.configured.get()
+        #endif
         let fps = options.fps
         writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         input = AVAssetWriterInput(mediaType: .video, outputSettings: [
@@ -210,7 +214,7 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
         self.fps = fps; self.url = url; self.options = options; self.onFailure = onFailure; self.onLimit = onLimit
         super.init()
         #if FRAME_GAP_PROBE
-        FrameGapHistory.shared.record("writer.init", writerID: probeID)
+        FrameGapHistory.shared.record("writer.init", writerID: probeID, writerLifetime: probeWriterLifetime)
         #endif
     }
 
@@ -229,8 +233,12 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
             guard self.writer.startWriting() else { self.fail(self.writerFailure()); return }
             #if FRAME_GAP_PROBE
             FrameGapHistory.shared.record("writer.startupTimeout.scheduled", writerID: self.probeID, deadline: FrameGapTrace.now() + 12)
+            let timeoutOwner = self.probeWriterLifetime == .retain ? self : nil
+            #else
+            let timeoutOwner: CaptureVideoWriter? = self
             #endif
-            self.queue.asyncAfter(deadline: .now() + 12) {
+            self.queue.asyncAfter(deadline: .now() + 12) { [timeoutOwner, weak self] in
+                guard let self = timeoutOwner ?? self else { return }
                 #if FRAME_GAP_PROBE
                 FrameGapHistory.shared.record("writer.startupTimeout.fired", writerID: self.probeID, value: self.startup != nil)
                 #endif
@@ -407,8 +415,12 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
         }
         #if FRAME_GAP_PROBE
         FrameGapHistory.shared.record("writer.finishTimeout.scheduled", writerID: probeID, deadline: FrameGapTrace.now() + 20)
+        let timeoutOwner = probeWriterLifetime == .retain ? self : nil
+        #else
+        let timeoutOwner: CaptureVideoWriter? = self
         #endif
-        queue.asyncAfter(deadline: .now() + 20) {
+        queue.asyncAfter(deadline: .now() + 20) { [timeoutOwner, weak self] in
+            guard let self = timeoutOwner ?? self else { return }
             #if FRAME_GAP_PROBE
             FrameGapHistory.shared.record("writer.finishTimeout.fired", writerID: self.probeID, value: self.completion != nil)
             #endif
