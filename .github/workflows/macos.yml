@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - run: sudo xcode-select -s /Applications/Xcode_26.3.app
       - name: Compile and run the native login-item diagnostic
-        run: bash scripts/e2e-login-probe.sh
+        run: bash scripts/ci-maintenance-tcc-probe.sh
 
   build-and-test:
     if: ${{ !inputs.login_probe && !inputs.agent_capture_only }}
