@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compare startup sinks or first-noise timing after the original native prefix."""
 import argparse
+from collections import Counter
 from contextlib import contextmanager
 import importlib.util
 import json
@@ -30,7 +31,13 @@ COMPARISONS = {
     "sinks": tuple((arm, None) for arm in ORDER),
     "noise-timing": (("metadata", "before"), ("metadata", "after"),
                      ("metadata", "after"), ("metadata", "before")),
+    "late-noise": (("metadata", "before"), ("metadata", "late"),
+                   ("metadata", "late"), ("metadata", "before")),
 }
+LATE_NOISE_DELAY_SECONDS = 1.0
+PRE_NOISE_MINIMUM_COMPLETE_CALLBACKS = 8
+PRE_NOISE_MINIMUM_SPAN_SECONDS = 0.75
+PRE_NOISE_MAXIMUM_INTERVAL_SECONDS = 0.2
 BYTE_STEP = "byte_limit_finalizes_readable_video"
 PREFIX_STEPS = (
     "installed_release_and_desktop_prerequisites", "agent_access_and_screen_recording_permission",
@@ -79,11 +86,24 @@ class StartupRun(NATIVE.Run):
         evidence.run = self
         self.request_id = os.environ["SHAREX_FRAME_GAP_STARTUP_REQUEST_ID"]
         self.verified = []
+        self.metadata_polling = None
 
     def connect(self):
         client = StartupMCP(self)
         self.clients.append(client)
         return client
+
+    def cli(self, operation, arguments=None, request_id=None, error=None):
+        polling = self.metadata_polling
+        if polling and operation == "recording.status" and (arguments or {}).get("sessionID") == polling["sessionID"]:
+            boundary = time.monotonic()
+            deadline = polling["noiseDeadlineUptime"]
+            self.evidence.emit("metadata_poll_boundary", requestID=self.request_id, sessionID=polling["sessionID"],
+                               pollBoundaryUptime=boundary, noiseDeadlineUptime=deadline)
+            if deadline is not None and boundary >= deadline:
+                polling["noiseDeadlineUptime"] = None
+                self.control("noise", enabled=True)
+        return super().cli(operation, arguments, request_id, error)
 
     def validate_media(self, session, mode, kind, *args, **kwargs):
         result = super().validate_media(session, mode, kind, *args, **kwargs)
@@ -110,13 +130,19 @@ class StartupRun(NATIVE.Run):
             self.control("noise", enabled=True)
         started = self.clients[-1].call("recording.start", {**self.selection("window"), "fps": 15,
                                       "maxDurationSeconds": 30, "maxBytes": 1048576})
+        acknowledged = time.monotonic()
         NATIVE.require(started["state"] == "recording" and started["acceptedFrames"] == 0,
                        "Metadata startup fabricated accepted encoder frames or did not start.")
         self.evidence.emit("metadata_start_acknowledged", requestID=self.request_id, sessionID=started["id"],
-                           noiseTiming=noise_timing)
+                           noiseTiming=noise_timing, acknowledgementUptime=acknowledged)
         if noise_timing == "after":
             self.control("noise", enabled=True)
-        completed = self.terminal(started["id"], timeout=40)
+        deadline = acknowledged + LATE_NOISE_DELAY_SECONDS if noise_timing == "late" else None
+        self.metadata_polling = {"sessionID": started["id"], "noiseDeadlineUptime": deadline}
+        try:
+            completed = self.terminal(started["id"], timeout=40)
+        finally:
+            self.metadata_polling = None
         step.update(session=completed, diagnosticOnly=True, byteLimitE2EPassed=False)
         NATIVE.require(completed["state"] == "failed" and completed["stopReason"] == "diagnostic_metadata_complete"
                        and completed["acceptedFrames"] == 0, "Metadata capture did not end with its explicit diagnostic outcome.")
@@ -181,26 +207,71 @@ def analyze_noise_timing(timing, request_id, trace, complete, draws, operations,
     requested = requests[0]["monotonicSeconds"]
     controlled = controls[0]["monotonicSeconds"]
     started = starts[0]["monotonicSeconds"]
-    acknowledged = acknowledgements[0]["monotonicSeconds"]
+    acknowledged = acknowledgements[0].get("acknowledgementUptime", acknowledgements[0]["monotonicSeconds"])
     if not requested <= noise <= noisy[0]["exitUptime"] <= controlled:
         errors.append("The first noisy draw did not occur inside the first noise control command.")
     if not started <= complete[0]["entryUptime"] <= acknowledged:
         errors.append("The first complete callback did not occur between target start and acknowledgement.")
     if timing == "before" and not controlled <= started:
         errors.append("Before-start noise control did not finish before the target request.")
-    if timing == "after" and not acknowledged <= requested:
+    if timing in ("after", "late") and not acknowledged <= requested:
         errors.append("After-ack noise control started before the first complete acknowledgement.")
-    if not status_launches or status_launches[0]["monotonicSeconds"] < max(acknowledged, controlled):
+    first_status_bound = acknowledged if timing == "late" else max(acknowledged, controlled)
+    if not status_launches or status_launches[0]["monotonicSeconds"] < first_status_bound:
         errors.append("The first target status launch is absent or precedes acknowledgement and noise control.")
+    boundaries = [event for event in events if event["event"] == "metadata_poll_boundary"
+                  and event.get("requestID") == request_id]
+    deadline = acknowledged + LATE_NOISE_DELAY_SECONDS if timing == "late" else None
+    trigger = None
+    if timing == "late":
+        eligible = [event for event in boundaries if event["pollBoundaryUptime"] >= deadline]
+        trigger = eligible[0]["pollBoundaryUptime"] if eligible else None
+        scheduled = [event for event in boundaries if event.get("noiseDeadlineUptime") is not None]
+        if (not scheduled or not eligible or scheduled[-1] != eligible[0]
+                or any(abs(event["noiseDeadlineUptime"] - deadline) > 1e-6 for event in scheduled)
+                or not deadline <= trigger <= requested):
+            errors.append("Late noise did not start at the first polling boundary at or after its fixed deadline.")
+        if not status_launches or not acknowledged <= status_launches[0]["monotonicSeconds"] < deadline:
+            errors.append("Late noise has no target status launch before its deadline.")
     if complete[0]["pts"] >= noise + 1 or complete[-1]["pts"] < noise + 1:
         errors.append("The metadata capture does not cover the first second after the first noisy draw.")
 
     def overlaps(row):
         return row["end"] > noise and row["start"] < noise + 1
 
-    pts = [row for row in GAP.intervals([row["pts"] for row in complete]) if overlaps(row)]
     callbacks = trace["callbacks"]
+    complete_pts = GAP.intervals([row["pts"] for row in complete])
+    all_source = [row for row in callbacks if row.get("pts") is not None]
+    all_pts = GAP.intervals([row["pts"] for row in all_source])
+    pts = [row for row in complete_pts if overlaps(row)]
+    window_all_pts = [row for row in all_pts if overlaps(row)]
+    pre_complete = [row for row in complete if row["exitUptime"] <= noise and row["pts"] < noise]
+    pre_all_source = [row for row in all_source if row["exitUptime"] <= noise and row["pts"] < noise]
+    pre_callbacks = [row for row in callbacks if row["exitUptime"] <= noise]
+    pre_complete_intervals = GAP.intervals([row["pts"] for row in pre_complete])
+    pre_all_intervals = GAP.intervals([row["pts"] for row in pre_all_source])
+    pre_span = pre_complete[-1]["pts"] - pre_complete[0]["pts"] if pre_complete else 0
+    last_pts_age = noise - pre_complete[-1]["pts"] if pre_complete else None
+    last_exit_age = noise - pre_complete[-1]["exitUptime"] if pre_complete else None
+    pre_maximum = GAP.maximum(pre_complete_intervals)
+    qualified = (len(pre_complete) >= PRE_NOISE_MINIMUM_COMPLETE_CALLBACKS
+                 and pre_span >= PRE_NOISE_MINIMUM_SPAN_SECONDS and pre_maximum is not None
+                 and 0 < pre_maximum["seconds"] <= PRE_NOISE_MAXIMUM_INTERVAL_SECONDS
+                 and last_pts_age <= PRE_NOISE_MAXIMUM_INTERVAL_SECONDS
+                 and all(row["seconds"] > 0 for row in pre_complete_intervals))
+    if timing == "late" and not qualified:
+        errors.append("Late noise lacks the required regular pre-noise complete capture cadence.")
+
+    def first_long_interval(intervals):
+        for index, interval in enumerate(intervals):
+            if interval["seconds"] > GAP.QUALITY_GAP_SECONDS:
+                return {**interval, "index": index, "startRelativeToNoiseSeconds": interval["start"] - noise,
+                        "endRelativeToNoiseSeconds": interval["end"] - noise,
+                        "position": "before" if interval["end"] <= noise else "after" if interval["start"] >= noise else "crossing"}
+        return None
+
     callback_intervals = [row for row in GAP.intervals([row["entryUptime"] for row in callbacks]) if overlaps(row)]
+    complete_callback_intervals = [row for row in GAP.intervals([row["entryUptime"] for row in complete]) if overlaps(row)]
     scale = trace["context"]["machTimebaseNumerator"] / trace["context"]["machTimebaseDenominator"] / 1e9
     display = [row for row in GAP.intervals([row["displayTime"] * scale for row in complete
                                             if row.get("displayTime") is not None]) if overlaps(row)]
@@ -220,16 +291,35 @@ def analyze_noise_timing(timing, request_id, trace, complete, draws, operations,
         errors.append("The post-noise window has no fixture operation spans or draws.")
     return {"noiseTiming": timing, "firstNoiseUptime": noise, "firstCapturePTS": complete[0]["pts"],
             "targetStartUptime": started, "metadataAcknowledgementUptime": acknowledged,
+            "noiseDeadlineUptime": deadline, "noiseTriggerPollBoundaryUptime": trigger,
+            "deadlineToNoiseCommandSeconds": requested - deadline if deadline is not None else None,
             "noiseCommandRequestedUptime": requested, "noiseCommandCompletedUptime": controlled,
             "noiseControlSeconds": controlled - requested,
             "acknowledgementToNoiseCommandSeconds": requested - acknowledged,
             "acknowledgementToFirstStatusLaunchSeconds": status_launches[0]["monotonicSeconds"] - acknowledged if status_launches else None,
             "noiseControlToFirstStatusLaunchSeconds": status_launches[0]["monotonicSeconds"] - controlled if status_launches else None,
+            "statusPollBoundaries": boundaries,
+            "preNoiseCapture": {"qualified": qualified, "end": noise, "completeCallbacks": len(pre_complete),
+                "allSourceCallbacks": len(pre_all_source), "completeSourceSpanSeconds": pre_span,
+                "lastCompletePTSAgeSeconds": last_pts_age, "lastCompleteCallbackExitAgeSeconds": last_exit_age,
+                "allCallbacks": len(pre_callbacks), "callbackStatusCounts": dict(Counter(str(row.get("status")) for row in pre_callbacks)),
+                "completeSourcePTSIntervals": pre_complete_intervals, "allSourcePTSIntervals": pre_all_intervals,
+                "maximumCompleteSourcePTSInterval": pre_maximum,
+                "maximumAllSourcePTSInterval": GAP.maximum(pre_all_intervals)},
+            "completeSourceIntervalsCrossingNoise": [row for row in complete_pts if row["start"] < noise < row["end"]],
+            "allSourceIntervalsCrossingNoise": [row for row in all_pts if row["start"] < noise < row["end"]],
+            "sourceLongIntervalThresholdSeconds": GAP.QUALITY_GAP_SECONDS,
+            "firstLongCompleteSourceInterval": first_long_interval(complete_pts),
+            "firstLongAllSourceInterval": first_long_interval(all_pts),
             "maximumTargetFixtureOperationSpan": GAP.maximum(target_spans),
             "postNoiseFirstSecond": {"start": noise, "end": noise + 1, "ptsIntervals": pts,
+                "allSourcePTSIntervals": window_all_pts,
+                "maximumAllSourcePTSInterval": GAP.maximum(window_all_pts),
                 "displayTimeIntervals": display, "callbackEntryIntervals": callback_intervals,
+                "completeCallbackEntryIntervals": complete_callback_intervals,
                 "maximumPTSInterval": GAP.maximum(pts), "maximumDisplayTimeInterval": GAP.maximum(display),
                 "maximumCallbackEntryInterval": GAP.maximum(callback_intervals),
+                "maximumCompleteCallbackEntryInterval": GAP.maximum(complete_callback_intervals),
                 "fixtureOperationSpans": window_spans, "maximumFixtureOperationSpan": GAP.maximum(window_spans),
                 "fixtureDraws": window_draws, "maximumFixtureDrawEntryInterval": GAP.maximum(draw_intervals),
                 "maximumFixtureDrawSeconds": max((row["exitUptime"] - row["entryUptime"] for row in window_draws), default=None),
@@ -296,7 +386,7 @@ def analyze_arm(directory, arm, request_id, noise_timing=None):
             errors.append("Control did not retain its actual target movie decode result.")
     first = complete[0]["pts"] if complete else None
     noisy = [row for row in draws if row.get("noisy") and first is not None
-             and (noise_timing == "after" or row["entryUptime"] <= first)]
+             and (noise_timing in ("after", "late") or row["entryUptime"] <= first)]
     verifier_exits = [event["monotonicSeconds"] for event in events if event["event"] == "command_finished"
                      and any(start["event"] == "command_started" and start.get("log") == event.get("log")
                              and Path(start["command"][0]).name == "verify-agent-media" for start in events)
@@ -351,6 +441,14 @@ def run_comparison(args):
                "scope": "Each arm starts a fresh app and fixture, runs the original native prefix and inline decodes, then stops at the first noisy capture. No maintenance, uninstall, or app replacement runs between arms. Metadata is not decoded-video E2E coverage."}
     if comparison == "noise-timing":
         summary["acknowledgementCaveat"] = "Every target uses metadata and acknowledges its first complete callback. The after arm waits for the noise control response before the first CLI status launch. Report this added launch delay; the inherited 100 ms polling delay and three-second observation remain unchanged."
+    if comparison == "late-noise":
+        summary["acknowledgementCaveat"] = "Every target uses metadata and starts native CLI polling immediately after acknowledgement. Late noise runs on the first polling boundary at or after acknowledgement plus one second. The noise control delays that boundary's status launch. Native polling still waits 100 ms after each response; the three-second observation is fixed."
+        summary["lateNoiseQualification"] = {"delayAfterAcknowledgementSeconds": LATE_NOISE_DELAY_SECONDS,
+            "minimumCompleteCallbacks": PRE_NOISE_MINIMUM_COMPLETE_CALLBACKS,
+            "minimumCompleteSourceSpanSeconds": PRE_NOISE_MINIMUM_SPAN_SECONDS,
+            "maximumCompleteSourceIntervalSeconds": PRE_NOISE_MAXIMUM_INTERVAL_SECONDS,
+            "maximumLastCompletePTSAgeSeconds": PRE_NOISE_MAXIMUM_INTERVAL_SECONDS,
+            "requiredPostNoiseSeconds": 1.0, "bound": "Actual first noisy draw entry uptime. Qualification never delays noise."}
     GAP.save(args.out / "comparison.json", summary)
     for index, (arm, noise_timing) in enumerate(arms, 1):
         directory = args.out / f"arm-{index:02d}-{noise_timing or arm}"
@@ -398,15 +496,15 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--arm", choices=("control", "metadata"))
     parser.add_argument("--comparison", choices=COMPARISONS, default="sinks")
-    parser.add_argument("--noise-timing", choices=("before", "after"))
+    parser.add_argument("--noise-timing", choices=("before", "after", "late"))
     parser.add_argument("--setup-result", type=Path)
     parser.add_argument("--commit")
     args = parser.parse_args()
     args.out = args.out.resolve()
-    if args.noise_timing and (args.comparison != "noise-timing" or args.arm != "metadata"):
-        parser.error("--noise-timing requires --comparison noise-timing --arm metadata.")
-    if args.arm and args.comparison == "noise-timing" and (args.arm != "metadata" or not args.noise_timing):
-        parser.error("Each noise-timing arm requires metadata and an explicit --noise-timing.")
+    if args.noise_timing and (args.arm, args.noise_timing) not in COMPARISONS[args.comparison]:
+        parser.error("--noise-timing requires a metadata arm in the selected comparison.")
+    if args.arm and args.comparison != "sinks" and not args.noise_timing:
+        parser.error("Each noise comparison arm requires an explicit --noise-timing.")
     if not args.arm and (not args.setup_result or not args.commit):
         parser.error("Comparison requires --setup-result and --commit.")
     return run_arm(args) if args.arm else run_comparison(args)

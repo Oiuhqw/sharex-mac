@@ -129,7 +129,8 @@ class PrefixTests(unittest.TestCase):
                 run.metadata_capture(step)
                 start = mock.call.start("recording.start", {"mode": "window", "target": "fixture-token", "fps": 15,
                                                           "maxDurationSeconds": 30, "maxBytes": 1048576})
-                ack = mock.call.emit("metadata_start_acknowledged", requestID=REQUEST, sessionID=REQUEST, noiseTiming=timing)
+                ack = mock.call.emit("metadata_start_acknowledged", requestID=REQUEST, sessionID=REQUEST,
+                                     noiseTiming=timing, acknowledgementUptime=mock.ANY)
                 noise = mock.call.control("noise", enabled=True)
                 expected = [noise, start, ack] if timing == "before" else [start, ack, noise]
                 self.assertEqual(calls.mock_calls, expected + [mock.call.terminal(REQUEST, timeout=40),
@@ -142,11 +143,120 @@ class PrefixTests(unittest.TestCase):
         base = ["startup", "--app", "/app", "--build-settings", "/settings", "--out", "/out"]
         for extra in (["--arm", "control", "--comparison", "noise-timing", "--noise-timing", "after"],
                       ["--arm", "metadata", "--comparison", "noise-timing"],
+                      ["--arm", "metadata", "--comparison", "late-noise"],
+                      ["--arm", "metadata", "--comparison", "late-noise", "--noise-timing", "after"],
+                      ["--arm", "metadata", "--comparison", "noise-timing", "--noise-timing", "late"],
                       ["--arm", "metadata", "--noise-timing", "after"]):
             with self.subTest(arguments=extra), mock.patch.object(STARTUP.sys, "argv", base + extra), \
                  mock.patch.object(STARTUP.sys, "stderr"), self.assertRaises(SystemExit) as raised:
                 STARTUP.main()
             self.assertEqual(raised.exception.code, 2)
+
+
+class LateNoisePollingTests(unittest.TestCase):
+    def capture(self, timing, finish_after=3.0, control_error=False):
+        clock = [10.0]
+        sleeps, commands, controls = [], [], []
+        completed = {"id": REQUEST, "state": "failed", "stopReason": "diagnostic_metadata_complete",
+                     "acceptedFrames": 0, "artifacts": [{"state": "failed"}]}
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock[0] += seconds
+
+        def command(arguments, **kwargs):
+            started = clock[0]
+            clock[0] += 0.03
+            commands.append({"start": started, "end": clock[0], "arguments": arguments})
+            session = completed if clock[0] >= acknowledged[0] + finish_after else {"state": "recording"}
+            return {"exitCode": 0, "stdout": json.dumps({"id": arguments[-1], "version": 1,
+                                                         "ok": True, "result": session})}
+
+        def control(action, **values):
+            controls.append({"start": clock[0], "enabled": values["enabled"]})
+            clock[0] += 0.04
+            if control_error and values["enabled"]:
+                raise STARTUP.NATIVE.Failure("fixture control failed")
+
+        acknowledged = []
+
+        def start(operation, arguments):
+            acknowledged.append(clock[0])
+            return {"id": REQUEST, "state": "recording", "acceptedFrames": 0}
+
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.dict(STARTUP.os.environ, {"SHAREX_FRAME_GAP_STARTUP_REQUEST_ID": REQUEST,
+                                                  "SHAREX_FRAME_GAP_WORKLOAD": "1"}), \
+             mock.patch.object(STARTUP.time, "monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(STARTUP.time, "sleep", side_effect=sleep):
+            root = Path(temporary)
+            evidence = STARTUP.StartupEvidence(root)
+            run = STARTUP.StartupRun(SimpleNamespace(noise_timing=timing), evidence)
+            run.binary = "ShareX"
+            run.clients = [SimpleNamespace(call=start)]
+            run.command = command
+            run.control = control
+            run.selection = lambda mode: {"mode": mode, "target": "fixture-token"}
+            run.validate_manifest = mock.Mock()
+            step = {}
+            try:
+                if control_error:
+                    with self.assertRaisesRegex(STARTUP.NATIVE.Failure, "fixture control failed"):
+                        run.metadata_capture(step)
+                else:
+                    run.metadata_capture(step)
+                    self.assertEqual(step["session"], completed)
+                    self.assertFalse(step["byteLimitE2EPassed"])
+                self.assertIsNone(run.metadata_polling)
+            finally:
+                evidence.events.close()
+            events = [json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()]
+        return acknowledged[0], commands, controls, sleeps, events
+
+    def test_both_arms_start_polling_immediately_and_keep_native_response_delay(self):
+        for timing in ("before", "late"):
+            with self.subTest(timing=timing):
+                ack, commands, controls, sleeps, events = self.capture(timing)
+                self.assertEqual(commands[0]["start"], ack)
+                self.assertTrue(sleeps)
+                self.assertEqual(set(sleeps), {0.1})
+                noise = [row for row in controls if row["enabled"]]
+                self.assertEqual(len(noise), 1)
+                boundaries = [row for row in events if row["event"] == "metadata_poll_boundary"]
+                self.assertEqual(len(boundaries), len(commands))
+                for previous, boundary in zip(commands, boundaries[1:]):
+                    self.assertAlmostEqual(boundary["pollBoundaryUptime"] - previous["end"], 0.1)
+                for boundary, launched in zip(boundaries, commands):
+                    noise_delay = 0.04 if boundary["pollBoundaryUptime"] == noise[0]["start"] else 0
+                    self.assertAlmostEqual(launched["start"] - boundary["pollBoundaryUptime"], noise_delay)
+                if timing == "late":
+                    eligible = next(row for row in boundaries if row["pollBoundaryUptime"] >= ack + 1)
+                    self.assertEqual(noise[0]["start"], eligible["pollBoundaryUptime"])
+                    self.assertAlmostEqual(noise[0]["start"] - ack, 1.04)
+                    self.assertEqual(eligible["noiseDeadlineUptime"], ack + 1)
+                else:
+                    self.assertLess(noise[0]["start"], ack)
+
+    def test_early_terminal_does_not_extend_capture_to_reach_noise(self):
+        ack, commands, controls, sleeps, events = self.capture("late", finish_after=0.2)
+        self.assertFalse(any(row["enabled"] for row in controls))
+        self.assertLess(commands[-1]["end"], ack + 1)
+
+    def test_noise_control_failure_propagates_without_another_status_or_retry(self):
+        ack, commands, controls, sleeps, events = self.capture("late", control_error=True)
+        self.assertEqual(len(controls), 1)
+        self.assertLess(commands[-1]["end"], controls[0]["start"])
+
+    def test_due_hook_does_not_trigger_for_another_session_or_operation(self):
+        run = object.__new__(STARTUP.StartupRun)
+        run.metadata_polling = {"sessionID": REQUEST, "noiseDeadlineUptime": 1}
+        run.control = mock.Mock()
+        with mock.patch.object(STARTUP.NATIVE.Run, "cli", return_value={}) as cli:
+            run.cli("recording.status", {"sessionID": "another-session"})
+            run.cli("recording.checkpoint", {"sessionID": REQUEST})
+        self.assertEqual(cli.call_count, 2)
+        run.control.assert_not_called()
+        self.assertEqual(run.metadata_polling["noiseDeadlineUptime"], 1)
 
 
 class ComparisonTests(unittest.TestCase):
@@ -195,14 +305,14 @@ class ComparisonTests(unittest.TestCase):
         startup = workflow.split("- name: Compare first noisy startup after original native prefixes", 1)[1].split("- name:", 1)[0]
         self.assertIn("steps.setup-ui.outcome == 'success'", startup)
         self.assertLess(startup.index("agentCaptureEnabled -bool true"), startup.index("python3 scripts/frame-gap-startup.py"))
-        self.assertIn("--comparison noise-timing", startup)
+        self.assertIn("--comparison late-noise", startup)
         dispatch = workflow.split("  workflow_dispatch:", 1)[1].split("permissions:", 1)[0]
         self.assertEqual(sum(line.startswith("      ") and not line.startswith("       ")
                              and line.endswith(":") for line in dispatch.splitlines()), 10)
         maintenance = workflow.split("- name: Validate manual recording, permission reset, and real uninstall", 1)[1].split("- name:", 1)[0]
         self.assertIn("!inputs.frame_gap_replay", maintenance)
 
-    def test_noise_comparison_passes_all_four_actual_arguments_and_retains_a_failed_arm(self):
+    def check_noise_comparison(self, comparison, timings):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             app = root / "ShareX.app"
@@ -212,7 +322,7 @@ class ComparisonTests(unittest.TestCase):
             setup = root / "setup.json"
             STARTUP.GAP.save(setup, {"status": "passed"})
             args = SimpleNamespace(out=root / "comparison", app=app, build_settings=root / "settings.json",
-                                   setup_result=setup, commit="diagnostic-revision", comparison="noise-timing")
+                                   setup_result=setup, commit="diagnostic-revision", comparison=comparison)
             calls = []
 
             def harness(arguments, log, environment, timeout):
@@ -234,12 +344,12 @@ class ComparisonTests(unittest.TestCase):
                  mock.patch.object(STARTUP.WORKLOAD, "bounded_harness", side_effect=harness), \
                  mock.patch.object(STARTUP, "analyze_arm", side_effect=analysis), mock.patch("builtins.print"):
                 self.assertEqual(STARTUP.run_comparison(args), 1)
-            self.assertEqual([parsed.noise_timing for parsed, _ in calls], ["before", "after", "after", "before"])
+            self.assertEqual([parsed.noise_timing for parsed, _ in calls], timings)
             self.assertEqual(len({env["SHAREX_FRAME_GAP_STARTUP_REQUEST_ID"] for _, env in calls}), 4)
             self.assertEqual(len({parsed.out for parsed, _ in calls}), 4)
             for parsed, environment in calls:
                 self.assertEqual(parsed.arm, "metadata")
-                self.assertEqual(parsed.comparison, "noise-timing")
+                self.assertEqual(parsed.comparison, comparison)
                 self.assertEqual(parsed.app, app)
                 self.assertEqual(parsed.build_settings, args.build_settings)
                 self.assertIsNone(parsed.display_name)
@@ -249,12 +359,23 @@ class ComparisonTests(unittest.TestCase):
                 for key in ("SHAREX_FRAME_GAP_OWNED_BUFFERS", "SHAREX_FRAME_GAP_NV12", "SHAREX_FRAME_GAP_DEEPER_QUEUE"):
                     self.assertEqual(environment[key], "0")
             summary = STARTUP.GAP.read_json(args.out / "comparison.json")
-            self.assertEqual(summary["order"], ["before", "after", "after", "before"])
+            self.assertEqual(summary["order"], timings)
             self.assertEqual(summary["incompleteArms"], 1)
             self.assertEqual(summary["status"], "diagnostic_incomplete")
             self.assertEqual(summary["runs"][0]["result"]["status"], "failed")
             self.assertFalse(summary["productionE2EPassed"])
-            self.assertIn("noise control response", summary["acknowledgementCaveat"])
+            if comparison == "late-noise":
+                self.assertEqual(summary["lateNoiseQualification"]["minimumCompleteCallbacks"], 8)
+                self.assertEqual(summary["lateNoiseQualification"]["maximumCompleteSourceIntervalSeconds"], 0.2)
+                self.assertIn("polling immediately", summary["acknowledgementCaveat"])
+            else:
+                self.assertIn("noise control response", summary["acknowledgementCaveat"])
+
+    def test_noise_comparison_passes_all_four_actual_arguments_and_retains_a_failed_arm(self):
+        self.check_noise_comparison("noise-timing", ["before", "after", "after", "before"])
+
+    def test_late_noise_comparison_passes_all_four_actual_arguments_and_retains_a_failed_arm(self):
+        self.check_noise_comparison("late-noise", ["before", "late", "late", "before"])
 
 
 class AnalysisTests(unittest.TestCase):
@@ -417,6 +538,164 @@ class AnalysisTests(unittest.TestCase):
                 (root / "native/events.jsonl").write_text("\n".join(json.dumps(row) for row in events))
                 errors = STARTUP.analyze_arm(root, "metadata", REQUEST, "after")["errors"]
                 self.assertTrue(any(expected in error for error in errors), errors)
+
+    def late_evidence(self, root):
+        trace, events = self.timing_evidence(root, "late")
+        noise = 11.08
+        STARTUP.GAP.save(root / "native/fixture/draw-trace.json", [
+            {"entryUptime": value, "exitUptime": value + 0.001, "noisy": value >= noise}
+            for value in (9.7, 10.1, 10.5, 11.0, noise, 11.2, 11.9, 12.2)])
+        STARTUP.GAP.save(root / "native/fixture/operation-trace.json", [
+            {"name": "stateWrite", "phase": "begin", "uptime": noise},
+            {"name": "stateWrite", "phase": "end", "uptime": noise + 0.01}])
+        events[3]["monotonicSeconds"] = 10.004
+        events[-2]["monotonicSeconds"] = 11.044
+        events[-1]["monotonicSeconds"] = 11.1
+        events += [{"event": "metadata_poll_boundary", "requestID": REQUEST,
+                    "pollBoundaryUptime": value, "noiseDeadlineUptime": 11.003 if value <= 11.043 else None}
+                   for value in (10.003, 10.133, 10.263, 10.393, 10.523, 10.653, 10.783, 10.913, 11.043, 11.23)]
+        sample = trace["callbacks"][0]
+        trace["callbacks"] = [
+            {**sample, "pts": value, "displayTime": int(value * 1e9), "entryUptime": value + 0.001,
+             "exitUptime": value + 0.002, "status": status}
+            for value, status in sorted([(10 + index / 8, 0) for index in range(9)] +
+                                        [(10.0625 + index / 8, 1) for index in range(8)] +
+                                        [(11.3, 1), (11.65, 0), (11.8, 0), (12.1, 0), (12.9, 0)])]
+        STARTUP.GAP.save(root / "traces/target-trace.json", trace)
+        (root / "native/events.jsonl").write_text("\n".join(json.dumps(row) for row in events))
+        return trace, events
+
+    def test_late_noise_qualifies_observed_cadence_and_keeps_full_crossing_interval(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.late_evidence(root)
+            result = STARTUP.analyze_arm(root, "metadata", REQUEST, "late")
+            self.assertEqual(result["errors"], [])
+            self.assertAlmostEqual(result["noiseDeadlineUptime"], 11.003)
+            self.assertAlmostEqual(result["noiseTriggerPollBoundaryUptime"], 11.043)
+            self.assertAlmostEqual(result["deadlineToNoiseCommandSeconds"], 0.041)
+            pre = result["preNoiseCapture"]
+            self.assertTrue(pre["qualified"])
+            self.assertEqual(pre["end"], 11.08)
+            self.assertEqual(pre["completeCallbacks"], 9)
+            self.assertEqual(pre["allSourceCallbacks"], 17)
+            self.assertEqual(pre["completeSourceSpanSeconds"], 1)
+            self.assertEqual(pre["maximumCompleteSourcePTSInterval"]["seconds"], 0.125)
+            self.assertEqual(pre["maximumAllSourcePTSInterval"]["seconds"], 0.0625)
+            self.assertAlmostEqual(pre["lastCompletePTSAgeSeconds"], 0.08)
+            self.assertAlmostEqual(pre["lastCompleteCallbackExitAgeSeconds"], 0.078)
+            self.assertEqual(pre["callbackStatusCounts"], {"0": 9, "1": 8})
+            crossing = result["completeSourceIntervalsCrossingNoise"]
+            self.assertEqual(len(crossing), 1)
+            self.assertAlmostEqual(crossing[0]["seconds"], 0.65)
+            self.assertAlmostEqual(result["allSourceIntervalsCrossingNoise"][0]["seconds"], 0.3)
+            first = result["firstLongCompleteSourceInterval"]
+            self.assertEqual(first["position"], "crossing")
+            self.assertAlmostEqual(first["startRelativeToNoiseSeconds"], -0.08)
+            self.assertAlmostEqual(first["endRelativeToNoiseSeconds"], 0.57)
+            self.assertEqual(result["firstLongAllSourceInterval"]["position"], "after")
+            self.assertFalse(result["result"]["byteLimitE2EPassed"])
+
+    def test_late_noise_missing_cadence_timing_or_coverage_is_incomplete_with_raw_data_retained(self):
+        def fewer_complete(trace, events):
+            trace["callbacks"] = [row for row in trace["callbacks"] if row["pts"] not in (10.875, 11.0)]
+
+        def short_span(trace, events):
+            pre = [row for row in trace["callbacks"] if row["status"] == 0 and row["pts"] <= 11]
+            for index, row in enumerate(pre):
+                value = 10 + index * 0.09
+                row.update(pts=value, displayTime=int(value * 1e9), entryUptime=value + 0.001, exitUptime=value + 0.002)
+            trace["callbacks"].sort(key=lambda row: row["entryUptime"])
+
+        def long_interval(trace, events):
+            for row in trace["callbacks"]:
+                if row["pts"] == 10.5:
+                    row["status"] = 1
+
+        mutations = {
+            "fewer callbacks": ("pre-noise", fewer_complete),
+            "short span": ("pre-noise", short_span),
+            "long complete interval": ("pre-noise", long_interval),
+            "stale last complete": ("pre-noise", lambda trace, events: trace.update(
+                callbacks=[row for row in trace["callbacks"] if row["pts"] != 11])),
+            "short observation": ("first second", lambda trace, events: trace.update(
+                callbacks=[row for row in trace["callbacks"] if row["pts"] < 12.08])),
+            "no command": ("first-use command", lambda trace, events: events.remove(events[6])),
+            "duplicate command": ("first-use command", lambda trace, events: events.append(events[6])),
+            "delayed trigger": ("fixed deadline", lambda trace, events: events[8].update(pollBoundaryUptime=11.004)),
+            "early trigger": ("fixed deadline", lambda trace, events: events[6].update(monotonicSeconds=11.0)),
+            "delayed polling": ("before its deadline", lambda trace, events: events[3].update(monotonicSeconds=11.101)),
+        }
+        for name, (expected, mutate) in mutations.items():
+            with self.subTest(mutation=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                trace, events = self.late_evidence(root)
+                mutate(trace, events)
+                STARTUP.GAP.save(root / "traces/target-trace.json", trace)
+                (root / "native/events.jsonl").write_text("\n".join(json.dumps(row) for row in events))
+                result = STARTUP.analyze_arm(root, "metadata", REQUEST, "late")
+                self.assertTrue(any(expected in error for error in result["errors"]), result["errors"])
+                self.assertEqual(STARTUP.GAP.read_json(root / "traces/target-trace.json"), trace)
+                self.assertFalse(result["result"]["byteLimitE2EPassed"])
+
+    def test_late_qualification_uses_actual_draw_and_includes_complete_frames_after_request(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trace, events = self.late_evidence(root)
+            sample = trace["callbacks"][0]
+            trace["callbacks"] = [row for row in trace["callbacks"] if row["pts"] > 11.08]
+            trace["callbacks"][:0] = [
+                {**sample, "pts": value, "displayTime": int(value * 1e9),
+                 "entryUptime": value + 0.001, "exitUptime": value + 0.002}
+                for value in (10, 10.15, 10.3, 10.45, 10.6, 10.75, 10.9, 11.06)]
+            STARTUP.GAP.save(root / "traces/target-trace.json", trace)
+            result = STARTUP.analyze_arm(root, "metadata", REQUEST, "late")
+            self.assertEqual(result["errors"], [])
+            self.assertTrue(result["preNoiseCapture"]["qualified"])
+            self.assertEqual(result["preNoiseCapture"]["completeCallbacks"], 8)
+            self.assertLess(result["noiseCommandRequestedUptime"], 11.06)
+            self.assertAlmostEqual(result["preNoiseCapture"]["lastCompletePTSAgeSeconds"], 0.02)
+
+    def test_comparison_returns_incomplete_for_actual_failed_cadence_and_keeps_all_four_arms(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / "ShareX.app"
+            binary = app / "Contents/MacOS/ShareX"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"fixed diagnostic build")
+            setup = root / "setup.json"
+            STARTUP.GAP.save(setup, {"status": "passed"})
+            args = SimpleNamespace(out=root / "comparison", app=app, build_settings=root / "settings.json",
+                                   setup_result=setup, commit="diagnostic-revision", comparison="late-noise")
+            calls = []
+
+            def harness(arguments, log, environment, timeout):
+                directory = log.parent
+                (directory / "traces").rmdir()
+                timing = arguments[arguments.index("--noise-timing") + 1]
+                calls.append(timing)
+                trace, _ = self.late_evidence(directory) if timing == "late" else self.timing_evidence(directory, "before")
+                if len(calls) == 2:
+                    trace["callbacks"] = [row for row in trace["callbacks"] if row["pts"] != 11]
+                    STARTUP.GAP.save(directory / "traces/target-trace.json", trace)
+                for path in directory.rglob("*"):
+                    if path.suffix in (".json", ".jsonl"):
+                        path.write_text(path.read_text().replace(REQUEST, environment["SHAREX_FRAME_GAP_STARTUP_REQUEST_ID"]))
+                return {"exitCode": 0, "timedOut": False}
+
+            with mock.patch.object(STARTUP.sys, "platform", "darwin"), \
+                 mock.patch.dict(STARTUP.os.environ, {"GITHUB_ACTIONS": "true"}), \
+                 mock.patch.object(STARTUP.WORKLOAD, "bounded_harness", side_effect=harness), mock.patch("builtins.print"):
+                self.assertEqual(STARTUP.run_comparison(args), 1)
+            result = STARTUP.GAP.read_json(args.out / "comparison.json")
+            self.assertEqual(calls, ["before", "late", "late", "before"])
+            self.assertEqual(result["status"], "diagnostic_incomplete")
+            self.assertEqual(result["incompleteArms"], 1)
+            self.assertFalse(result["productionE2EPassed"])
+            self.assertTrue(any("pre-noise" in error for error in result["runs"][1]["errors"]))
+            self.assertFalse(result["runs"][1]["preNoiseCapture"]["qualified"])
+            self.assertTrue(result["runs"][2]["preNoiseCapture"]["qualified"])
+            self.assertTrue(all(Path(row["trace"]).exists() for row in result["runs"]))
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ Issue 10 needs a recording fix that passes the full original Mac E2E workflow. T
 
 The preceding sink comparison at `0fa8455`, Mac run `43741275374`, collected four valid arms with zero collection errors. The writer arms had first source intervals of 646.526 and 509.634 ms. The metadata arms had intervals of 580.870 and 525.995 ms. Metadata callbacks took about 0.11 and 0.14 ms while fixture draws and recorder heartbeats continued. The current capture's writer and retained sample are therefore not necessary for that gap. Earlier writers, decoder activity, source presentation, shared graphics resources, and SCK startup remain in the experiment.
 
-`frame_gap_replay=true` in `agent-capture.yml` runs `frame-gap-startup.py --comparison noise-timing`. Dispatch still has ten inputs. Setup UI runs once before the fixed sequence:
+This earlier split remains available through `frame-gap-startup.py --comparison noise-timing`. `frame_gap_replay=true` now selects the [late-noise diagnostic](late-noise-diagnostic.md). Setup UI runs once before the fixed sequence:
 
 | Arm | Target sink | First noise transition |
 | --- | --- | --- |
