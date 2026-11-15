@@ -62,6 +62,7 @@ final class ScreenRecorder {
         snapshot.operations = probeOperations.events
         snapshot.operationOverflow = probeOperations.overflow
         snapshot.context = probeContext
+        snapshot.history = FrameGapHistory.shared.snapshot()
         return snapshot
     }
     #endif
@@ -177,6 +178,15 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
         writer.add(input)
         self.fps = fps; self.url = url; self.options = options; self.onFailure = onFailure; self.onLimit = onLimit
         super.init()
+        #if FRAME_GAP_PROBE
+        FrameGapHistory.shared.record("writer.init", writerID: probeID)
+        #endif
+    }
+
+    deinit {
+        #if FRAME_GAP_PROBE
+        FrameGapHistory.shared.record("writer.deinit", writerID: probeID)
+        #endif
     }
 
     func begin(_ callback: @escaping @Sendable (Result<RecorderStatistics, Error>) -> Void) {
@@ -186,7 +196,13 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
             #endif
             self.startup = callback
             guard self.writer.startWriting() else { self.fail(self.writerFailure()); return }
+            #if FRAME_GAP_PROBE
+            FrameGapHistory.shared.record("writer.startupTimeout.scheduled", writerID: self.probeID, deadline: FrameGapTrace.now() + 12)
+            #endif
             self.queue.asyncAfter(deadline: .now() + 12) {
+                #if FRAME_GAP_PROBE
+                FrameGapHistory.shared.record("writer.startupTimeout.fired", writerID: self.probeID, value: self.startup != nil)
+                #endif
                 if self.startup != nil { self.fail(AgentFailure(.startupTimeout, "The writer did not accept a complete frame within 12 seconds.")) }
             }
         }
@@ -240,6 +256,9 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
         guard appended else { fail(writerFailure()); return }
         accepted += 1; lastSample = sampleBuffer
         if firstPTS == nil {
+            #if FRAME_GAP_PROBE
+            FrameGapHistory.shared.record("writer.firstAppend", writerID: probeID)
+            #endif
             firstPTS = pts; firstUptime = ProcessInfo.processInfo.systemUptime; startedAt = Date()
             startLimitTimer()
             let callback = startup; startup = nil; callback?(.success(snapshot()))
@@ -343,7 +362,13 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
                 else { self.complete(.failure(self.writerFailure())) }
             }
         }
+        #if FRAME_GAP_PROBE
+        FrameGapHistory.shared.record("writer.finishTimeout.scheduled", writerID: probeID, deadline: FrameGapTrace.now() + 20)
+        #endif
         queue.asyncAfter(deadline: .now() + 20) {
+            #if FRAME_GAP_PROBE
+            FrameGapHistory.shared.record("writer.finishTimeout.fired", writerID: self.probeID, value: self.completion != nil)
+            #endif
             guard self.completion != nil else { return }
             self.writer.cancelWriting()
             self.complete(.failure(AgentFailure(.recordingFailed, "Video finalization exceeded its deadline. The partial file is incomplete.")))
@@ -357,7 +382,11 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
     #if FRAME_GAP_PROBE
     func probeSnapshot() async -> FrameGapSnapshot {
         await withCheckedContinuation { continuation in
-            queue.async { continuation.resume(returning: self.probeTrace.snapshot()) }
+            queue.async {
+                var snapshot = self.probeTrace.snapshot()
+                snapshot.writerID = self.probeID
+                continuation.resume(returning: snapshot)
+            }
         }
     }
 
@@ -375,6 +404,8 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
                 snapshot.operations = operations
                 snapshot.operationOverflow = operationOverflow
                 snapshot.context = context
+                snapshot.history = FrameGapHistory.shared.snapshot()
+                snapshot.writerID = self.probeID
                 try encoder.encode(snapshot).write(
                     to: directory.appendingPathComponent(self.probeID + "-" + self.url.deletingPathExtension().lastPathComponent + "-trace.json"), options: .atomic)
             } catch {
@@ -395,6 +426,7 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
     }
     private func complete(_ result: Result<RecorderStatistics, Error>) {
         #if FRAME_GAP_PROBE
+        FrameGapHistory.shared.record("writer.complete", writerID: probeID, value: lastSample != nil)
         probeTrace.stopHeartbeat()
         #endif
         let continuation = completion; completion = nil; lastSample = nil

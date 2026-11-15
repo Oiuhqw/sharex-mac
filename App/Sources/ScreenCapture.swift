@@ -95,7 +95,11 @@ enum ScreenCapture {
                 MainActor.assumeIsolated { cached = nil; generation += 1 }
             }
         }
+        #if FRAME_GAP_PROBE
+        guard e2eFixture == nil, FrameGapHistory.permission("prefetch") else { return }
+        #else
         guard e2eFixture == nil, CGPreflightScreenCaptureAccess() else { return }
+        #endif
         let gen = generation
         Task { @MainActor in
             if let c = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true), gen == generation {

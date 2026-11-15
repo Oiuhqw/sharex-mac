@@ -3,7 +3,13 @@ import AppKit
 /// Screen Recording (TCC). There is no entitlement for it; it is a user grant.
 @MainActor
 enum Permissions {
-    static var hasScreenRecording: Bool { CGPreflightScreenCaptureAccess() }
+    static var hasScreenRecording: Bool {
+        #if FRAME_GAP_PROBE
+        return FrameGapHistory.permission("ui")
+        #else
+        return CGPreflightScreenCaptureAccess()
+        #endif
+    }
 
     /// Prompts once per install. Returns whether access is granted right now.
     @discardableResult

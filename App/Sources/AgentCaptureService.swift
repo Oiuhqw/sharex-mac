@@ -85,7 +85,13 @@ final class AgentCaptureService {
         }
     }
 
-    var accessState: AgentAccessState { AgentAccessState(enabled: enabled, screenRecordingGranted: CGPreflightScreenCaptureAccess()) }
+    var accessState: AgentAccessState {
+        #if FRAME_GAP_PROBE
+        return AgentAccessState(enabled: enabled, screenRecordingGranted: FrameGapHistory.permission("accessState"))
+        #else
+        return AgentAccessState(enabled: enabled, screenRecordingGranted: CGPreflightScreenCaptureAccess())
+        #endif
+    }
     var capabilities: AgentCapabilities {
         AgentCapabilities(access: accessState, sessionRoot: sessions.root.path, activeSessionID: active?.id, storage: storage)
     }
@@ -128,13 +134,26 @@ final class AgentCaptureService {
         shuttingDown = true
         await stopActive(reason: "app_quit")
         for pending in Array(requests.values) { _ = await pending.task.value }
+        #if FRAME_GAP_PROBE
+        FrameGapHistory.shared.flushAfterShutdown()
+        #endif
     }
 
     func execute(_ request: AgentRequest) async -> AgentResponse {
+        #if FRAME_GAP_PROBE
+        FrameGapHistory.shared.record("request.\(request.operation.rawValue).received", requestID: request.id.uuidString)
+        defer { FrameGapHistory.shared.record("request.\(request.operation.rawValue).returned", requestID: request.id.uuidString) }
+        #endif
         do {
             let command = try OperationCatalog.validate(request)
             if case .capabilities = command {
+                #if FRAME_GAP_PROBE
+                FrameGapHistory.shared.record("capabilities.refreshStorage.begin", requestID: request.id.uuidString)
+                #endif
                 await refreshStorage()
+                #if FRAME_GAP_PROBE
+                FrameGapHistory.shared.record("capabilities.refreshStorage.end", requestID: request.id.uuidString)
+                #endif
                 return .success(request.id, try JSONValue.encode(capabilities))
             }
             guard enabled else { throw AgentFailure(.disabled, "Enable agent capture in ShareX Settings before using capture tools.") }
@@ -429,7 +448,11 @@ final class AgentCaptureService {
                 #if FRAME_GAP_PROBE
                 probe?.record("monitor.preflight", "begin")
                 #endif
+                #if FRAME_GAP_PROBE
+                let granted = FrameGapHistory.permission("monitor")
+                #else
                 let granted = CGPreflightScreenCaptureAccess()
+                #endif
                 #if FRAME_GAP_PROBE
                 probe?.record("monitor.preflight", "end")
                 #endif
@@ -481,7 +504,12 @@ final class AgentCaptureService {
     private func requireCaptureAccess(origin: CaptureOrigin = .agent) throws {
         guard !shuttingDown else { throw AgentFailure(.interrupted, "ShareX is stopping capture for maintenance or quit.") }
         guard origin == .human || enabled else { throw AgentFailure(.disabled, "Agent capture is disabled.") }
-        guard CGPreflightScreenCaptureAccess() else { throw AgentFailure(.permissionDenied, "Grant ShareX Screen Recording permission in System Settings.") }
+        #if FRAME_GAP_PROBE
+        let granted = FrameGapHistory.permission("requireCaptureAccess")
+        #else
+        let granted = CGPreflightScreenCaptureAccess()
+        #endif
+        guard granted else { throw AgentFailure(.permissionDenied, "Grant ShareX Screen Recording permission in System Settings.") }
     }
     private func updateSnapshot(_ session: CaptureSession) {
         if recordingSnapshot?.id == session.id { recordingSnapshot = session }

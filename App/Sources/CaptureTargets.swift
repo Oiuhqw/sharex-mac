@@ -147,7 +147,11 @@ final class CaptureTargets {
         let probe = probeOperations
         probe?.record("target.preflight", "begin")
         #endif
+        #if FRAME_GAP_PROBE
+        let granted = FrameGapHistory.permission("target")
+        #else
         let granted = CGPreflightScreenCaptureAccess()
+        #endif
         #if FRAME_GAP_PROBE
         probe?.record("target.preflight", "end")
         #endif

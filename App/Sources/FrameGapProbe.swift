@@ -49,6 +49,66 @@ struct FrameGapSnapshot: Codable, Sendable {
     var operations: [FrameGapOperation] = []
     var operationOverflow = 0
     var context: FrameGapContext?
+    var history: FrameGapHistorySnapshot?
+    var writerID: String?
+}
+
+struct FrameGapHistoryEvent: Codable, Sendable {
+    let name: String
+    let uptime: Double
+    let writerID: String?
+    let requestID: String?
+    let deadline: Double?
+    let value: Bool?
+}
+
+struct FrameGapHistorySnapshot: Codable, Sendable {
+    let events: [FrameGapHistoryEvent]
+    let overflow: Int
+}
+
+final class FrameGapHistory: @unchecked Sendable {
+    static let shared = FrameGapHistory()
+    private let lock = NSLock()
+    private var events: [FrameGapHistoryEvent] = []
+    private var overflow = 0
+    private init() { events.reserveCapacity(20000) }
+
+    func record(_ name: String, writerID: String? = nil, requestID: String? = nil,
+                deadline: Double? = nil, value: Bool? = nil) {
+        let event = FrameGapHistoryEvent(name: name, uptime: FrameGapTrace.now(), writerID: writerID,
+                                        requestID: requestID, deadline: deadline, value: value)
+        lock.lock()
+        defer { lock.unlock() }
+        if events.count < 20000 { events.append(event) } else { overflow += 1 }
+    }
+
+    func snapshot() -> FrameGapHistorySnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return FrameGapHistorySnapshot(events: events, overflow: overflow)
+    }
+
+    @MainActor
+    static func permission(_ name: String) -> Bool {
+        shared.record("permission.\(name).begin")
+        let result = CGPreflightScreenCaptureAccess()
+        shared.record("permission.\(name).end", value: result)
+        return result
+    }
+
+    func flushAfterShutdown() {
+        guard let path = ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_TRACE_DIR"] else { return }
+        do {
+            let directory = URL(fileURLWithPath: path, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(snapshot()).write(to: directory.appendingPathComponent("lifecycle-final.json"), options: .atomic)
+        } catch {
+            FileHandle.standardError.write(Data("Frame gap final history flush failed: \(error)\n".utf8))
+        }
+    }
 }
 
 struct FrameGapOperation: Codable, Sendable {
