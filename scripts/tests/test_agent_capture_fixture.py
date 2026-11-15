@@ -15,6 +15,7 @@ WRITE_START = "fixture-test-write-start"
 WRITE_END = "fixture-test-write-end"
 WRITE_HELD = "fixture-test-write-held"
 COMMAND_HANDLED = "fixture-test-command-handled"
+SERIALIZATION_FAILURE = "FixtureTestSerializationFailure"
 
 
 @unittest.skipUnless(sys.platform == "darwin", "The fixture requires a macOS desktop.")
@@ -52,7 +53,7 @@ class NativeFixtureTests(unittest.TestCase):
             raise AssertionError(f"Expected one atomic fixture state write, found {count}.")
         source = source.replace("NSApp.terminate(nil)", "NSApp.terminate(nil)\n            NSApp.terminate(nil)")
         blocked = "screen.visibleFrame.width >= 760"
-        encoding = 'if let failure { state["reason"] = failure }'
+        encoding = "JSONSerialization.data(withJSONObject: state, options: [.sortedKeys])"
         handled = "lastCommand = id"
         if any(source.count(point) != 1 for point in (blocked, encoding, handled)):
             raise AssertionError("Fixture launch or JSON serialization injection point changed.")
@@ -61,7 +62,9 @@ class NativeFixtureTests(unittest.TestCase):
         variants = {
             "slow": source,
             "blocked": source.replace(blocked, "screen.visibleFrame.width >= 1_000_000"),
-            "encoding-failure": source.replace(encoding, encoding + '\n        state["uptime"] = Double.nan'),
+            "encoding-failure": source.replace(encoding, '{ () throws -> Data in\n'
+                                                f'            throw NSError(domain: "{SERIALIZATION_FAILURE}", code: 1)\n'
+                                                '        }()'),
         }
         cls.executables = {}
         for name, text in variants.items():
@@ -97,6 +100,13 @@ class NativeFixtureTests(unittest.TestCase):
         if self.process.poll() is None:
             self.process.kill()
         self.process.wait(timeout=5)
+
+    def assert_exit(self, code, timeout=6):
+        try:
+            actual = self.process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.fail(f"Fixture did not exit within {timeout} seconds: " + self.log_path.read_text())
+        self.assertEqual(actual, code, self.log_path.read_text())
 
     def state(self):
         try:
@@ -177,7 +187,7 @@ class NativeFixtureTests(unittest.TestCase):
         self.assertGreaterEqual(observations[-1]["uptime"] - static["uptime"], 2)
 
         quit_id = self.quit_during_write()
-        self.assertEqual(self.process.wait(timeout=6), 0, self.log_path.read_text())
+        self.assert_exit(0)
         final = self.state()
         self.assertEqual(final["commandID"], quit_id)
         self.assertEqual(final["draws"], static["draws"])
@@ -190,7 +200,7 @@ class NativeFixtureTests(unittest.TestCase):
 
     def test_blocked_launch_publishes_reason_before_exit_three(self):
         self.launch("blocked")
-        self.assertEqual(self.process.wait(timeout=6), 3)
+        self.assert_exit(3)
         state = self.state()
         self.assertEqual(state["status"], "blocked")
         self.assertIn("local desktop", state["reason"])
@@ -198,15 +208,16 @@ class NativeFixtureTests(unittest.TestCase):
 
     def test_serialization_failure_exits_three_without_writing(self):
         self.launch("encoding-failure")
-        self.assertEqual(self.process.wait(timeout=6), 3)
+        self.assert_exit(3)
         self.assertFalse(self.state_path.exists())
         self.assertEqual(self.events(), [])
         self.assertIn("Fixture state write failed:", self.log_path.read_text())
+        self.assertIn(SERIALIZATION_FAILURE, self.log_path.read_text())
 
     def test_unwritable_state_exits_three(self):
         self.state_path.mkdir()
         self.launch()
-        self.assertEqual(self.process.wait(timeout=6), 3)
+        self.assert_exit(3)
         self.assertEqual(self.events(), [(WRITE_START, "")])
         self.assertIn("Fixture state write failed:", self.log_path.read_text())
 
@@ -218,7 +229,7 @@ class NativeFixtureTests(unittest.TestCase):
         self.state_path.unlink()
         self.state_path.mkdir()
         (self.directory / f"hold-{quit_id}").unlink()
-        self.assertEqual(self.process.wait(timeout=6), 3)
+        self.assert_exit(3)
         events = self.events()
         self.assert_paired_writes(events[:-1])
         self.assertEqual(events[-1], (WRITE_START, quit_id))
