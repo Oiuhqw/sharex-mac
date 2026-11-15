@@ -87,6 +87,11 @@ jobs:
           probe_python="$(python3 -c 'import sys; print(sys.executable)')"
           sudo -n "$probe_python" scripts/profiler-capability.py --commit '${{ github.sha }}' --preflight "$PWD/profiler-preflight-out" --out "$PWD/profiler-capability-out"
 
+      - name: Re-report selected capability sample indices
+        run: |
+          probe_python="$(python3 -c 'import sys; print(sys.executable)')"
+          sudo -n "$probe_python" scripts/profiler-clock-probe.py --commit '${{ github.sha }}' --preflight "$PWD/profiler-preflight-out" --capability "$PWD/profiler-capability-out" --out "$PWD/profiler-clock-probe-out"
+
       - name: Store profiler discovery evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -104,6 +109,7 @@ jobs:
           retention-days: 3
           path: |
             profiler-capability-out
+            profiler-clock-probe-out
             profiler-tests-user.log
             profiler-tests-root.log
           if-no-files-found: warn
