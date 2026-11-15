@@ -197,6 +197,7 @@ final class FrameGapTrace: @unchecked Sendable {
     }
 
     func startHeartbeat(on queue: DispatchQueue) {
+        guard ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_HEARTBEAT"] != "0" else { return }
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now(), repeating: .milliseconds(20))
         timer.setEventHandler { [weak self] in

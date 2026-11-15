@@ -12,6 +12,10 @@ on:
         description: Diagnostic only; trace the original full native workflow
         type: boolean
         default: false
+      frame_gap_heartbeat:
+        description: Diagnostic full workflow only; schedule the recorder heartbeat timer
+        type: boolean
+        default: true
       frame_gap_replay:
         description: Diagnostic only; compare warm CLI and socket status polling
         type: boolean
@@ -156,6 +160,7 @@ jobs:
         run: |
           if [[ '${{ inputs.frame_gap_full }}' == true ]]; then
             export SHAREX_FRAME_GAP_WORKLOAD=1 SHAREX_FRAME_GAP_FIXTURE_TRACE=1
+            export SHAREX_FRAME_GAP_HEARTBEAT=${{ inputs.frame_gap_heartbeat && '1' || '0' }}
             export SHAREX_FRAME_GAP_TRACE_DIR="$PWD/frame-gap-full-traces/native"
           fi
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
@@ -208,6 +213,7 @@ jobs:
         run: |
           if [[ '${{ inputs.frame_gap_full }}' == true ]]; then
             export SHAREX_FRAME_GAP_WORKLOAD=1 SHAREX_FRAME_GAP_FIXTURE_TRACE=1
+            export SHAREX_FRAME_GAP_HEARTBEAT=${{ inputs.frame_gap_heartbeat && '1' || '0' }}
             export SHAREX_FRAME_GAP_TRACE_DIR="$PWD/frame-gap-full-traces/clients"
           fi
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
