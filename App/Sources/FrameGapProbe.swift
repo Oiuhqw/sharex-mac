@@ -32,6 +32,20 @@ struct FrameGapCallback: Codable, Sendable {
     var ownedBuffers = false
     var copyStart: Double?
     var copyEnd: Double?
+    var copyAllocationStart: Double?
+    var copyAllocationEnd: Double?
+    var copySourceLockStart: Double?
+    var copySourceLockEnd: Double?
+    var copyOwnedLockStart: Double?
+    var copyOwnedLockEnd: Double?
+    var copyRowsStart: Double?
+    var copyRowsEnd: Double?
+    var copyMetadataStart: Double?
+    var copyMetadataEnd: Double?
+    var copyOwnedUnlockStart: Double?
+    var copyOwnedUnlockEnd: Double?
+    var copySourceUnlockStart: Double?
+    var copySourceUnlockEnd: Double?
     var copySucceeded: Bool?
     var copyError: String?
     var copyDisjoint: Bool?
@@ -63,21 +77,37 @@ enum FrameGapOwnedBuffer {
         let width = CVPixelBufferGetWidth(source), height = CVPixelBufferGetHeight(source)
         event.copyWidth = width; event.copyHeight = height
         event.copyPixelFormat = CVPixelBufferGetPixelFormatType(source)
+        event.copyAllocationStart = FrameGapTrace.now()
         var owned: CVPixelBuffer?
         let attributes: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any]()]
         let allocation = CVPixelBufferCreate(kCFAllocatorDefault, width, height,
             kCVPixelFormatType_32BGRA, attributes as CFDictionary, &owned)
+        event.copyAllocationEnd = FrameGapTrace.now()
         guard allocation == kCVReturnSuccess, let owned else {
             throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic allocation failed with status \(allocation).")
         }
-        guard CVPixelBufferLockBaseAddress(source, .readOnly) == kCVReturnSuccess else {
+        event.copySourceLockStart = FrameGapTrace.now()
+        let sourceLock = CVPixelBufferLockBaseAddress(source, .readOnly)
+        event.copySourceLockEnd = FrameGapTrace.now()
+        guard sourceLock == kCVReturnSuccess else {
             throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic could not lock the source pixels.")
         }
-        defer { CVPixelBufferUnlockBaseAddress(source, .readOnly) }
-        guard CVPixelBufferLockBaseAddress(owned, []) == kCVReturnSuccess else {
+        defer {
+            event.copySourceUnlockStart = FrameGapTrace.now()
+            CVPixelBufferUnlockBaseAddress(source, .readOnly)
+            event.copySourceUnlockEnd = FrameGapTrace.now()
+        }
+        event.copyOwnedLockStart = FrameGapTrace.now()
+        let ownedLock = CVPixelBufferLockBaseAddress(owned, [])
+        event.copyOwnedLockEnd = FrameGapTrace.now()
+        guard ownedLock == kCVReturnSuccess else {
             throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic could not lock the owned pixels.")
         }
-        defer { CVPixelBufferUnlockBaseAddress(owned, []) }
+        defer {
+            event.copyOwnedUnlockStart = FrameGapTrace.now()
+            CVPixelBufferUnlockBaseAddress(owned, [])
+            event.copyOwnedUnlockEnd = FrameGapTrace.now()
+        }
         guard let sourceBase = CVPixelBufferGetBaseAddress(source),
               let ownedBase = CVPixelBufferGetBaseAddress(owned) else {
             throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic received inaccessible pixels.")
@@ -101,12 +131,16 @@ enum FrameGapOwnedBuffer {
         guard event.copyDisjoint == true else {
             throw AgentFailure(.recordingFailed, "Owned-buffer diagnostic allocated overlapping pixel storage.")
         }
+        event.copyRowsStart = FrameGapTrace.now()
         for row in 0..<height {
             let destination = ownedBase.advanced(by: row * ownedStride)
             memcpy(destination, sourceBase.advanced(by: row * sourceStride), rowBytes)
             if ownedStride > rowBytes { memset(destination.advanced(by: rowBytes), 0, ownedStride - rowBytes) }
         }
+        event.copyRowsEnd = FrameGapTrace.now()
         event.copyBytes = rowBytes * height
+        event.copyMetadataStart = FrameGapTrace.now()
+        defer { event.copyMetadataEnd = FrameGapTrace.now() }
         for mode in [CVAttachmentMode.shouldPropagate, .shouldNotPropagate] {
             if let attachments = CVBufferCopyAttachments(source, mode) { CVBufferSetAttachments(owned, attachments, mode) }
         }
