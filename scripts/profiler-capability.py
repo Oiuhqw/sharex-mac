@@ -43,6 +43,19 @@ def executable_identity(path):
     return identity
 
 
+class Cancellation:
+    def __init__(self):
+        self.error = None
+
+    def request(self, signum, frame):
+        if self.error is None:
+            self.error = InterruptedError(f"Supervisor received signal {signum}")
+
+    def check(self):
+        if self.error is not None:
+            raise self.error
+
+
 class OwnedChild:
     """Keep a direct child unreaped until its entire owned group is signalled."""
 
@@ -53,15 +66,19 @@ class OwnedChild:
                        "exitCode": None, "executable": executable_identity(argv[0]), "signals": [],
                        "stdout": f"{name}.stdout.raw", "stderr": f"{name}.stderr.raw"}
         self.save()
-        with (out / self.record["stdout"]).open("wb") as stdout, (out / self.record["stderr"]).open("wb") as stderr:
-            try:
-                self.process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
-                                                shell=False, start_new_session=True)
-                self.record.update(pid=self.process.pid, pgid=self.process.pid, status="running")
-            except OSError as error:
-                self.record["error"] = str(error)
-                self.record["finished"] = preflight.clock()
-            self.save()
+        try:
+            with (out / self.record["stdout"]).open("wb") as stdout, (out / self.record["stderr"]).open("wb") as stderr:
+                try:
+                    self.process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+                                                    shell=False, start_new_session=True)
+                    self.record.update(pid=self.process.pid, pgid=self.process.pid, status="running")
+                except OSError as error:
+                    self.record["error"] = str(error)
+                    self.record["finished"] = preflight.clock()
+                self.save()
+        except BaseException:
+            self.close(time.monotonic() + 1)
+            raise
 
     def save(self):
         preflight.write_json(self.path, self.record)
@@ -71,8 +88,10 @@ class OwnedChild:
             return True
         return os.waitid(os.P_PID, self.process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
 
-    def wait(self, deadline):
+    def wait(self, deadline, cancellation=None):
         while not self.exited():
+            if cancellation is not None:
+                cancellation.check()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 self.record["status"] = "timed_out"
@@ -97,10 +116,8 @@ class OwnedChild:
         event = {"signal": sig.name, "requested": preflight.clock(), "pid": self.process.pid,
                  "verifiedPGID": pgid, "verifiedSID": sid, "ownership": "unreaped_direct_child"}
         self.record["signals"].append(event)
-        self.save()
         os.killpg(pgid, sig)
         event["sent"] = preflight.clock()
-        self.save()
 
     def close(self, deadline):
         if self.process is None:
@@ -150,7 +167,9 @@ def inventory(name, out, deadline):
     return child.record
 
 
-def collect_probe(out, commit, documentation, total_seconds=TOTAL_SECONDS):
+def collect_probe(out, commit, documentation, total_seconds=TOTAL_SECONDS, cancellation=None):
+    if cancellation is None:
+        cancellation = Cancellation()
     out.mkdir(parents=True, exist_ok=False)
     deadline = time.monotonic() + total_seconds
     report = {"schemaVersion": 1, "phase": "profiler_capability_collection", "commit": commit,
@@ -165,25 +184,32 @@ def collect_probe(out, commit, documentation, total_seconds=TOTAL_SECONDS):
     preflight.write_json(report_path, report)
     helper = collector = None
     try:
+        cancellation.check()
         if not all(report["runtime"]["waitAPI"].values()):
             raise RuntimeError("Owned process-group cleanup requires waitid with WNOWAIT support")
         report["documentation"] = validate_documentation(documentation, commit)
         report["preInventory"] = inventory("processes-before", out, min(deadline - 5, time.monotonic() + 3))
+        cancellation.check()
         if report["preInventory"]["status"] != "completed" or not report["preInventory"]["cleanupComplete"]:
             raise RuntimeError("Pre-collection process inventory failed")
         helper = OwnedChild("helper", HELPER, out)
+        cancellation.check()
         if helper.exited():
             raise RuntimeError("Owned sleep helper did not stay alive")
         raw = out / "report"
         raw.mkdir()
         collector = OwnedChild("collector", collector_command(helper.process.pid, raw / "system.spindump.txt"), out)
-        collector.wait(deadline - 5)
+        cancellation.check()
+        collector.wait(deadline - 5, cancellation)
     except (OSError, ValueError, RuntimeError, KeyError, InterruptedError, KeyboardInterrupt) as error:
         report["error"] = {"type": type(error).__name__, "message": str(error)}
     finally:
         for name, child in (("collector", collector), ("helper", helper)):
             if child is not None:
-                child.close(min(deadline - 3, time.monotonic() + 1))
+                try:
+                    child.close(min(deadline - 3, time.monotonic() + 1))
+                except OSError as error:
+                    report["error"] = {"type": type(error).__name__, "message": str(error)}
                 report[name] = child.record
                 if name == "collector" and helper is not None:
                     report["helperAliveAtCollectorExit"] = not helper.exited()
@@ -216,6 +242,8 @@ def collect_probe(out, commit, documentation, total_seconds=TOTAL_SECONDS):
         except (OSError, RuntimeError) as error:
             report["error"] = {"type": type(error).__name__, "message": str(error)}
         report_file = out / "report" / "system.spindump.txt"
+        if cancellation.error is not None:
+            report["error"] = {"type": type(cancellation.error).__name__, "message": str(cancellation.error)}
         if ("error" not in report and "postInventoryError" not in report
                 and collector is not None and collector.record["status"] == "completed"
                 and report.get("helperAliveAtCollectorExit") and report_file.is_file() and report_file.stat().st_size
@@ -240,11 +268,10 @@ def main():
     if sys.platform != "darwin" or os.geteuid() != 0:
         parser.error("Run this Mac-only probe supervisor explicitly through noninteractive sudo")
 
-    def interrupted(signum, frame):
-        raise InterruptedError(f"Supervisor received signal {signum}")
-
-    signal.signal(signal.SIGTERM, interrupted)
-    report = collect_probe(args.out, args.commit, args.preflight)
+    cancellation = Cancellation()
+    signal.signal(signal.SIGTERM, cancellation.request)
+    signal.signal(signal.SIGINT, cancellation.request)
+    report = collect_probe(args.out, args.commit, args.preflight, cancellation=cancellation)
     print(f"{report['outcome']}: {args.out / 'capability.json'}; capability validation remains pending")
     return 0 if report["outcome"] == "collection_complete" else 1
 

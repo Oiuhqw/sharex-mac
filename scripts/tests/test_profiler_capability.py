@@ -363,7 +363,10 @@ class SignalBoundaryTests(unittest.TestCase):
     def test_collector_evidence_failure_after_launch_still_reaps_child(self):
         self.check_evidence_failure("collector")
 
-    def check_evidence_failure(self, target_name):
+    def test_collector_cleanup_evidence_failure_still_reaps_helper(self):
+        self.check_evidence_failure("collector", cleanup_only=True)
+
+    def check_evidence_failure(self, target_name, cleanup_only=False):
         children = []
         popen = subprocess.Popen
         write_json = PROBE.preflight.write_json
@@ -374,7 +377,8 @@ class SignalBoundaryTests(unittest.TestCase):
             return child
 
         def write(path, record):
-            if path.name == f"{target_name}.json" and "pid" in record:
+            if (path.name == f"{target_name}.json" and "pid" in record
+                    and (not cleanup_only or "finished" in record)):
                 raise OSError("Injected postlaunch evidence write failure")
             write_json(path, record)
 
