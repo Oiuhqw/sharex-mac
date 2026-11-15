@@ -6,7 +6,7 @@ import SwiftUI
 @MainActor
 struct SettingsView: View {
     private enum Page: String, CaseIterable, Identifiable {
-        case capture = "Capture", shortcuts = "Shortcuts", output = "Output", agents = "Agents"
+        case capture = "Capture", shortcuts = "Shortcuts", output = "Output", agents = "Agents", maintenance = "Maintenance"
         var id: String { rawValue.lowercased() }
         var symbol: String {
             switch self {
@@ -14,6 +14,7 @@ struct SettingsView: View {
             case .shortcuts: "keyboard"
             case .output: "square.and.arrow.down"
             case .agents: "terminal"
+            case .maintenance: "wrench.and.screwdriver"
             }
         }
         var detail: String {
@@ -22,6 +23,7 @@ struct SettingsView: View {
             case .shortcuts: "Start a capture from any app. Click a shortcut to change it."
             case .output: "Copy each capture to the clipboard and save a local PNG."
             case .agents: "Let local scripts and AI agents save screenshots and silent video."
+            case .maintenance: "Repair capture permission or remove this ShareX installation."
             }
         }
     }
@@ -29,6 +31,7 @@ struct SettingsView: View {
     @ObservedObject var store: SettingsStore
     @ObservedObject var launchAtLogin: LaunchAtLogin
     let agent: AgentCaptureService
+    let maintenance: AppMaintenance
     var agentServerError: String?
     @StateObject private var shortcuts = Hotkeys.Editor()
     @State private var page: Page? = .capture
@@ -87,8 +90,10 @@ struct SettingsView: View {
                         case .shortcuts: shortcutsPage
                         case .output: outputPage
                         case .agents: AgentSetupView(service: agent, serverError: agentServerError)
+                        case .maintenance: MaintenanceView(maintenance: maintenance)
                         }
                     }
+                    .disabled(maintenance.frozen && page != .maintenance)
                     .padding(24)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }

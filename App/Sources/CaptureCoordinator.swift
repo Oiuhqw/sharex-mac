@@ -1,5 +1,6 @@
 import AppKit
 import ShareXCore
+import ShareXAgent
 
 /// Runs one capture: permission → delay → freeze → overlay/editor → flatten → decorate → clipboard.
 @MainActor
@@ -7,11 +8,17 @@ final class CaptureCoordinator {
     private let settings: SettingsStore
     private(set) var overlay: OverlayController?
     private(set) var busy = false
+    private var admissionClosed = false
 
     init(settings: SettingsStore) { self.settings = settings }
 
+    func closeAdmission() throws {
+        guard !busy else { throw ShareXAgent.AgentFailure(.busy, "Finish or cancel the screenshot editor before maintenance.") }
+        admissionClosed = true
+    }
+
     func capture(_ style: CaptureStyle) {
-        guard !busy else { return }
+        guard !admissionClosed, !busy else { return }
         busy = true
         Perf.stamp("capture-start")
         Task { @MainActor in

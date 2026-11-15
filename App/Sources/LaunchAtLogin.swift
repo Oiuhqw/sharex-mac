@@ -4,6 +4,7 @@ import ServiceManagement
 
 @MainActor
 final class LaunchAtLogin: ObservableObject {
+    private var writesEnabled = true
     private static let configuredKey = "launchAtLogin.configured"
     @Published private(set) var status = SMAppService.mainApp.status
     @Published private(set) var errorMessage: String?
@@ -20,9 +21,10 @@ final class LaunchAtLogin: ObservableObject {
         }
     }
 
-    func refresh() { status = SMAppService.mainApp.status }
+    func refresh() { guard writesEnabled else { return }; status = SMAppService.mainApp.status }
 
     func enableByDefaultIfNeeded() {
+        guard writesEnabled else { return }
         refresh()
         guard !UserDefaults.standard.bool(forKey: Self.configuredKey) else { return }
         if status == .notRegistered || status == .notFound { setEnabled(true) }
@@ -30,6 +32,7 @@ final class LaunchAtLogin: ObservableObject {
     }
 
     func setEnabled(_ enabled: Bool) {
+        guard writesEnabled else { return }
         errorMessage = nil
         refresh()
         do {
@@ -41,6 +44,20 @@ final class LaunchAtLogin: ObservableObject {
             errorMessage = "Could not change launch at login. \(error.localizedDescription)"
         }
         refresh()
+    }
+
+    func freezeWrites() { writesEnabled = false }
+
+    func unregisterForRemoval() throws {
+        let current = SMAppService.mainApp.status
+        if current != .notRegistered && current != .notFound {
+            try SMAppService.mainApp.unregister()
+        }
+        let result = SMAppService.mainApp.status
+        guard result == .notRegistered || result == .notFound else {
+            throw NSError(domain: "ShareXMaintenance", code: 1, userInfo: [NSLocalizedDescriptionKey: "Launch at login is still registered. Disable ShareX in Login Items, then retry."])
+        }
+        status = result
     }
 
     func openSystemSettings() { SMAppService.openSystemSettingsLoginItems() }

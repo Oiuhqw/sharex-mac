@@ -143,12 +143,21 @@ public final class LocalAgentServer: @unchecked Sendable {
         else { queue.sync { stopOnQueue() } }
     }
 
+    public func suspendAcceptance() {
+        if DispatchQueue.getSpecific(key: queueKey) == true { suspendOnQueue() }
+        else { queue.sync { suspendOnQueue() } }
+    }
+
     deinit { stop() }
 
-    private func stopOnQueue() {
+    private func suspendOnQueue() {
         source?.cancel()
         source = nil
         cleanupEndpoint()
+    }
+
+    private func stopOnQueue() {
+        suspendOnQueue()
         releaseOwnership()
     }
 

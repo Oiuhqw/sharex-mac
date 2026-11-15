@@ -31,8 +31,7 @@ public enum AgentInstallation {
                 throw AgentFailure(.storageFailed, "Cannot create \(directory.path).")
             }
             var info = stat()
-            guard lstat(directory.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
-                  info.st_uid == getuid(), info.st_mode & 0o022 == 0 else {
+            guard lstat(directory.path, &info) == 0, InstallationPaths.isPrivateUserDirectory(info) else {
                 throw AgentFailure(.storageFailed, "CLI folders must be real directories owned by this user and not writable by other users: \(directory.path)")
             }
         }
@@ -41,8 +40,7 @@ public enum AgentInstallation {
         let exists = lstat(destination.path, &original) == 0
         if !exists, errno != ENOENT { throw AgentFailure(.storageFailed, "Cannot inspect \(destination.path).") }
         if exists {
-            guard original.st_mode & S_IFMT == S_IFREG, original.st_uid == getuid(), original.st_nlink == 1,
-                  original.st_mode & 0o022 == 0, original.st_size <= 16_384 else {
+            guard InstallationPaths.isSafeCommandFile(original) else {
                 throw AgentFailure(.storageFailed, "A different file exists at \(destination.path). Move it before installing ShareX CLI.")
             }
             let descriptor = open(destination.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)

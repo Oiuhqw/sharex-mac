@@ -45,6 +45,16 @@ public struct RecordingOptions: Codable, Equatable, Sendable {
     }
 }
 
+public enum CaptureOrigin: String, Codable, Sendable {
+    case agent, human
+
+    public func requireAgentOwnership() throws {
+        guard self == .agent else {
+            throw AgentFailure(.permissionDenied, "This recording belongs to a person. Stop or change it in ShareX.")
+        }
+    }
+}
+
 public enum RecordingState: String, Codable, Sendable {
     case starting, recording, finalizing, completed, failed, interrupted
     public var isTerminal: Bool { self == .completed || self == .failed || self == .interrupted }
@@ -84,6 +94,7 @@ public struct SessionMarker: Codable, Equatable, Sendable {
 }
 
 public struct CaptureSession: Codable, Equatable, Sendable {
+    public let origin: CaptureOrigin
     public let id: UUID
     public let createdAt: Date
     public let source: CaptureTarget
@@ -98,9 +109,39 @@ public struct CaptureSession: Codable, Equatable, Sendable {
     public var acceptedFrames: Int
     public var artifacts: [CaptureArtifact]
     public var markers: [SessionMarker]
-    public init(id: UUID = UUID(), source: CaptureTarget, selection: CaptureSelection, options: RecordingOptions? = nil) {
+    public init(id: UUID = UUID(), source: CaptureTarget, selection: CaptureSelection, options: RecordingOptions? = nil, origin: CaptureOrigin = .agent) {
+        self.origin = origin
         self.id = id; createdAt = Date(); self.source = source; self.selection = selection; self.options = options
         state = .starting; droppedFrames = 0; acceptedFrames = 0; artifacts = []; markers = []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case origin, id, createdAt, source, selection, options, state, startedAt, endedAt, stopReason, failure
+        case droppedFrames, acceptedFrames, artifacts, markers
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        if values.contains(.origin) { origin = try values.decode(CaptureOrigin.self, forKey: .origin) }
+        else { origin = .agent }
+        id = try values.decode(UUID.self, forKey: .id)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        source = try values.decode(CaptureTarget.self, forKey: .source)
+        selection = try values.decode(CaptureSelection.self, forKey: .selection)
+        options = try values.decodeIfPresent(RecordingOptions.self, forKey: .options)
+        state = try values.decode(RecordingState.self, forKey: .state)
+        startedAt = try values.decodeIfPresent(Date.self, forKey: .startedAt)
+        endedAt = try values.decodeIfPresent(Date.self, forKey: .endedAt)
+        stopReason = try values.decodeIfPresent(String.self, forKey: .stopReason)
+        failure = try values.decodeIfPresent(AgentFailure.self, forKey: .failure)
+        droppedFrames = try values.decode(Int.self, forKey: .droppedFrames)
+        acceptedFrames = try values.decode(Int.self, forKey: .acceptedFrames)
+        artifacts = try values.decode([CaptureArtifact].self, forKey: .artifacts)
+        markers = try values.decode([SessionMarker].self, forKey: .markers)
+    }
+
+    public func requireAgentOwnership() throws {
+        try origin.requireAgentOwnership()
     }
 
     public mutating func failRecording(_ failure: AgentFailure, reason: String, at date: Date = Date()) {

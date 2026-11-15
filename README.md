@@ -14,6 +14,12 @@ Version **0.2.1, build 9** supports **Apple Silicon Macs running macOS 14 or lat
 
 Each release has one installer, `ShareX.dmg`. Installation instructions are included inside it. The release notes identify the merged source and package build. The app is ad-hoc signed with Hardened Runtime and is not Apple-notarized. Read the [installation instructions](INSTALL.txt) before opening it.
 
+## Development features
+
+The source branch adds manual recording and maintenance controls. These features are not part of the downloadable 0.2.1 package.
+
+Choose **Record Screen…** from the menu, select a display or window, and start a silent MP4 recording. Agent access can stay off. Settings > Maintenance can reset Screen Recording permission and quit, or review and uninstall the exact running app. Both actions preserve capture files. See [recording and maintenance](docs/RECORDING-AND-MAINTENANCE.md).
+
 ## Capture and edit
 
 Open the camera icon in the menu bar and choose a capture command. ShareX has eight capture modes: Region, Freehand, Window, Active Window, Monitor, Active Monitor, Fullscreen, and Last Region.
