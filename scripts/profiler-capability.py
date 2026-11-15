@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 
 
 SPEC = importlib.util.spec_from_file_location("profiler_preflight", Path(__file__).with_name("profiler-preflight.py"))
@@ -135,6 +136,7 @@ class OwnedChild:
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
             self.record["cleanupComplete"] = False
             self.record["cleanupError"] = str(error)
+            self.record["cleanupTraceback"] = traceback.format_exc()
         finally:
             self.record["finished"] = preflight.clock()
             self.save()

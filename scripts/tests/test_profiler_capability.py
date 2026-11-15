@@ -85,7 +85,7 @@ class OwnedChildTests(unittest.TestCase):
                 child.close(time.monotonic() + 1)
             self.assertEqual(child.record["exitCode"], 7)
             self.assertEqual(child.record["status"], "failed")
-            self.assertTrue(child.record["cleanupComplete"])
+            self.assertTrue(child.record["cleanupComplete"], json.dumps(child.record, indent=2))
             self.assertEqual((out / child.record["stdout"]).read_bytes(), b"partial\xff")
             self.assertEqual((out / child.record["stderr"]).read_bytes(), b"error\xfe")
             with self.assertRaises(ChildProcessError):
@@ -121,7 +121,7 @@ class OwnedChildTests(unittest.TestCase):
                 unrelated.wait(timeout=2)
             self.assertLess(time.monotonic() - started, 3)
             self.assertTrue(unrelated_alive)
-            self.assertTrue(child.record["cleanupComplete"])
+            self.assertTrue(child.record["cleanupComplete"], json.dumps(child.record, indent=2))
             self.assertEqual(child.record["status"], "completed" if parent_exits else "timed_out")
             self.assertIn(b"partial output", (out / child.record["stdout"]).read_bytes())
             retained = heartbeat.read_bytes()
@@ -161,6 +161,7 @@ class ProbeLifecycleTests(unittest.TestCase):
             with mock.patch.object(PROBE, "HELPER", python_child("import time; time.sleep(60)")), \
                  mock.patch.object(PROBE, "collector_command", side_effect=lambda pid, path: python_child(collector_code, pid, path)):
                 report = PROBE.collect_probe(out, "test", docs, total_seconds=total_seconds)
+            self.assertIn("collector", report, json.dumps(report, indent=2))
             self.assertEqual(json.loads((out / "capability.json").read_text()), report)
             files = {str(path.relative_to(out)): path.read_bytes() for path in out.rglob("*") if path.is_file()}
             for path in (out, *out.rglob("*")):
@@ -332,7 +333,8 @@ class SignalBoundaryTests(unittest.TestCase):
                         self.fail(f"Supervisor escaped finalization with {type(error).__name__}: {error}")
                     finally:
                         sys.settrace(None)
-                self.assertTrue(fired, "The real signal must reach the requested lifecycle boundary")
+                self.assertTrue(fired, "The real signal must reach the requested lifecycle boundary; children="
+                                + json.dumps({name: child.record for name, child in children.items()}, indent=2))
                 self.assertEqual(result, 1)
                 self.assertLess(time.monotonic() - started, 7)
                 report = json.loads((out / "capability.json").read_text())
@@ -391,7 +393,7 @@ class SignalBoundaryTests(unittest.TestCase):
                      mock.patch.object(PROBE, "collector_command", return_value=PROBE.HELPER):
                     report = PROBE.collect_probe(root / "out", "test", docs, total_seconds=7)
                 self.assertEqual(report["outcome"], "incomplete")
-                self.assertIn("evidence write failure", report["error"]["message"])
+                self.assertIn("evidence write failure", report["error"]["message"], json.dumps(report, indent=2))
                 self.assertEqual(report["remainingOwnedProcessGroups"], [])
                 for child in children:
                     self.assertIsNotNone(child.returncode)

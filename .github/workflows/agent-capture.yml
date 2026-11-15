@@ -67,7 +67,16 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Test profiler discovery collector
-        run: python3 -m unittest discover -s scripts/tests -p 'test_profiler*.py' -v
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s scripts/tests -p 'test_profiler*.py' -v 2>&1 | tee profiler-tests-user.log
+
+      - name: Test profiler discovery collector as root
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          probe_python="$(python3 -c 'import sys; print(sys.executable)')"
+          sudo -n "$probe_python" -m unittest discover -s scripts/tests -p 'test_profiler*.py' -v 2>&1 | tee profiler-tests-root.log
 
       - name: Discover installed Mac profiling tools
         run: |
@@ -93,7 +102,10 @@ jobs:
         with:
           name: profiler-capability-${{ github.sha }}
           retention-days: 3
-          path: profiler-capability-out
+          path: |
+            profiler-capability-out
+            profiler-tests-user.log
+            profiler-tests-root.log
           if-no-files-found: warn
 
   native:
