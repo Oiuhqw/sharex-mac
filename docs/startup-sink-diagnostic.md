@@ -2,7 +2,7 @@
 
 This branch tests whether the current recording's writer or source-sample retention is necessary for its startup gap. It is a diagnostic branch. It does not implement a recording fix or pass production E2E.
 
-Dispatch `agent-capture.yml` on this branch with `frame_gap_replay=true`. The existing input now runs `scripts/frame-gap-startup.py`. The workflow builds with `FRAME_GAP_PROBE`, runs the original setup UI once, enables agent access, then collects control, metadata, metadata, control on one Mac. Each arm starts fresh app and fixture processes. Later arms reuse the setup account state. Setup is not repeated, and no maintenance, uninstall, or app replacement runs between arms.
+This comparison remains available through `scripts/frame-gap-startup.py --comparison sinks`. The workflow's `frame_gap_replay=true` now selects the [first-noise timing comparison](noise-timing-diagnostic.md). Both use `FRAME_GAP_PROBE`, the original setup UI once, and fresh app and fixture processes per arm. Later arms reuse the setup account state. Setup is not repeated, and no maintenance, uninstall, or app replacement runs between arms. The sink comparison uses control, metadata, metadata, control on one Mac.
 
 Each arm executes the original native `Run.stories` until its first noisy byte-limit capture. The driver checks all 15 prefix steps, seven movie decodes and four PNG decodes in order. The final predecessor remains the three-second region capture and inline decode. Previous writers keep their normal lifetimes. The app selects the diagnostic sink only for the exact request UUID and the expected 1 MiB, 30-second, 15 FPS window request after seven writer constructions and completions. BGRA, queue depth three and the heartbeat remain fixed.
 

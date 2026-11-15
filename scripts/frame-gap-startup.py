@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the current writer with a scalar sink after the original native prefix."""
+"""Compare startup sinks or first-noise timing after the original native prefix."""
 import argparse
 from contextlib import contextmanager
 import importlib.util
@@ -26,6 +26,11 @@ NATIVE = module("startup_native", "e2e-agent-capture.py")
 WORKLOAD = module("startup_workload", "frame-gap-workload.py")
 GAP = WORKLOAD.GAP
 ORDER = ("control", "metadata", "metadata", "control")
+COMPARISONS = {
+    "sinks": tuple((arm, None) for arm in ORDER),
+    "noise-timing": (("metadata", "before"), ("metadata", "after"),
+                     ("metadata", "after"), ("metadata", "before")),
+}
 BYTE_STEP = "byte_limit_finalizes_readable_video"
 PREFIX_STEPS = (
     "installed_release_and_desktop_prerequisites", "agent_access_and_screen_recording_permission",
@@ -100,11 +105,17 @@ class StartupRun(NATIVE.Run):
         self.evidence.emit("startup_prefix_validated", verified=self.verified, appPID=self.app.pid, fixturePID=self.fixture.pid)
 
     def metadata_capture(self, step):
-        self.control("noise", enabled=True)
+        noise_timing = self.args.noise_timing or "before"
+        if noise_timing == "before":
+            self.control("noise", enabled=True)
         started = self.clients[-1].call("recording.start", {**self.selection("window"), "fps": 15,
                                       "maxDurationSeconds": 30, "maxBytes": 1048576})
         NATIVE.require(started["state"] == "recording" and started["acceptedFrames"] == 0,
                        "Metadata startup fabricated accepted encoder frames or did not start.")
+        self.evidence.emit("metadata_start_acknowledged", requestID=self.request_id, sessionID=started["id"],
+                           noiseTiming=noise_timing)
+        if noise_timing == "after":
+            self.control("noise", enabled=True)
         completed = self.terminal(started["id"], timeout=40)
         step.update(session=completed, diagnosticOnly=True, byteLimitE2EPassed=False)
         NATIVE.require(completed["state"] == "failed" and completed["stopReason"] == "diagnostic_metadata_complete"
@@ -120,7 +131,7 @@ def run_arm(args):
     evidence = StartupEvidence(args.out)
     run = StartupRun(args, evidence)
     report = {"diagnosticOnly": True, "arm": args.arm, "requestID": run.request_id,
-              "status": "failed", "byteLimitE2EPassed": False}
+              "noiseTiming": args.noise_timing, "status": "failed", "byteLimitE2EPassed": False}
     handlers = {}
 
     def interrupted(signum, frame):
@@ -153,7 +164,80 @@ def run_arm(args):
     return 0 if report["status"] == "diagnostic_complete" else 1
 
 
-def analyze_arm(directory, arm, request_id):
+def analyze_noise_timing(timing, request_id, trace, complete, draws, operations, events, status_launches, errors):
+    noisy = [row for row in draws if row.get("noisy")]
+    requests = [event for event in events if event["event"] == "fixture_command_requested"
+                and event.get("action") == "noise" and event.get("values", {}).get("enabled") is True]
+    controls = [event for event in events if event["event"] == "fixture_command"
+                and event.get("action") == "noise" and event.get("values", {}).get("enabled") is True]
+    starts = [event for event in events if event["event"] == "agent_operation_request"
+              and event.get("operation") == "recording.start" and event.get("requestID") == request_id]
+    acknowledgements = [event for event in events if event["event"] == "metadata_start_acknowledged"
+                        and event.get("requestID") == request_id and event.get("noiseTiming") == timing]
+    if not noisy or not complete or any(len(values) != 1 for values in (requests, controls, starts, acknowledgements)):
+        errors.append("Noise timing requires one first-use command, target start, acknowledgement, and noisy draw trace.")
+        return {"noiseTiming": timing}
+    noise = noisy[0]["entryUptime"]
+    requested = requests[0]["monotonicSeconds"]
+    controlled = controls[0]["monotonicSeconds"]
+    started = starts[0]["monotonicSeconds"]
+    acknowledged = acknowledgements[0]["monotonicSeconds"]
+    if not requested <= noise <= noisy[0]["exitUptime"] <= controlled:
+        errors.append("The first noisy draw did not occur inside the first noise control command.")
+    if not started <= complete[0]["entryUptime"] <= acknowledged:
+        errors.append("The first complete callback did not occur between target start and acknowledgement.")
+    if timing == "before" and not controlled <= started:
+        errors.append("Before-start noise control did not finish before the target request.")
+    if timing == "after" and not acknowledged <= requested:
+        errors.append("After-ack noise control started before the first complete acknowledgement.")
+    if not status_launches or status_launches[0]["monotonicSeconds"] < max(acknowledged, controlled):
+        errors.append("The first target status launch is absent or precedes acknowledgement and noise control.")
+    if complete[0]["pts"] >= noise + 1 or complete[-1]["pts"] < noise + 1:
+        errors.append("The metadata capture does not cover the first second after the first noisy draw.")
+
+    def overlaps(row):
+        return row["end"] > noise and row["start"] < noise + 1
+
+    pts = [row for row in GAP.intervals([row["pts"] for row in complete]) if overlaps(row)]
+    callbacks = trace["callbacks"]
+    callback_intervals = [row for row in GAP.intervals([row["entryUptime"] for row in callbacks]) if overlaps(row)]
+    scale = trace["context"]["machTimebaseNumerator"] / trace["context"]["machTimebaseDenominator"] / 1e9
+    display = [row for row in GAP.intervals([row["displayTime"] * scale for row in complete
+                                            if row.get("displayTime") is not None]) if overlaps(row)]
+    spans = []
+    pending = {}
+    for row in operations:
+        if row["phase"] == "begin":
+            pending[row["name"]] = row["uptime"]
+        elif row["name"] in pending:
+            start = pending.pop(row["name"])
+            spans.append({"name": row["name"], "start": start, "end": row["uptime"], "seconds": row["uptime"] - start})
+    window_spans = [row for row in spans if overlaps(row)]
+    window_draws = [row for row in draws if row["exitUptime"] > noise and row["entryUptime"] < noise + 1]
+    draw_intervals = [row for row in GAP.intervals([row["entryUptime"] for row in draws]) if overlaps(row)]
+    target_spans = [row for row in spans if row["end"] > started and row["start"] < complete[-1]["exitUptime"]]
+    if not window_spans or not window_draws:
+        errors.append("The post-noise window has no fixture operation spans or draws.")
+    return {"noiseTiming": timing, "firstNoiseUptime": noise, "firstCapturePTS": complete[0]["pts"],
+            "targetStartUptime": started, "metadataAcknowledgementUptime": acknowledged,
+            "noiseCommandRequestedUptime": requested, "noiseCommandCompletedUptime": controlled,
+            "noiseControlSeconds": controlled - requested,
+            "acknowledgementToNoiseCommandSeconds": requested - acknowledged,
+            "acknowledgementToFirstStatusLaunchSeconds": status_launches[0]["monotonicSeconds"] - acknowledged if status_launches else None,
+            "noiseControlToFirstStatusLaunchSeconds": status_launches[0]["monotonicSeconds"] - controlled if status_launches else None,
+            "maximumTargetFixtureOperationSpan": GAP.maximum(target_spans),
+            "postNoiseFirstSecond": {"start": noise, "end": noise + 1, "ptsIntervals": pts,
+                "displayTimeIntervals": display, "callbackEntryIntervals": callback_intervals,
+                "maximumPTSInterval": GAP.maximum(pts), "maximumDisplayTimeInterval": GAP.maximum(display),
+                "maximumCallbackEntryInterval": GAP.maximum(callback_intervals),
+                "fixtureOperationSpans": window_spans, "maximumFixtureOperationSpan": GAP.maximum(window_spans),
+                "fixtureDraws": window_draws, "maximumFixtureDrawEntryInterval": GAP.maximum(draw_intervals),
+                "maximumFixtureDrawSeconds": max((row["exitUptime"] - row["entryUptime"] for row in window_draws), default=None),
+                "heartbeats": [value for value in trace.get("heartbeats", []) if noise <= value <= noise + 1]},
+            "callbacksAroundFirstNoise": [row for row in callbacks if noise - 1 <= row["entryUptime"] <= noise + 1]}
+
+
+def analyze_arm(directory, arm, request_id, noise_timing=None):
     result = GAP.read_json(directory / "native/result.json") or {}
     events_path = directory / "native/events.jsonl"
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()] if events_path.exists() else []
@@ -173,13 +257,14 @@ def analyze_arm(directory, arm, request_id):
     complete = [row for row in callbacks if row["screen"] and row["valid"] and row["image"]
                 and row.get("status") == 0 and row.get("pts") is not None]
     draws = GAP.read_json(directory / "native/fixture/draw-trace.json") or []
+    fixture_operations = GAP.read_json(directory / "native/fixture/operation-trace.json") or []
     history = trace.get("history") or {}
     writer_count = sum(row["name"] == "writer.init" for row in history.get("events", []))
     if selection.get("arm") != arm or selection.get("priorWriters") != 7 or selection.get("completedWriters") != 7:
         errors.append("Sink selection or seven-writer prefix assertion differs.")
     if writer_count != (7 if arm == "metadata" else 8):
         errors.append("The current writer construction count differs from the selected arm.")
-    if not draws or not GAP.read_json(directory / "native/fixture/operation-trace.json"):
+    if not draws or not fixture_operations:
         errors.append("Fixture traces are absent.")
     for name in ("draw-trace-overflow.txt", "operation-trace-overflow.txt"):
         overflow = directory / "native/fixture" / name
@@ -202,13 +287,16 @@ def analyze_arm(directory, arm, request_id):
             errors.append("Metadata result did not retain its diagnostic-only outcome.")
         if list((directory / "native/session-snapshots" / request_id).rglob("*.mp4")):
             errors.append("Metadata target created a video file.")
+        if noise_timing and result.get("noiseTiming") != noise_timing:
+            errors.append("The native result does not identify the requested noise timing.")
     else:
         decoded = [event for event in events if event["event"] == "media_decoded"
                    and event.get("sessionID", "").upper() == request_id]
         if len(decoded) != 1:
             errors.append("Control did not retain its actual target movie decode result.")
     first = complete[0]["pts"] if complete else None
-    noisy = [row for row in draws if row.get("noisy") and first is not None and row["entryUptime"] <= first]
+    noisy = [row for row in draws if row.get("noisy") and first is not None
+             and (noise_timing == "after" or row["entryUptime"] <= first)]
     verifier_exits = [event["monotonicSeconds"] for event in events if event["event"] == "command_finished"
                      and any(start["event"] == "command_started" and start.get("log") == event.get("log")
                              and Path(start["command"][0]).name == "verify-agent-media" for start in events)
@@ -227,7 +315,12 @@ def analyze_arm(directory, arm, request_id):
                           "heartbeats": sum(start < value < end for value in trace.get("heartbeats", [])),
                           "firstCallbackSeconds": complete[0]["exitUptime"] - start,
                           "callbackEntryIntervalSeconds": end - start}
-    return {"result": result, "errors": errors, "trace": str(path), "selection": selection,
+    status_launches = [event for event in events if event["event"] == "command_started"
+                       and event.get("command", [])[1:4] == ["--agent", "recording", "status"]
+                       and request_id.lower() in [str(part).lower() for part in event["command"]]]
+    timing_analysis = analyze_noise_timing(noise_timing, request_id, trace, complete, draws, fixture_operations,
+                                          events, status_launches, errors) if noise_timing else {}
+    return {"result": result, "errors": errors, "trace": str(path), "selection": selection, **timing_analysis,
             "writerConstructionCount": writer_count, "analysis": GAP.summarize({"trace": trace}, draws),
             "firstPTSInterval": pts_intervals[0] if pts_intervals else None,
             "firstDisplayTimeInterval": display_intervals[0] if display_intervals else None,
@@ -235,9 +328,7 @@ def analyze_arm(directory, arm, request_id):
             "allPTSIntervals": pts_intervals, "allDisplayTimeIntervals": display_intervals,
             "verifierExitToFirstPTSSeconds": first - max(verifier_exits) if verifier_exits else None,
             "firstNoisyDrawToFirstPTSSeconds": first - noisy[0]["entryUptime"] if noisy else None,
-            "statusLaunches": [event for event in events if event["event"] == "command_started"
-                               and event.get("command", [])[1:4] == ["--agent", "recording", "status"]
-                               and request_id.lower() in [str(part).lower() for part in event["command"]]],
+            "statusLaunches": status_launches,
             "firstSecondCallbacks": [row for row in callbacks if first is not None and row["entryUptime"] <= first + 1],
             "prefix": prefix}
 
@@ -250,14 +341,19 @@ def run_comparison(args):
     NATIVE.require(setup and setup.get("status") == "passed", "The original setup UI run did not pass.")
     binary = args.app.resolve() / "Contents/MacOS/ShareX"
     initial_hash = WORKLOAD.digest(binary)
-    summary = {"diagnosticOnly": True, "commit": args.commit, "order": ORDER, "runs": [],
+    comparison = args.comparison
+    arms = COMPARISONS[comparison]
+    summary = {"diagnosticOnly": True, "commit": args.commit, "comparison": comparison,
+               "order": [timing or arm for arm, timing in arms], "runs": [],
                "installedBinarySHA256": initial_hash, "fixtureSHA256": WORKLOAD.digest(ROOT / "agent-capture-fixture.swift"),
                "setup": setup, "setupContext": "Original setup UI ran once before arm 1. Arms 2 through 4 reuse its account state; setup is not repeated.",
                "acknowledgementCaveat": "Control acknowledges after first append; metadata acknowledges after first complete callback. CLI polling remains 100 ms after each response. Removed append time changes later launch timing.",
                "scope": "Each arm starts a fresh app and fixture, runs the original native prefix and inline decodes, then stops at the first noisy capture. No maintenance, uninstall, or app replacement runs between arms. Metadata is not decoded-video E2E coverage."}
+    if comparison == "noise-timing":
+        summary["acknowledgementCaveat"] = "Every target uses metadata and acknowledges its first complete callback. The after arm waits for the noise control response before the first CLI status launch. Report this added launch delay; the inherited 100 ms polling delay and three-second observation remain unchanged."
     GAP.save(args.out / "comparison.json", summary)
-    for index, arm in enumerate(ORDER, 1):
-        directory = args.out / f"arm-{index:02d}-{arm}"
+    for index, (arm, noise_timing) in enumerate(arms, 1):
+        directory = args.out / f"arm-{index:02d}-{noise_timing or arm}"
         directory.mkdir()
         (directory / "traces").mkdir()
         request_id = str(uuid.uuid4()).upper()
@@ -265,13 +361,16 @@ def run_comparison(args):
                        "SHAREX_FRAME_GAP_TRACE_DIR": str(directory / "traces"), "SHAREX_FRAME_GAP_HEARTBEAT": "1",
                        "SHAREX_FRAME_GAP_OWNED_BUFFERS": "0", "SHAREX_FRAME_GAP_NV12": "0", "SHAREX_FRAME_GAP_DEEPER_QUEUE": "0",
                        "SHAREX_FRAME_GAP_STARTUP_SINK": arm, "SHAREX_FRAME_GAP_STARTUP_REQUEST_ID": request_id}
-        record = {"arm": arm, "index": index, "requestID": request_id}
+        record = {"arm": arm, "noiseTiming": noise_timing, "index": index, "requestID": request_id}
         try:
             NATIVE.require(WORKLOAD.digest(binary) == initial_hash, "Installed binary changed between arms.")
-            record.update(WORKLOAD.bounded_harness([sys.executable, __file__, "--arm", arm, "--app", args.app,
-                          "--build-settings", args.build_settings, "--out", directory / "native"],
+            arguments = [sys.executable, __file__, "--arm", arm, "--app", args.app,
+                         "--build-settings", args.build_settings, "--out", directory / "native"]
+            if noise_timing:
+                arguments.extend(["--comparison", comparison, "--noise-timing", noise_timing])
+            record.update(WORKLOAD.bounded_harness(arguments,
                           directory / "native.log", environment, 480))
-            record.update(analyze_arm(directory, arm, request_id))
+            record.update(analyze_arm(directory, arm, request_id, noise_timing))
             expected_exit = 0 if record.get("result", {}).get("status") == "diagnostic_complete" else 1
             if record.get("exitCode") != expected_exit:
                 record.setdefault("errors", []).append("Native process exit differs from its retained result.")
@@ -280,7 +379,7 @@ def run_comparison(args):
             record.setdefault("errors", []).append(str(error))
         summary["runs"].append(record)
         GAP.save(args.out / "comparison.json", summary)
-        print(f"Arm {index}/4 {arm}: exit={record.get('exitCode')}, errors={record.get('errors')}", flush=True)
+        print(f"Arm {index}/4 {noise_timing or arm}: exit={record.get('exitCode')}, errors={record.get('errors')}", flush=True)
     summary["incompleteArms"] = sum(bool(row.get("errors")) or row.get("timedOut") is not False
                                     or row.get("binaryUnchanged") is not True for row in summary["runs"])
     summary["failedControlGates"] = sum(row["arm"] == "control" and not row.get("result", {}).get("byteLimitE2EPassed")
@@ -298,10 +397,16 @@ def main():
     parser.add_argument("--build-settings", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--arm", choices=("control", "metadata"))
+    parser.add_argument("--comparison", choices=COMPARISONS, default="sinks")
+    parser.add_argument("--noise-timing", choices=("before", "after"))
     parser.add_argument("--setup-result", type=Path)
     parser.add_argument("--commit")
     args = parser.parse_args()
     args.out = args.out.resolve()
+    if args.noise_timing and (args.comparison != "noise-timing" or args.arm != "metadata"):
+        parser.error("--noise-timing requires --comparison noise-timing --arm metadata.")
+    if args.arm and args.comparison == "noise-timing" and (args.arm != "metadata" or not args.noise_timing):
+        parser.error("Each noise-timing arm requires metadata and an explicit --noise-timing.")
     if not args.arm and (not args.setup_result or not args.commit):
         parser.error("Comparison requires --setup-result and --commit.")
     return run_arm(args) if args.arm else run_comparison(args)

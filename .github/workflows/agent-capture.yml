@@ -33,7 +33,7 @@ on:
         type: boolean
         default: false
       frame_gap_replay:
-        description: Diagnostic only; compare startup sinks after original native prefixes
+        description: Diagnostic only; compare first-noise timing with metadata sinks after original prefixes
         type: boolean
         default: false
       frame_gap_workload:
@@ -170,9 +170,9 @@ jobs:
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
           python3 scripts/frame-gap-startup.py --app /Applications/ShareX.app \
             --build-settings "$PWD/agent-build-settings.json" --setup-result "$PWD/agent-setup-out/result.json" \
-            --commit '${{ github.sha }}' --out "$PWD/frame-gap-startup-out"
+            --comparison noise-timing --commit '${{ github.sha }}' --out "$PWD/frame-gap-startup-out"
 
-      - name: Print startup sink comparison
+      - name: Print first-noise timing comparison
         if: ${{ always() && inputs.frame_gap_replay }}
         run: |
           if test -f frame-gap-startup-out/comparison.json; then cat frame-gap-startup-out/comparison.json; fi
