@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -12,6 +13,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parent
+QUALITY_GAP_SECONDS = 0.5
 
 
 def save(path, value):
@@ -66,7 +68,7 @@ def summarize(report, draws):
     callback_gaps = intervals([row["entryUptime"] for row in callbacks])
     long_gaps = []
     for index, gap in enumerate(pts_gaps):
-        if gap["seconds"] <= 0.5:
+        if gap["seconds"] <= QUALITY_GAP_SECONDS:
             continue
         before, after = complete[index:index + 2]
         start, end = before["entryUptime"], after["entryUptime"]
@@ -90,6 +92,127 @@ def summarize(report, draws):
         "longGaps": long_gaps, "qualityFailure": bool(long_gaps)}
 
 
+def process_output(process):
+    try:
+        result = json.loads(process["stdout"])
+        return result if isinstance(result, dict) else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def artifact(path, errors):
+    try:
+        value = read_json(path)
+    except (OSError, ValueError) as error:
+        errors.append(f"Cannot read {path.name}: {error}")
+        return None
+    if value is None:
+        errors.append(f"Missing {path.name}.")
+    return value
+
+
+def analyze_run(output, source, draws):
+    item = {key: source[key] for key in ("fixtureMode", "pair", "variant", "path", "exitCode", "timedOut") if key in source}
+    directory = output / item["path"]
+    errors = []
+    capture = artifact(directory / "process.json", errors)
+    if capture:
+        item.update(exitCode=capture.get("exitCode"), timedOut=capture.get("timedOut", False))
+    if item.get("exitCode") != 0 or item.get("timedOut"):
+        errors.append("Capture process failed or timed out.")
+    report = artifact(directory / "trace.json", errors)
+    if report:
+        item["analysis"] = summarize(report, draws)
+        if report.get("error"):
+            item["captureError"] = report["error"]
+            errors.append("Capture reported an error.")
+        if item["analysis"]["traceOverflow"] or item["analysis"]["streamErrors"]:
+            errors.append("Capture trace overflowed or reported a stream error.")
+    item["incomingGapFailure"] = item.get("analysis", {}).get("qualityFailure", False)
+    item["decodedGapFailure"] = False
+    item["mediaVerifierFailure"] = False
+    item["verifierExecutionFailure"] = False
+    if item["variant"] == "production":
+        if not (directory / "recording.mp4").is_file():
+            errors.append("Production capture did not preserve a video.")
+        decode = artifact(directory / "decode-process.json", errors)
+        timings = process_output(decode)
+        if timings is not None:
+            item["decodeStatus"] = timings.get("status")
+            frames = timings.get("frames")
+            if not isinstance(frames, list) or not all(isinstance(row, dict) for row in frames):
+                frames = []
+                errors.append("Decoder result has no valid frame list.")
+            item["decodedFrameCount"] = len(frames)
+            pts = [row["pts"] for row in frames if isinstance(row.get("pts"), (int, float)) and math.isfinite(row["pts"])]
+            if not frames or len(pts) != len(frames):
+                errors.append("Decoded frames are empty or contain invalid timestamps.")
+            item["maximumDecodedInterval"] = maximum(intervals(pts))
+            item["decodedGapFailure"] = bool(item["maximumDecodedInterval"]
+                and item["maximumDecodedInterval"]["seconds"] > QUALITY_GAP_SECONDS)
+            if timings.get("error"):
+                item["decodeError"] = timings["error"]
+        if not decode or decode.get("timedOut") or decode.get("exitCode") != 0 or not timings or timings.get("status") != "passed":
+            errors.append("Decoder failed, timed out, or did not return a valid success report.")
+        verify = artifact(directory / "media-verification.json", errors)
+        verification = process_output(verify)
+        item["mediaVerificationExitCode"] = verify.get("exitCode") if verify else None
+        if verification is not None:
+            item["mediaVerification"] = verification
+        expected_exit = {"passed": 0, "failed": 1}.get((verification or {}).get("status"))
+        if not verify or verify.get("timedOut") or expected_exit is None or verify.get("exitCode") != expected_exit:
+            item["verifierExecutionFailure"] = True
+            errors.append("Media verifier failed to execute or did not return a consistent JSON result.")
+        else:
+            item["mediaVerifierFailure"] = verification["status"] == "failed"
+    item["qualityFailure"] = any(item[key] for key in ("incomingGapFailure", "decodedGapFailure", "mediaVerifierFailure"))
+    item["infrastructureErrors"] = errors
+    return item
+
+
+def analyze_experiment(output, source=None):
+    source = source if source is not None else read_json(output / "experiment.json")
+    if not isinstance(source, dict) or not isinstance(source.get("runs"), list):
+        raise RuntimeError("The existing experiment report has no runs list.")
+    summary = {**source, "analysisVersion": 2}
+    fixture_dir = output / "fixture"
+    fixture_errors = []
+    draws = artifact(fixture_dir / "draw-trace.json", fixture_errors) or []
+    overflow_path = fixture_dir / "draw-trace-overflow.txt"
+    try:
+        overflow = int(overflow_path.read_text().strip())
+    except (OSError, ValueError) as error:
+        overflow = None
+        fixture_errors.append(f"Cannot read fixture trace overflow count: {error}")
+    if not draws or overflow:
+        fixture_errors.append("Fixture draw trace is empty or overflowed.")
+    summary.update(fixtureDrawCount=len(draws), fixtureTraceOverflow=overflow,
+                   fixtureTraceMissing=not draws or overflow is None, fixtureInfrastructureErrors=fixture_errors)
+    summary["runs"] = [analyze_run(output, item, draws) for item in source["runs"]]
+    for total, field in (("incomingGapFailures", "incomingGapFailure"),
+                         ("decodedGapFailures", "decodedGapFailure"),
+                         ("mediaVerifierFailures", "mediaVerifierFailure"),
+                         ("qualityFailures", "qualityFailure"),
+                         ("verifierExecutionFailures", "verifierExecutionFailure")):
+        summary[total] = sum(item[field] for item in summary["runs"])
+    summary["qualityFailureCountBasis"] = "Counts are captures. Category counts overlap; qualityFailures is their union. The gap bound remains 0.5 seconds."
+    summary["infrastructureFailures"] = sum(bool(item["infrastructureErrors"]) for item in summary["runs"]) + bool(fixture_errors)
+    summary["status"] = "collected" if not summary["infrastructureFailures"] else "incomplete"
+    return summary
+
+
+def reanalyze(directory, destination=None):
+    directory = directory.resolve()
+    destination = destination.resolve() if destination else directory / "analysis-v2.json"
+    if destination.exists():
+        raise RuntimeError(f"Analysis output already exists; choose a new --analysis-out path: {destination}")
+    summary = analyze_experiment(directory)
+    summary["sourceExperimentSHA256"] = hashlib.sha256((directory / "experiment.json").read_bytes()).hexdigest()
+    save(destination, summary)
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0 if summary["status"] == "collected" else 1
+
+
 def run(args):
     if sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("This probe requires a disposable GitHub macOS runner.")
@@ -99,7 +222,7 @@ def run(args):
     output.mkdir(parents=True, exist_ok=False)
     binary = args.app.resolve() / "Contents/MacOS/ShareX"
     summary = {"diagnosticOnly": True, "pairsPerMode": args.pairs, "fixtureModes": args.fixture_modes, "runs": [],
-        "captureSecondsAfterFirstFrame": 6, "qualityGapSeconds": 0.5,
+        "captureSecondsAfterFirstFrame": 6, "qualityGapSeconds": QUALITY_GAP_SECONDS,
         "binarySHA256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "interpretation": "Fixture draw chronology does not prove compositor presentation. "
                           "Metadata gaps show the writer is unnecessary for reproduction. "
@@ -154,11 +277,6 @@ def run(args):
                 except subprocess.TimeoutExpired:
                     fixture.kill()
                     fixture.wait(timeout=5)
-    draws = read_json(fixture_dir / "draw-trace.json") or []
-    summary["fixtureDrawCount"] = len(draws)
-    overflow_path = fixture_dir / "draw-trace-overflow.txt"
-    summary["fixtureTraceOverflow"] = int(overflow_path.read_text().strip()) if overflow_path.exists() else None
-    summary["fixtureTraceMissing"] = not draws or not overflow_path.exists()
     expectation = {"width": 640, "height": 480, "fps": 15, "motion": "animated", "stages": [0],
         "minimumDuration": 5.5, "maximumDuration": 8,
         "anchors": [{"x": x, "y": y, "rgb": rgb} for x, y, rgb in
@@ -168,45 +286,17 @@ def run(args):
     save(output / "expectation.json", expectation)
     for item in summary["runs"]:
         directory = output / item["path"]
-        report = read_json(directory / "trace.json")
-        if report is None:
-            item["infrastructureError"] = "Capture did not produce a trace."
-            continue
-        item["analysis"] = summarize(report, draws)
-        if report.get("error"):
-            item["captureError"] = report["error"]
         video = directory / "recording.mp4"
         if video.exists():
             decode = command([output / "frame-gap-decode", video], directory / "decode-process.json", timeout=30)
-            try:
-                timings = json.loads(decode["stdout"])
+            timings = process_output(decode)
+            if timings is not None:
                 save(directory / "decoded-frames.json", timings)
-                item["decodeStatus"] = timings["status"]
-                if timings.get("error"):
-                    item["decodeError"] = timings["error"]
-                item["decodedFrameCount"] = len(timings["frames"])
-                item["maximumDecodedInterval"] = maximum(intervals([row["pts"] for row in timings["frames"] if "pts" in row]))
-            except (ValueError, KeyError) as error:
-                item["decodeError"] = str(error)
-            verify = command([output / "verify-agent-media", video, output / "expectation.json"],
-                             directory / "media-verification.json", timeout=30)
-            item["mediaVerificationExitCode"] = verify["exitCode"]
-            try:
-                item["mediaVerification"] = json.loads(verify["stdout"])
-            except ValueError:
-                item["infrastructureError"] = "Media verifier did not return a JSON result."
-        elif item["variant"] == "production":
-            item["infrastructureError"] = "Production capture did not preserve a video."
-        save(directory / "analysis.json", item)
-    summary["qualityFailures"] = sum(item.get("analysis", {}).get("qualityFailure", False) for item in summary["runs"])
-    summary["infrastructureFailures"] = sum(item.get("exitCode") != 0 or "infrastructureError" in item
-                                           or "captureError" in item or "decodeError" in item
-                                           or bool(item.get("analysis", {}).get("streamErrors"))
-                                           or bool(item.get("analysis", {}).get("traceOverflow"))
-                                           for item in summary["runs"])
-    if summary["fixtureTraceMissing"] or summary["fixtureTraceOverflow"]:
-        summary["infrastructureFailures"] += 1
-    summary["status"] = "collected" if not summary["infrastructureFailures"] else "incomplete"
+            command([output / "verify-agent-media", video, output / "expectation.json"],
+                    directory / "media-verification.json", timeout=30)
+    summary = analyze_experiment(output, summary)
+    for item in summary["runs"]:
+        save(output / item["path"] / "analysis.json", item)
     save(output / "experiment.json", summary)
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0 if summary["status"] == "collected" else 1
@@ -214,12 +304,21 @@ def run(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--app", type=Path, required=True)
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--app", type=Path)
+    parser.add_argument("--out", type=Path)
+    parser.add_argument("--reanalyze", type=Path, help="Analyze an existing experiment folder without capture or native tools.")
+    parser.add_argument("--analysis-out", type=Path, help="New report path; defaults to EXISTING_FOLDER/analysis-v2.json.")
     parser.add_argument("--pairs", type=int, default=6)
     parser.add_argument("--fixture-modes", nargs="+", choices=("noisy", "animated"), default=["noisy", "animated"])
     try:
-        sys.exit(run(parser.parse_args()))
+        args = parser.parse_args()
+        if args.reanalyze:
+            if args.app or args.out:
+                parser.error("--reanalyze cannot be combined with --app or --out.")
+            sys.exit(reanalyze(args.reanalyze, args.analysis_out))
+        if not args.app or not args.out or args.analysis_out:
+            parser.error("Capture requires --app and --out; --analysis-out requires --reanalyze.")
+        sys.exit(run(args))
     except Exception as error:
         print(f"Frame gap probe incomplete: {error}", file=sys.stderr)
         sys.exit(1)
