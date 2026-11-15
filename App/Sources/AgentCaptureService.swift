@@ -19,7 +19,7 @@ final class AgentCaptureService {
     private(set) var recordingError: String?
 
     private struct PendingRequest { let request: AgentRequest; let task: Task<AgentResponse, Never> }
-    @MainActor @Observable private final class ActiveRecording {
+    @MainActor @Observable fileprivate final class ActiveRecording {
         let origin: CaptureOrigin
         let id: UUID
         let selection: CaptureSelection
