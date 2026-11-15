@@ -89,6 +89,11 @@ private final class FixtureWindow: NSWindow {
 @MainActor
 private final class Fixture: NSObject, NSApplicationDelegate {
     enum Mode: String { case animated, staticImage = "static" }
+    struct Operation: Codable {
+        let name: String
+        let phase: String
+        let uptime: Double
+    }
 
     let directory: URL
     let title: String
@@ -100,6 +105,8 @@ private final class Fixture: NSObject, NSApplicationDelegate {
     var mode = Mode.animated
     var displayID: CGDirectDisplayID = 0
     var failure: String?
+    var operationTrace: [Operation] = []
+    var operationOverflow = 0
 
     init(directory: URL, title: String) {
         self.directory = directory
@@ -131,7 +138,10 @@ private final class Fixture: NSObject, NSApplicationDelegate {
         window.contentView = view
         self.window = window
         self.view = view
-        if view.traceEnabled { view.drawTrace.reserveCapacity(100000) }
+        if view.traceEnabled {
+            view.drawTrace.reserveCapacity(100000)
+            operationTrace.reserveCapacity(100000)
+        }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         timer = Timer.scheduledTimer(timeInterval: 1.0 / 30, target: self,
@@ -139,6 +149,8 @@ private final class Fixture: NSObject, NSApplicationDelegate {
     }
 
     @objc func update() {
+        recordOperation("update", "begin")
+        defer { recordOperation("update", "end") }
         let commandURL = directory.appendingPathComponent("command.json")
         if let data = try? Data(contentsOf: commandURL),
            let command = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -179,8 +191,12 @@ private final class Fixture: NSObject, NSApplicationDelegate {
     }
 
     func writeState() {
+        recordOperation("writeState", "begin")
+        defer { recordOperation("writeState", "end") }
+        recordOperation("windowList", "begin")
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                                kCGNullWindowID) as? [[String: Any]] ?? []
+        recordOperation("windowList", "end")
         let ownWindow = windows.first { ($0[kCGWindowNumber as String] as? Int) == window?.windowNumber }
         let bounds = ownWindow?[kCGWindowBounds as String] as? [String: Any] ?? [:]
         let display = CGDisplayBounds(displayID)
@@ -212,12 +228,21 @@ private final class Fixture: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func recordOperation(_ name: String, _ phase: String) {
+        guard view?.traceEnabled == true else { return }
+        if operationTrace.count < 100000 {
+            operationTrace.append(Operation(name: name, phase: phase, uptime: ProcessInfo.processInfo.systemUptime))
+        } else { operationOverflow += 1 }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         guard let view, view.traceEnabled else { return }
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(view.drawTrace).write(to: directory.appendingPathComponent("draw-trace.json"), options: .atomic)
+            try encoder.encode(operationTrace).write(to: directory.appendingPathComponent("operation-trace.json"), options: .atomic)
+            try Data("\(operationOverflow)\n".utf8).write(to: directory.appendingPathComponent("operation-trace-overflow.txt"), options: .atomic)
             let overflow = Data("\(view.traceOverflow)\n".utf8)
             try overflow.write(to: directory.appendingPathComponent("draw-trace-overflow.txt"), options: .atomic)
         } catch { failure = "Fixture draw trace flush failed: \(error)" }

@@ -25,11 +25,19 @@ final class ScreenRecorder {
     private let width: Int
     private let height: Int
     private var finishTask: Task<RecordedVideo, Error>?
+    #if FRAME_GAP_PROBE
+    let probeOperations = FrameGapOperationLog()
+    private let probeContext: FrameGapContext
+    #endif
 
     init(target: CaptureTargets.Resolved, options: RecordingOptions, url: URL,
          onFailure: @escaping @Sendable (AgentFailure) -> Void,
          onLimit: @escaping @Sendable (String) -> Void) throws {
         partialURL = url; width = target.configuration.width; height = target.configuration.height
+        #if FRAME_GAP_PROBE
+        probeContext = FrameGapContext(videoPath: url.path, width: width, height: height,
+                                      fps: options.fps, queueDepth: target.configuration.queueDepth)
+        #endif
         target.configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(options.fps))
         writer = try CaptureVideoWriter(url: url, width: width, height: height, options: options, onFailure: onFailure, onLimit: onLimit)
         stream = SCStream(filter: target.filter, configuration: target.configuration, delegate: writer)
@@ -49,7 +57,13 @@ final class ScreenRecorder {
     func statistics() async -> RecorderStatistics { await writer.statistics() }
 
     #if FRAME_GAP_PROBE
-    func probeSnapshot() async -> FrameGapSnapshot { await writer.probeSnapshot() }
+    func probeSnapshot() async -> FrameGapSnapshot {
+        var snapshot = await writer.probeSnapshot()
+        snapshot.operations = probeOperations.events
+        snapshot.operationOverflow = probeOperations.overflow
+        snapshot.context = probeContext
+        return snapshot
+    }
     #endif
 
     func finish() async throws -> RecordedVideo {
@@ -58,7 +72,10 @@ final class ScreenRecorder {
             writer.freeze()
             let stopFailure = await stopStream()
             #if FRAME_GAP_PROBE
-            defer { writer.flushProbeAfterStop() }
+            defer {
+                writer.flushProbeAfterStop(operations: probeOperations.events,
+                    operationOverflow: probeOperations.overflow, context: probeContext)
+            }
             #endif
             let stats = try await writer.finish()
             if let stopFailure { throw stopFailure }
@@ -346,7 +363,7 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
 
     // This optional path also instruments the real agent/client flow in a diagnostic build.
     // ScreenRecorder calls it only after stopStream and writer finalization have returned.
-    func flushProbeAfterStop() {
+    func flushProbeAfterStop(operations: [FrameGapOperation], operationOverflow: Int, context: FrameGapContext) {
         guard let path = ProcessInfo.processInfo.environment["SHAREX_FRAME_GAP_TRACE_DIR"] else { return }
         queue.async {
             do {
@@ -354,7 +371,11 @@ private final class CaptureVideoWriter: NSObject, SCStreamOutput, SCStreamDelega
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                try encoder.encode(self.probeTrace.snapshot()).write(
+                var snapshot = self.probeTrace.snapshot()
+                snapshot.operations = operations
+                snapshot.operationOverflow = operationOverflow
+                snapshot.context = context
+                try encoder.encode(snapshot).write(
                     to: directory.appendingPathComponent(self.probeID + "-" + self.url.deletingPathExtension().lastPathComponent + "-trace.json"), options: .atomic)
             } catch {
                 FileHandle.standardError.write(Data("Frame gap trace flush failed: \(error)\n".utf8))

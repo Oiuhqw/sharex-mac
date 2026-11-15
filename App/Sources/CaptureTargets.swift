@@ -16,6 +16,9 @@ final class CaptureTargets {
     private struct Entry { let target: CaptureTarget; let identity: Identity }
     private var entries: [String: Entry] = [:]
     private let maximumTargets = 2048
+    #if FRAME_GAP_PROBE
+    weak var probeOperations: FrameGapOperationLog?
+    #endif
 
     struct Resolved {
         let target: CaptureTarget
@@ -61,13 +64,25 @@ final class CaptureTargets {
                 throw AgentFailure(.targetNotFound, "The selected display disconnected.")
             }
             let ours = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+            #if FRAME_GAP_PROBE
+            probeOperations?.record("target.resolve.filter", "begin")
+            #endif
             filter = SCContentFilter(display: display, excludingApplications: ours, exceptingWindows: [])
+            #if FRAME_GAP_PROBE
+            probeOperations?.record("target.resolve.filter", "end")
+            #endif
         case .window:
             guard selection.region == nil else { throw AgentFailure(.invalidRequest, "Regions require a display target.") }
             guard let window = content.windows.first(where: { $0.windowID == entry.identity.nativeID }) else {
                 throw AgentFailure(.targetNotFound, "The selected window closed.")
             }
+            #if FRAME_GAP_PROBE
+            probeOperations?.record("target.resolve.filter", "begin")
+            #endif
             filter = SCContentFilter(desktopIndependentWindow: window)
+            #if FRAME_GAP_PROBE
+            probeOperations?.record("target.resolve.filter", "end")
+            #endif
         }
         let config = SCStreamConfiguration()
         config.showsCursor = selection.includeCursor
@@ -112,7 +127,13 @@ final class CaptureTargets {
                   let app = window.owningApplication, app.processID != ProcessInfo.processInfo.processIdentifier,
                   let running = NSRunningApplication(processIdentifier: app.processID) else { return nil }
             let owner = "\(app.processID):\(app.bundleIdentifier):\(running.launchDate?.timeIntervalSince1970 ?? 0)"
+            #if FRAME_GAP_PROBE
+            probeOperations?.record("target.current.filter", "begin")
+            #endif
             let filter = SCContentFilter(desktopIndependentWindow: window)
+            #if FRAME_GAP_PROBE
+            probeOperations?.record("target.current.filter", "end")
+            #endif
             return Candidate(identity: Identity(kind: .window, nativeID: window.windowID, owner: owner,
                 width: window.frame.width, height: window.frame.height, scale: Double(filter.pointPixelScale), displayFrame: nil),
                 name: window.title?.isEmpty == false ? String(window.title!.prefix(512)) : app.applicationName,
@@ -122,8 +143,20 @@ final class CaptureTargets {
     }
 
     private func content() async throws -> SCShareableContent {
-        guard CGPreflightScreenCaptureAccess() else { throw AgentFailure(.permissionDenied, "Grant ShareX Screen Recording permission in System Settings, then restart ShareX if required.") }
+        #if FRAME_GAP_PROBE
+        let probe = probeOperations
+        probe?.record("target.preflight", "begin")
+        #endif
+        let granted = CGPreflightScreenCaptureAccess()
+        #if FRAME_GAP_PROBE
+        probe?.record("target.preflight", "end")
+        #endif
+        guard granted else { throw AgentFailure(.permissionDenied, "Grant ShareX Screen Recording permission in System Settings, then restart ShareX if required.") }
         do {
+            #if FRAME_GAP_PROBE
+            probe?.record("target.content", "begin")
+            defer { probe?.record("target.content", "end") }
+            #endif
             let box = try await AgentCaptureDeadline.run {
                 ContentBox(content: try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true))
             }

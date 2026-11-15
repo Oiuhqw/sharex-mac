@@ -47,6 +47,9 @@ enum CaptureError: LocalizedError {
 /// displays; window styles capture the window itself with a desktop-independent filter.
 @MainActor
 enum ScreenCapture {
+    #if FRAME_GAP_PROBE
+    static weak var probeOperations: FrameGapOperationLog?
+    #endif
 #if SHAREX_E2E
     /// E2E seam, set only by `--e2e` when Screen Recording cannot be granted: a synthetic frame of the given pixel size.
     static var e2eFixture: ((Int, Int) -> CGImage?)?
@@ -119,6 +122,11 @@ enum ScreenCapture {
     }
 
     static func captureAgent(filter: SCContentFilter, configuration: SCStreamConfiguration) async throws -> CGImage {
+        #if FRAME_GAP_PROBE
+        let probe = probeOperations
+        probe?.record("screenshot.capture", "begin")
+        defer { probe?.record("screenshot.capture", "end") }
+        #endif
         do {
             let box = try await AgentCaptureDeadline.run {
                 ImageBox(image: try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration))

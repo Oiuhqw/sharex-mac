@@ -2,6 +2,7 @@
 import AppKit
 @preconcurrency import ScreenCaptureKit
 import IOSurface
+import Darwin
 import ShareXAgent
 
 // Diagnostic build only. Values copied into these records never retain a capture buffer.
@@ -45,6 +46,45 @@ struct FrameGapSnapshot: Codable, Sendable {
     let overflow: Int
     let heartbeats: [Double]
     let streamErrors: [String]
+    var operations: [FrameGapOperation] = []
+    var operationOverflow = 0
+    var context: FrameGapContext?
+}
+
+struct FrameGapOperation: Codable, Sendable {
+    let name: String
+    let phase: String
+    let uptime: Double
+}
+
+struct FrameGapContext: Codable, Sendable {
+    let videoPath: String
+    let width: Int
+    let height: Int
+    let fps: Int
+    let queueDepth: Int
+    let machTimebaseNumerator: UInt32
+    let machTimebaseDenominator: UInt32
+
+    init(videoPath: String, width: Int, height: Int, fps: Int, queueDepth: Int) {
+        self.videoPath = videoPath; self.width = width; self.height = height
+        self.fps = fps; self.queueDepth = queueDepth
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+        machTimebaseNumerator = timebase.numer
+        machTimebaseDenominator = timebase.denom
+    }
+}
+
+@MainActor
+final class FrameGapOperationLog {
+    private(set) var events: [FrameGapOperation] = []
+    private(set) var overflow = 0
+    init() { events.reserveCapacity(8192) }
+    func record(_ name: String, _ phase: String) {
+        if events.count < 8192 { events.append(FrameGapOperation(name: name, phase: phase, uptime: FrameGapTrace.now())) }
+        else { overflow += 1 }
+    }
 }
 
 final class FrameGapTrace: @unchecked Sendable {

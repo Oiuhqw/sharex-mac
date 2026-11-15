@@ -282,6 +282,8 @@ class Evidence:
 
     def emit(self, event, **data):
         record = {"event": event, "elapsedSeconds": round(time.monotonic() - self.start, 4), **data}
+        if os.environ.get("SHAREX_FRAME_GAP_WORKLOAD") == "1":
+            record["monotonicSeconds"] = time.monotonic()
         self.events.write(json.dumps(record, sort_keys=True) + "\n")
         self.events.flush()
 
@@ -415,6 +417,7 @@ class Run:
         self.metrics_thread = None
         self.fixture_directory = evidence.directory / "fixture"
         self.fixture_directory.mkdir()
+        self.frame_gap_diagnostic = os.environ.get("SHAREX_FRAME_GAP_WORKLOAD") == "1"
 
     def command(self, command, timeout=25, check=True, env=None, cwd=None):
         log = self.evidence.path("command", "json")
@@ -473,6 +476,9 @@ class Run:
         return decode_response(response, request_id, error)
 
     def track_request(self, operation, arguments, request_id):
+        if self.frame_gap_diagnostic:
+            self.evidence.emit("agent_operation_request", operation=operation, requestID=request_id,
+                               sessionID=arguments.get("sessionID"))
         if operation == "recording.start" or (operation == "screenshot" and "sessionID" not in arguments):
             self.owned_session_ids.add(request_id)
 
@@ -498,6 +504,8 @@ class Run:
 
     def control(self, action, **values):
         command_id = str(uuid.uuid4())
+        if self.frame_gap_diagnostic:
+            self.evidence.emit("fixture_command_requested", action=action, commandID=command_id, values=values)
         write_json(self.fixture_directory / "command.json", {"id": command_id, "action": action, **values})
         state = self.wait_for(lambda: (value if (value := self.fixture_state())
                                       and value.get("commandID") == command_id else None), 5, "fixture command")
@@ -947,6 +955,8 @@ class Run:
                     client.close()
             except (OSError, ValueError, subprocess.TimeoutExpired) as problem:
                 errors.append(str(problem))
+        if self.frame_gap_diagnostic:
+            errors.extend(self.flush_diagnostic_evidence())
         for process in reversed(self.children):
             try:
                 stop_process(process)
@@ -964,13 +974,40 @@ class Run:
                     for source in directory.rglob("*"):
                         if not source.is_file() or source.is_symlink() or not source.resolve().is_relative_to(directory.resolve()):
                             continue
-                        if not failed and source.name != "manifest.json" and ".partial." not in source.name:
+                        if not self.frame_gap_diagnostic and not failed and source.name != "manifest.json" and ".partial." not in source.name:
                             continue
                         destination = self.evidence.directory / "session-snapshots" / directory.name / source.relative_to(directory)
                         destination.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copyfile(source, destination)
                 except OSError as problem:
                     errors.append(f"Could not retain session evidence {session_id}: {problem}")
+        return errors
+
+    def flush_diagnostic_evidence(self):
+        errors = []
+        if self.app and self.app.poll() is None and self.capabilities:
+            root = Path(self.capabilities["sessionRoot"])
+            for session_id in sorted(self.owned_session_ids):
+                manifest = root / str(uuid.UUID(session_id)).upper() / "manifest.json"
+                try:
+                    if not manifest.is_file():
+                        continue
+                    session = json.loads(manifest.read_text(encoding="utf-8"))
+                    if session.get("state") not in TERMINAL and any(item.get("kind") == "recording" for item in session.get("artifacts", [])):
+                        self.evidence.emit("diagnostic_cleanup_recording_stop", sessionID=session_id)
+                        self.cli("recording.stop", {"sessionID": session_id})
+                except (OSError, ValueError, Failure) as problem:
+                    errors.append(f"Diagnostic recording cleanup {session_id}: {problem}")
+        if self.fixture and self.fixture.poll() is None:
+            try:
+                command_id = str(uuid.uuid4())
+                self.evidence.emit("fixture_command_requested", action="quit", commandID=command_id)
+                write_json(self.fixture_directory / "command.json", {"id": command_id, "action": "quit"})
+                self.fixture.wait(timeout=5)
+                require((self.fixture_directory / "draw-trace.json").is_file(), "Fixture exited without its diagnostic draw trace.")
+                self.evidence.emit("fixture_diagnostic_flushed", pid=self.fixture.pid)
+            except (OSError, ValueError, Failure, subprocess.TimeoutExpired) as problem:
+                errors.append(f"Diagnostic fixture cleanup: {problem}")
         return errors
 
 

@@ -211,12 +211,19 @@ final class AgentCaptureService {
     }
 
     private func screenshot(_ selection: CaptureSelection, sessionID: UUID?, requestID: UUID) async throws -> CaptureSession {
+        #if FRAME_GAP_PROBE
+        let probe = active?.recorder?.probeOperations
+        probe?.record("screenshot.prepare", "begin")
+        #endif
         guard !screenshotBusy else { throw AgentFailure(.busy, "A screenshot is already in progress.") }
         screenshotBusy = true
         defer { screenshotBusy = false }
         if let sessionID { try await sessions.load(sessionID).requireAgentOwnership() }
         try await sessions.checkReserve()
         let resolved = try await targets.resolve(selection)
+        #if FRAME_GAP_PROBE
+        probe?.record("screenshot.prepare", "end")
+        #endif
         try requireCaptureAccess()
         let id = sessionID ?? requestID
         if sessionID == nil {
@@ -233,8 +240,19 @@ final class AgentCaptureService {
         do {
             let image = try await ScreenCapture.captureAgent(filter: resolved.filter, configuration: resolved.configuration)
             try requireCaptureAccess()
+            #if FRAME_GAP_PROBE
+            probe?.record("screenshot.postResolve", "begin")
+            #endif
             _ = try await targets.resolve(selection)
-            guard let png = await Export.encodePNGOffMain(image, scale: resolved.scale) else {
+            #if FRAME_GAP_PROBE
+            probe?.record("screenshot.postResolve", "end")
+            probe?.record("screenshot.png", "begin")
+            #endif
+            let encodedPNG = await Export.encodePNGOffMain(image, scale: resolved.scale)
+            #if FRAME_GAP_PROBE
+            probe?.record("screenshot.png", "end")
+            #endif
+            guard let png = encodedPNG else {
                 throw AgentFailure(.captureFailed, "The screenshot could not be encoded as PNG.")
             }
             try requireCaptureAccess()
@@ -305,12 +323,25 @@ final class AgentCaptureService {
                 }
             })
             recording.recorder = recorder
+            #if FRAME_GAP_PROBE
+            targets.probeOperations = recorder.probeOperations
+            ScreenCapture.probeOperations = recorder.probeOperations
+            recorder.probeOperations.record("service.start", "begin")
+            #endif
             let stats = try await recorder.start()
+            #if FRAME_GAP_PROBE
+            recorder.probeOperations.record("service.start", "end")
+            recorder.probeOperations.record("service.startedSessionUpdate", "begin")
+            #endif
             session = try await sessions.update(recording.id) { session in
                 session.state = .recording; session.startedAt = stats.startedAt
                 session.acceptedFrames = stats.acceptedFrames; session.droppedFrames = stats.droppedFrames
             }
             recordingSnapshot = session
+            #if FRAME_GAP_PROBE
+            recorder.probeOperations.record("service.startedSessionUpdate", "end")
+            recorder.probeOperations.record("service.monitorInstalled", "instant")
+            #endif
             recording.monitor = Task { @MainActor in await monitor(recording) }
             return session
         } catch {
@@ -379,15 +410,49 @@ final class AgentCaptureService {
     private func monitor(_ recording: ActiveRecording) async {
         var ticks = 0
         while !Task.isCancelled, active === recording, recording.finalization == nil {
+            #if FRAME_GAP_PROBE
+            recording.recorder?.probeOperations.record("monitor.sleep", "begin")
+            #endif
             do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            #if FRAME_GAP_PROBE
+            recording.recorder?.probeOperations.record("monitor.sleep", "end")
+            #endif
             guard !Task.isCancelled, active === recording, recording.finalization == nil else { return }
             ticks += 1
             do {
+                #if FRAME_GAP_PROBE
+                let probe = recording.recorder?.probeOperations
+                probe?.record("monitor.tick", "begin")
+                defer { probe?.record("monitor.tick", "end") }
+                #endif
                 guard recording.origin == .human || enabled else { _ = try await finish(recording, reason: "access_revoked"); return }
-                guard CGPreflightScreenCaptureAccess() else { _ = try await finish(recording, reason: "permission_revoked"); return }
+                #if FRAME_GAP_PROBE
+                probe?.record("monitor.preflight", "begin")
+                #endif
+                let granted = CGPreflightScreenCaptureAccess()
+                #if FRAME_GAP_PROBE
+                probe?.record("monitor.preflight", "end")
+                #endif
+                guard granted else { _ = try await finish(recording, reason: "permission_revoked"); return }
+                #if FRAME_GAP_PROBE
+                probe?.record("monitor.statistics", "begin")
+                #endif
                 let stats = await recording.recorder?.statistics()
+                #if FRAME_GAP_PROBE
+                probe?.record("monitor.statistics", "end")
+                #endif
                 if ticks % 4 == 0 {
-                    _ = try await targets.resolve(recording.selection, recording: true)
+                    do {
+                        #if FRAME_GAP_PROBE
+                        probe?.record("monitor.resolve", "begin")
+                        defer { probe?.record("monitor.resolve", "end") }
+                        #endif
+                        _ = try await targets.resolve(recording.selection, recording: true)
+                    }
+                    #if FRAME_GAP_PROBE
+                    probe?.record("monitor.sessionLoad", "begin")
+                    defer { probe?.record("monitor.sessionLoad", "end") }
+                    #endif
                     if let stats, var session = try? await sessions.load(recording.id) {
                         session.acceptedFrames = stats.acceptedFrames; session.droppedFrames = stats.droppedFrames
                         recordingSnapshot = session

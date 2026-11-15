@@ -8,6 +8,10 @@ on:
         default: false
   workflow_dispatch:
     inputs:
+      frame_gap_workload:
+        description: Diagnostic only; trace three native and actual client cycles
+        type: boolean
+        default: false
       frame_gap_probe:
         description: Diagnostic only; collect paired recorder and metadata traces
         type: boolean
@@ -34,6 +38,10 @@ jobs:
       - name: Select Apple Silicon toolchain
         id: toolchain
         run: |
+          if [[ '${{ inputs.frame_gap_probe }}' == true && '${{ inputs.frame_gap_workload }}' == true ]]; then
+            echo 'Choose one frame-gap diagnostic mode.' >&2
+            exit 2
+          fi
           test "$(uname -m)" = arm64
           sudo xcode-select -s /Applications/Xcode_26.3.app
           sw_vers
@@ -59,7 +67,7 @@ jobs:
         run: |
           set -o pipefail
           probe_flags=()
-          if [[ '${{ inputs.frame_gap_probe }}' == true ]]; then
+          if [[ '${{ inputs.frame_gap_probe }}' == true || '${{ inputs.frame_gap_workload }}' == true ]]; then
             probe_flags+=(SWIFT_ACTIVE_COMPILATION_CONDITIONS=FRAME_GAP_PROBE)
           fi
           xcodebuild build -project ShareXMac.xcodeproj -scheme ShareX -configuration Release \
@@ -103,7 +111,7 @@ jobs:
 
       - name: Build and authorize independent setup driver
         id: setup-helper
-        if: ${{ !cancelled() && !inputs.frame_gap_probe && steps.capture-permission.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.frame_gap_probe && !inputs.frame_gap_workload && steps.capture-permission.outcome == 'success' }}
         run: |
           xcrun swiftc -parse-as-library -swift-version 6 -O -target arm64-apple-macosx14.0 \
             scripts/e2e-agent-setup.swift -o "$RUNNER_TEMP/sharex-agent-setup-helper"
@@ -119,7 +127,7 @@ jobs:
             --helper "$RUNNER_TEMP/sharex-agent-setup-helper" --out "$PWD/agent-setup-out"
 
       - name: Capture real pixels and verify decoded media
-        if: ${{ !cancelled() && !inputs.frame_gap_probe && steps.capture-permission.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.frame_gap_probe && !inputs.frame_gap_workload && steps.capture-permission.outcome == 'success' }}
         timeout-minutes: 18
         run: |
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
@@ -127,7 +135,7 @@ jobs:
             --build-settings "$PWD/agent-build-settings.json" --out "$PWD/agent-e2e-out"
 
       - name: Print native report
-        if: ${{ always() && !inputs.frame_gap_probe }}
+        if: ${{ always() && !inputs.frame_gap_probe && !inputs.frame_gap_workload }}
         run: |
           if test -f agent-setup-out/result.json; then cat agent-setup-out/result.json; fi
           if test -f agent-e2e-out/result.json; then
@@ -150,8 +158,24 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/sharex-agent-clients" --no-audit --no-fund \
             @openai/codex@0.169.0 @anthropic-ai/claude-code@2.1.323
 
+      - name: Trace three native and actual client workload cycles
+        if: ${{ !cancelled() && inputs.frame_gap_workload && steps.clients.outcome == 'success' }}
+        timeout-minutes: 45
+        run: |
+          defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
+          python3 scripts/frame-gap-workload.py --app /Applications/ShareX.app \
+            --build-settings "$PWD/agent-build-settings.json" \
+            --codex "$RUNNER_TEMP/sharex-agent-clients/node_modules/.bin/codex" \
+            --claude "$RUNNER_TEMP/sharex-agent-clients/node_modules/.bin/claude" \
+            --commit '${{ github.sha }}' --out "$PWD/frame-gap-workload-out"
+
+      - name: Print frame gap workload report
+        if: ${{ always() && inputs.frame_gap_workload }}
+        run: |
+          if test -f frame-gap-workload-out/workload.json; then cat frame-gap-workload-out/workload.json; fi
+
       - name: Register and capture through actual Codex and Claude Code clients
-        if: ${{ !cancelled() && steps.clients.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.frame_gap_workload && steps.clients.outcome == 'success' }}
         timeout-minutes: 12
         run: |
           defaults write com.sharexmac.ShareX agentCaptureEnabled -bool true
@@ -175,7 +199,7 @@ jobs:
             --helper "$RUNNER_TEMP/sharex-agent-setup-helper" --out "$PWD/desktop-maintenance-out"
 
       - name: Print desktop maintenance report and failure diagnostics
-        if: ${{ always() && !inputs.frame_gap_probe }}
+        if: ${{ always() && !inputs.frame_gap_probe && !inputs.frame_gap_workload }}
         run: |
           if test -f desktop-maintenance-out/result.json; then
             cat desktop-maintenance-out/result.json
@@ -202,5 +226,7 @@ jobs:
             agent-clients-out
             desktop-maintenance-out
             frame-gap-probe-out
+            frame-gap-workload-out
+            !frame-gap-workload-out/**/client-home/**
             !agent-clients-out/client-home/**
           if-no-files-found: warn
