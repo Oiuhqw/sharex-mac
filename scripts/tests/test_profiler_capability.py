@@ -462,6 +462,22 @@ class SignalBoundaryTests(unittest.TestCase):
     def test_cancellation_during_successful_collection_cleanup_prevents_success(self):
         self.check_signal_boundary("collector", "close", (signal.SIGINT, signal.SIGTERM), collector_exits=True)
 
+    def test_cancellation_after_denied_empty_collector_group_prevents_success(self):
+        signal_group = PROBE.OwnedChild.signal_group
+
+        def deny_exited_collector(child, sig, deadline):
+            if child.path.stem != "collector":
+                return signal_group(child, sig, deadline)
+            self.assertTrue(child.exited())
+            self.assertIsNone(child.process.returncode)
+            with mock.patch.object(os, "killpg", side_effect=PermissionError(errno.EPERM, "Operation not permitted")):
+                signal_group(child, sig, deadline)
+            self.assertIn("noLiveMembers", child.record["signals"][-1])
+            self.assertNotIn("sent", child.record["signals"][-1])
+
+        with mock.patch.object(PROBE.OwnedChild, "signal_group", deny_exited_collector):
+            self.check_signal_boundary("collector", "close", (signal.SIGINT, signal.SIGTERM), collector_exits=True)
+
     def check_signal_boundary(self, target_name, target_function, signals, collector_exits=False):
         children = {}
         fired = False
