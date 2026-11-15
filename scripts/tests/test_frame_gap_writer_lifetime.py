@@ -169,6 +169,7 @@ class WriterLifetimeTests(unittest.TestCase):
                      mock.patch.object(STARTUP, "run_arm", side_effect=lambda parsed: calls.append((parsed, timeout)) or 0):
                     self.assertEqual(STARTUP.main(), 0)
                 parsed = calls[-1][0]
+                self.assertEqual(environment["SHAREX_FRAME_GAP_WRITER_LIFETIME"], parsed.writer_lifetime)
                 (log.parent / "traces").rmdir()
                 trace = self.evidence(log.parent, parsed.writer_lifetime, gap=parsed.writer_lifetime == "retain")
                 if len(calls) == 2:
@@ -180,10 +181,11 @@ class WriterLifetimeTests(unittest.TestCase):
                 return {"exitCode": 0, "timedOut": False}
 
             with mock.patch.object(STARTUP.sys, "platform", "darwin"), \
-                 mock.patch.dict(STARTUP.os.environ, {"GITHUB_ACTIONS": "true"}), \
+                 mock.patch.dict(STARTUP.os.environ, {"GITHUB_ACTIONS": "true", "SHAREX_FRAME_GAP_WRITER_LIFETIME": "foreign"}), \
                  mock.patch.object(STARTUP.WORKLOAD, "bounded_harness", side_effect=harness), \
                  mock.patch.object(STARTUP, "compare_black_pixels") as pixels, mock.patch("builtins.print"):
                 self.assertEqual(STARTUP.run_comparison(args), 1)
+                self.assertEqual(STARTUP.os.environ["SHAREX_FRAME_GAP_WRITER_LIFETIME"], "foreign")
             report = STARTUP.GAP.read_json(args.out / "comparison.json")
             self.assertEqual(report["order"], list(STARTUP.WRITER_LIFETIME_ORDER))
             self.assertEqual([parsed.writer_lifetime for parsed, _ in calls], report["order"])
@@ -198,6 +200,34 @@ class WriterLifetimeTests(unittest.TestCase):
                 self.assertEqual(run["noiseTiming"], "before")
                 self.assertEqual(run["arm"], "metadata")
                 self.assertTrue(Path(run["trace"]).exists())
+
+    def test_unrelated_routes_reject_inherited_writer_lifetime(self):
+        base = ["startup", "--app", "/app", "--build-settings", "/settings", "--out", "/out",
+                "--setup-result", "/setup", "--commit", "diagnostic-revision"]
+        routes = [["--comparison", comparison] + (["--profile-preflight", "/profile"] if comparison == "source-profile" else [])
+                  for comparison in STARTUP.COMPARISONS if comparison != "writer-lifetime"]
+        routes.extend([["--arm", arm] for arm in ("control", "metadata")])
+        routes.append(["--comparison", "bitmap-draw-path", "--pixel-check", "--bitmap-content", "constant"])
+        for route in routes:
+            for condition in (None, "retain", "release", "foreign"):
+                with self.subTest(route=route, condition=condition), \
+                     mock.patch.object(STARTUP.sys, "argv", base + route), \
+                     mock.patch.dict(STARTUP.os.environ, {}, clear=True), \
+                     mock.patch.object(STARTUP.os, "geteuid", return_value=501, create=True), \
+                     mock.patch.object(STARTUP, "run_comparison", return_value=0), \
+                     mock.patch.object(STARTUP, "run_arm", return_value=0), \
+                     mock.patch.object(STARTUP, "run_pixel_check", return_value=0), \
+                     mock.patch.object(STARTUP.sys, "stderr"):
+                    if "--pixel-check" in route:
+                        STARTUP.os.environ["SHAREX_FRAME_GAP_BITMAP_COMPONENT_MASK"] = "0"
+                    if condition is None:
+                        self.assertEqual(STARTUP.main(), 0)
+                    else:
+                        STARTUP.os.environ["SHAREX_FRAME_GAP_WRITER_LIFETIME"] = condition
+                        with self.assertRaises(SystemExit) as raised:
+                            STARTUP.main()
+                        self.assertEqual(raised.exception.code, 2)
+                        self.assertEqual(STARTUP.os.environ["SHAREX_FRAME_GAP_WRITER_LIFETIME"], condition)
 
     def test_write_durations_are_retained_without_an_automatic_causal_cutoff(self):
         for duration in (0.001, 0.4, 0.58):

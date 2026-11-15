@@ -329,14 +329,16 @@ class ComparisonTests(unittest.TestCase):
                                    "byteLimitE2EPassed": arm == "control" and not failed}, "errors": []}
 
             with mock.patch.object(STARTUP.sys, "platform", "darwin"), \
-                 mock.patch.dict(STARTUP.os.environ, {"GITHUB_ACTIONS": "true"}), \
+                 mock.patch.dict(STARTUP.os.environ, {"GITHUB_ACTIONS": "true", "SHAREX_FRAME_GAP_WRITER_LIFETIME": "release"}), \
                  mock.patch.object(STARTUP.WORKLOAD, "bounded_harness", side_effect=harness), \
                  mock.patch.object(STARTUP, "analyze_arm", side_effect=analysis), mock.patch("builtins.print"):
                 self.assertEqual(STARTUP.run_comparison(args), 1)
+                self.assertEqual(STARTUP.os.environ["SHAREX_FRAME_GAP_WRITER_LIFETIME"], "release")
             self.assertEqual([env["SHAREX_FRAME_GAP_STARTUP_SINK"] for _, env, _ in calls], list(STARTUP.ORDER))
             self.assertEqual(len({env["SHAREX_FRAME_GAP_STARTUP_REQUEST_ID"] for _, env, _ in calls}), 4)
             for arguments, environment, timeout in calls:
                 self.assertEqual(Path(arguments[1]).name, "frame-gap-startup.py")
+                self.assertIsNone(environment.get("SHAREX_FRAME_GAP_WRITER_LIFETIME"))
                 self.assertEqual(timeout, 480)
                 self.assertEqual(environment["SHAREX_FRAME_GAP_HEARTBEAT"], "1")
                 for key in ("SHAREX_FRAME_GAP_OWNED_BUFFERS", "SHAREX_FRAME_GAP_NV12", "SHAREX_FRAME_GAP_DEEPER_QUEUE"):
@@ -964,12 +966,14 @@ class PixelCheckTests(unittest.TestCase):
                 root = Path(temporary)
                 args = SimpleNamespace(out=root, app=root / "app", build_settings=root / "settings")
                 captures = []
+                lifetimes = []
 
                 def harness(arguments, log, environment, timeout):
                     content = arguments[arguments.index("--bitmap-content") + 1]
                     output = Path(arguments[arguments.index("--out") + 1])
                     output.mkdir()
                     captures.append(content)
+                    lifetimes.append(environment.get("SHAREX_FRAME_GAP_WRITER_LIFETIME"))
                     self.assertEqual(timeout, 90)
                     self.assertEqual(environment["SHAREX_FRAME_GAP_BITMAP_COMPONENT_MASK"], "0")
                     for key in ("SHAREX_FRAME_GAP_TRACE_DIR", "SHAREX_FRAME_GAP_STARTUP_SINK", "SHAREX_FRAME_GAP_STARTUP_REQUEST_ID"):
@@ -986,8 +990,11 @@ class PixelCheckTests(unittest.TestCase):
                      mock.patch.object(STARTUP.subprocess, "run", return_value=SimpleNamespace(
                          returncode=int(outcome == "edge_mismatch"), stdout=json.dumps(comparison), stderr="")), \
                      mock.patch.dict(STARTUP.os.environ, {"SHAREX_FRAME_GAP_TRACE_DIR": "must-remove",
-                         "SHAREX_FRAME_GAP_STARTUP_SINK": "metadata", "SHAREX_FRAME_GAP_STARTUP_REQUEST_ID": "target"}):
+                         "SHAREX_FRAME_GAP_STARTUP_SINK": "metadata", "SHAREX_FRAME_GAP_STARTUP_REQUEST_ID": "target",
+                         "SHAREX_FRAME_GAP_WRITER_LIFETIME": "release"}):
                     result = STARTUP.compare_black_pixels(args, "app", "fixture")
+                    self.assertEqual(STARTUP.os.environ["SHAREX_FRAME_GAP_WRITER_LIFETIME"], "release")
+                self.assertEqual(lifetimes, [None, None])
                 self.assertEqual(captures, ["constant", "rectangle"])
                 self.assertEqual(result["status"], "passed" if outcome == "equal" else "failed")
                 self.assertEqual(STARTUP.GAP.read_json(root / "pixel-equivalence/result.json"), result)
